@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://TU-DOMINIO.com/sitemap.xml
+Sitemap: https://kind-mud-077d38b10.1.azurestaticapps.net/sitemap.xml

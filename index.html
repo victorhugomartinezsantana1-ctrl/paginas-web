@@ -5,15 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>devlog — Tutoriales técnicos de programación, cloud y DevOps</title>
   <meta name="description" content="Artículos técnicos claros y directos sobre programación, cloud, DevOps y automatización. Código que puedes copiar y ejecutar.">
-  <link rel="canonical" href="https://TU-DOMINIO.com/">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/">
   <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
 
   <!-- Open Graph -->
   <meta property="og:type" content="website">
   <meta property="og:title" content="devlog — Tutoriales técnicos">
   <meta property="og:description" content="Programación, cloud y DevOps sin relleno.">
-  <meta property="og:url" content="https://TU-DOMINIO.com/">
-  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/">
 
   <!-- Fuente mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -111,6 +110,91 @@
       <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
 
         <article class="group relative flex flex-col border border-line bg-surface rounded-lg overflow-hidden shadow-sm hover:border-accent hover:shadow-md transition">
+          <div class="h-1 bg-amber-400"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-muted mb-3">
+              <span class="text-warm">[git]</span>
+              <time datetime="2026-10-27">2026-10-27</time>
+            </div>
+            <h3 class="text-lg font-bold text-head leading-snug group-hover:text-accent">
+              <a href="/articulos/git-por-dentro-objetos-referencias-packfiles.html" class="after:absolute after:inset-0">Git por dentro: objetos, referencias, packfiles y reflog</a>
+            </h3>
+            <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
+              Cómo guarda Git el historial: blobs, trees y commits identificados por hash, referencias, packfiles con deltas y reflog, con ejemplos reproducibles ejecutados paso a paso.
+            </p>
+            <p class="mt-4 text-xs text-muted">⏱ 29 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-line bg-surface rounded-lg overflow-hidden shadow-sm hover:border-accent hover:shadow-md transition">
+          <div class="h-1 bg-emerald-500"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-muted mb-3">
+              <span class="text-warm">[linux]</span>
+              <time datetime="2026-10-27">2026-10-27</time>
+            </div>
+            <h3 class="text-lg font-bold text-head leading-snug group-hover:text-accent">
+              <a href="/articulos/contenedores-linux-namespaces-cgroups-seccomp.html" class="after:absolute after:inset-0">Contenedores Linux por dentro: namespaces, cgroups v2 y seccomp</a>
+            </h3>
+            <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
+              Qué primitivas del kernel de Linux convierten un proceso en un contenedor: namespaces, cgroups v2, capabilities y seccomp, con los comandos para observarlas.
+            </p>
+            <p class="mt-4 text-xs text-muted">⏱ 36 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-line bg-surface rounded-lg overflow-hidden shadow-sm hover:border-accent hover:shadow-md transition">
+          <div class="h-1 bg-blue-500"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-muted mb-3">
+              <span class="text-warm">[postgresql]</span>
+              <time datetime="2026-10-27">2026-10-27</time>
+            </div>
+            <h3 class="text-lg font-bold text-head leading-snug group-hover:text-accent">
+              <a href="/articulos/postgresql-mvcc-vacuum-planificador.html" class="after:absolute after:inset-0">PostgreSQL por dentro: MVCC, VACUUM y el planificador de consultas</a>
+            </h3>
+            <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
+              Cómo PostgreSQL lee y escribe a la vez sin bloqueos (MVCC), por qué necesita VACUUM, qué es el wraparound de transacciones y cómo el planificador elige un plan.
+            </p>
+            <p class="mt-4 text-xs text-muted">⏱ 33 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-line bg-surface rounded-lg overflow-hidden shadow-sm hover:border-accent hover:shadow-md transition">
+          <div class="h-1 bg-rose-600"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-muted mb-3">
+              <span class="text-warm">[embebidos]</span>
+              <time datetime="2026-10-27">2026-10-27</time>
+            </div>
+            <h3 class="text-lg font-bold text-head leading-snug group-hover:text-accent">
+              <a href="/articulos/freertos-esp32-planificador-prioridades-isr.html" class="after:absolute after:inset-0">FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización</a>
+            </h3>
+            <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
+              Cómo reparte FreeRTOS la CPU en el ESP32 de dos núcleos: prioridades, ticks, colas, notificaciones, interrupciones, mutex y watchdogs, con ejemplos en C.
+            </p>
+            <p class="mt-4 text-xs text-muted">⏱ 33 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-line bg-surface rounded-lg overflow-hidden shadow-sm hover:border-accent hover:shadow-md transition">
+          <div class="h-1 bg-orange-500"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-muted mb-3">
+              <span class="text-warm">[seguridad]</span>
+              <time datetime="2026-10-27">2026-10-27</time>
+            </div>
+            <h3 class="text-lg font-bold text-head leading-snug group-hover:text-accent">
+              <a href="/articulos/github-actions-seguridad-permisos-oidc-cadena-suministro.html" class="after:absolute after:inset-0">Seguridad en GitHub Actions: permisos mínimos, OIDC y cadena de suministro</a>
+            </h3>
+            <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
+              Cómo proteger un pipeline de GitHub Actions: permisos mínimos, inyección de scripts, pull_request_target, acciones fijadas por SHA, OIDC con Azure y el caso tj-actions.
+            </p>
+            <p class="mt-4 text-xs text-muted">⏱ 33 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-line bg-surface rounded-lg overflow-hidden shadow-sm hover:border-accent hover:shadow-md transition">
           <div class="h-1 bg-rose-600"></div>
           <div class="p-5 flex flex-col flex-1">
             <div class="flex items-center justify-between text-xs text-muted mb-3">
@@ -123,7 +207,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Análisis profundo sobre manipulación de hardware a bajo nivel, seguridad de memoria, concurrencia RTOS y Asíncrona (Embassy).
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 35 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 5 min de lectura</p>
           </div>
         </article>
 
@@ -140,7 +224,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Profundidad técnica en la arquitectura del Control Plane, Algoritmo Raft, CNI con eBPF y seguridad en K8s.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 30 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 6 min de lectura</p>
           </div>
         </article>
 
@@ -157,7 +241,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Transición desde ClickOps hacia Infraestructura como Código: Idempotencia, manejo de estados (TFState) y GitOps en PostgreSQL y ASWA.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 25 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 4 min de lectura</p>
           </div>
         </article>
 
@@ -174,7 +258,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Configura un entorno ultraligero para C++ y Python utilizando Lua, LSP y Treesitter sin sacrificar velocidad.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 18 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 2 min de lectura</p>
           </div>
         </article>
 
@@ -191,7 +275,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Despliega y personaliza un compositor Wayland dinámico para crear un entorno minimalista y fluido.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 15 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 1 min de lectura</p>
           </div>
         </article>
 
@@ -208,7 +292,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Eliminación de Linux, extensión de la partición de Windows y restauración del arranque con bcdboot.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 12 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 2 min de lectura</p>
           </div>
         </article>
 
@@ -225,7 +309,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Crea herramientas TUI, juegos y calculadoras vectoriales gestionando el buffer de la consola.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 20 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 1 min de lectura</p>
           </div>
         </article>
 
@@ -242,7 +326,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               C++ para electrónica: RTOS, modulación PWM y drivers de potencia en arquitecturas modulares.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 18 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 1 min de lectura</p>
           </div>
         </article>
 
@@ -259,7 +343,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Automatiza la generación de notas, etiquetado e interconexión usando scripts y modelos IA de código abierto.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 16 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 1 min de lectura</p>
           </div>
         </article>
 
@@ -276,7 +360,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Arquitectura, pipelines CI/CD automatizados, entornos de PRs y configuración avanzada de enrutamiento.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 15 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 2 min de lectura</p>
           </div>
         </article>
 
@@ -293,7 +377,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Abandona los bucles 'for'. Usa la vectorización de NumPy sobre memoria contigua y acelera tu código entre 10 y 100 veces.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 14 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 1 min de lectura</p>
           </div>
         </article>
 
@@ -310,7 +394,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Optimización de CI/CD: claves con hash, restore keys, rutas por ecosistema y límites de caché.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 12 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 2 min de lectura</p>
           </div>
         </article>
 
@@ -327,7 +411,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Manipulación de sistemas de archivos orientada a objetos: globbing, permisos, lectura binaria y jerarquías.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 14 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 1 min de lectura</p>
           </div>
         </article>
 
@@ -344,7 +428,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               El poder de las tuberías UNIX: Regex avanzado, captura condicional y programación funcional en terminal.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 18 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 2 min de lectura</p>
           </div>
         </article>
 
@@ -361,7 +445,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               El arte de compilar contenedores inmutables, ultra seguros y de bajo peso eliminando binarios innecesarios.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 12 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 2 min de lectura</p>
           </div>
         </article>
 
@@ -378,7 +462,7 @@
             <p class="mt-3 text-sm text-ink/80 leading-relaxed flex-1">
               Manipulación del DAG de commits, split, squash, fixup y control absoluto sobre el historial.
             </p>
-            <p class="mt-4 text-xs text-muted">⏱ 16 min de lectura</p>
+            <p class="mt-4 text-xs text-muted">⏱ 3 min de lectura</p>
           </div>
         </article>
       </div>

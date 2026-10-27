@@ -1,0 +1,22 @@
+{
+  "id": "ART-002",
+  "slug": "contenedores-linux-namespaces-cgroups-seccomp",
+  "titulo": "Contenedores Linux por dentro: namespaces, cgroups v2 y seccomp",
+  "etiqueta": "linux",
+  "fecha": "2026-10-27",
+  "descripcion": "Qué primitivas del kernel de Linux convierten un proceso en un contenedor: namespaces, cgroups v2, capabilities y seccomp, con los comandos para observarlas.",
+  "palabra_clave": "cómo funcionan los contenedores linux",
+  "secundarias": [
+    "namespaces",
+    "cgroups v2",
+    "seccomp",
+    "capabilities",
+    "OCI runtime"
+  ],
+  "relacionados": [
+    "docker-multi-stage",
+    "kubernetes-arquitectura-interna",
+    "git-por-dentro-objetos-referencias-packfiles"
+  ],
+  "barra": "verde"
+}

@@ -1,5 +1,6 @@
 {
   "routes": [
+    { "route": "/editorial/*", "statusCode": 404 },
     {
       "route": "/assets/*",
       "headers": { "Cache-Control": "public, max-age=0, must-revalidate" }

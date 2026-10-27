@@ -1,0 +1,418 @@
+<p>Un pipeline de integración y despliegue continuos es, en el fondo, un programa que se ejecuta automáticamente con las llaves de tu infraestructura en el bolsillo. Tiene permiso para escribir en el repositorio, para publicar paquetes, para desplegar en la nube y, a menudo, acceso a contraseñas y tokens. Esa combinación de automatismo y privilegios lo convierte en un objetivo atractivo: ¿para qué atacar una aplicación bien defendida si se puede comprometer el flujo que la construye y la publica?</p>
+
+<p>GitHub Actions es hoy una de las plataformas de CI/CD más usadas, y su modelo de seguridad tiene una peculiaridad que conviene entender desde el principio: un flujo de trabajo combina código propio, código de terceros (las acciones que se reutilizan) y datos que pueden provenir de desconocidos (el título de un <em>issue</em>, el contenido de una <em>pull request</em> abierta desde una bifurcación). Cada una de esas tres fuentes es una puerta de entrada distinta, y la defensa consiste en que ninguna de ellas pueda, por sí sola, llegar a los secretos o escribir en el repositorio.</p>
+
+<p>Este artículo recorre las defensas principales: el <code>GITHUB_TOKEN</code> con permisos mínimos, la gestión de secretos, la inyección de scripts, los desencadenantes privilegiados como <code>pull_request_target</code>, el uso seguro de acciones de terceros (con un caso real documentado por la agencia de ciberseguridad de EE. UU.), la autenticación sin secretos mediante OpenID Connect y los riesgos de los ejecutores autoalojados. Nos apoyamos en la documentación oficial de GitHub y de Microsoft, en un análisis del laboratorio de seguridad de GitHub y en una alerta de CISA. Una advertencia de método: no hemos ejecutado los flujos de ejemplo en un repositorio real ni disponemos de un validador de sintaxis en el equipo de redacción; los fragmentos siguen la sintaxis documentada y se señalan como ilustrativos, y las únicas cifras "vivas" que incluimos (los identificadores de commit de las dos acciones que usa este sitio) se consultaron en la API pública de GitHub el 27 de octubre de 2026. Si quieres ver cómo funciona un flujo de trabajo útil antes de endurecerlo, empieza por nuestro artículo sobre <a href="/articulos/github-actions-cache.html">caché en GitHub Actions</a>, y para el contexto de despliegue en la nube, el de <a href="/articulos/azure-static-web-apps.html">Azure Static Web Apps</a>.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>El <code>GITHUB_TOKEN</code> debería tener permisos de solo lectura por defecto y ampliarse trabajo por trabajo únicamente donde haga falta; si declaras <code>permissions</code>, los ámbitos que no menciones pasan a <code>none</code>.</li>
+    <li>Cualquier valor externo insertado con <code>${{ }}</code> dentro de un <code>run:</code> puede convertirse en código: pásalo siempre mediante una variable de entorno intermedia.</li>
+    <li>Combinar <code>pull_request_target</code> con el checkout del código de la PR es una vulnerabilidad clásica ("pwn request"): el código ajeno se ejecuta con permisos y secretos del repositorio destino.</li>
+    <li>Una etiqueta de una acción de terceros puede moverse; fijar la acción por el SHA completo de un commit (o, en vista previa, usar un lockfile) evita que una versión comprometida llegue a tu pipeline sin que lo sepas.</li>
+    <li>OpenID Connect permite autenticarse en la nube con credenciales de corta duración, sin guardar secretos de larga vida en GitHub.</li>
+    <li>El compromiso de <code>tj-actions/changed-files</code> en marzo de 2025 mostró en la práctica cómo una acción popular comprometida puede exponer secretos de miles de repositorios.</li>
+  </ul>
+</div>
+
+<h2>El modelo de amenazas de un workflow</h2>
+
+<p>Antes de las soluciones conviene tener claro qué se defiende y de quién. Un flujo de trabajo de GitHub Actions maneja, como mínimo, cuatro activos valiosos: los <strong>secretos</strong> configurados en el repositorio o en el entorno, el <strong>token</strong> automático con el que el flujo habla con la API de GitHub, el <strong>contenido del propio repositorio</strong> (que puede modificarse si el token tiene permiso de escritura) y los <strong>destinos de despliegue</strong> a los que el flujo sabe llegar (un servicio en la nube, un registro de paquetes, un hosting).</p>
+
+<p>Frente a ellos hay varios tipos de atacante, y las defensas de este artículo se ordenan según cuál de ellos contrarrestan:</p>
+
+<ul>
+  <li><strong>Un contribuyente externo</strong> que abre una <em>pull request</em> o un <em>issue</em> con contenido malicioso, ya sea código o texto cuidadosamente construido. Las defensas relevantes son la inyección de scripts y los desencadenantes privilegiados.</li>
+  <li><strong>Un mantenedor comprometido de una acción de terceros</strong>, cuyo código se ejecuta dentro de tu flujo con acceso a todo lo que tú le des. La defensa es fijar versiones y limitar los privilegios.</li>
+  <li><strong>Un colaborador con acceso de escritura</strong> (o un atacante que ha robado sus credenciales). La documentación recuerda que cualquier usuario con permiso de escritura en el repositorio puede leer todos los secretos configurados, lo que justifica los secretos de entorno con aprobación y las revisiones de cambios en los workflows.</li>
+  <li><strong>Un ejecutor comprometido o reutilizado</strong>, un riesgo propio de los ejecutores autoalojados.</li>
+</ul>
+
+<p>Ninguna defensa individual lo cubre todo. La idea rectora es la de <strong>mínimo privilegio</strong> combinada con <strong>defensa en profundidad</strong>: si un componente falla (una acción comprometida, una inyección), el daño que puede causar debe estar limitado por los permisos que tenía.</p>
+
+<h2>El GITHUB_TOKEN y el principio de mínimo privilegio</h2>
+
+<p>Cada ejecución de un trabajo dispone de un token de autenticación generado automáticamente, accesible como <code>${{ secrets.GITHUB_TOKEN }}</code> o mediante el contexto <code>github.token</code>. Se usa para que el flujo hable con la API de GitHub: comentar en una pull request, publicar un paquete, subir resultados de análisis. Según la documentación, sus permisos están limitados al repositorio que contiene el flujo de trabajo, y su vida es corta: caduca cuando termina el trabajo o al alcanzar su vida máxima efectiva, que en los ejecutores alojados por GitHub es de seis horas (el tiempo máximo de un trabajo) y, en los autoalojados, aunque un trabajo puede durar hasta cinco días, el token solo puede renovarse durante un máximo de 24 horas.</p>
+
+<p>Lo importante es qué puede hacer mientras vive. La guía de uso seguro de GitHub recomienda fijar como valor por defecto del token el permiso de solo lectura sobre el contenido del repositorio, y ampliar los permisos trabajo por trabajo únicamente donde sean necesarios. Esa configuración por defecto se establece en los ajustes del repositorio o de la organización; independientemente de ella, cada flujo de trabajo puede (y debería) declarar explícitamente lo que necesita con la clave <code>permissions</code>.</p>
+
+<h3>La clave permissions</h3>
+
+<p>La referencia de sintaxis de workflows enumera los ámbitos disponibles: <code>actions</code>, <code>artifact-metadata</code>, <code>attestations</code>, <code>checks</code>, <code>code-quality</code>, <code>contents</code>, <code>copilot-requests</code>, <code>deployments</code>, <code>id-token</code>, <code>issues</code>, <code>discussions</code>, <code>packages</code>, <code>pages</code>, <code>pull-requests</code>, <code>security-events</code>, <code>statuses</code> y <code>vulnerability-alerts</code>. La mayoría admite los valores <code>read</code>, <code>write</code> o <code>none</code>; las excepciones son <code>copilot-requests</code> e <code>id-token</code>, que solo admiten <code>write</code> o <code>none</code>, y <code>vulnerability-alerts</code>, que admite <code>read</code> o <code>none</code>.</p>
+
+<p>Dos reglas explican casi todo el comportamiento de esta clave. La primera: si especificas el acceso para cualquiera de estos ámbitos, todos los que no menciones se establecen en <code>none</code>. La segunda: existen atajos, <code>permissions: read-all</code> y <code>permissions: write-all</code>, y la forma <code>permissions: {}</code> desactiva todos los permisos. Que los ámbitos omitidos pasen a <code>none</code> es una gran noticia para la seguridad, porque permite escribir la lista de lo estrictamente necesario y olvidarse de todo lo demás.</p>
+
+<pre data-lang="yaml"><code># Ejemplo ilustrativo (no ejecutado): permisos mínimos a nivel de workflow y de trabajo
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}            # ningún permiso por defecto para todo el workflow
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read       # solo lo necesario para hacer checkout
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./ejecutar-pruebas.sh
+
+  comentar:
+    needs: pruebas
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # este trabajo sí puede comentar en la PR, y solo eso
+    steps:
+      - run: echo "Aquí iría la llamada que comenta en la pull request"</code></pre>
+
+<p>Ese ejemplo ilustra el patrón correcto: el workflow completo parte de cero permisos y cada trabajo recibe solo los suyos. Si un paso de <code>pruebas</code> estuviera comprometido (por ejemplo, por una dependencia maliciosa instalada durante las pruebas), el token que tendría en la mano solo permitiría leer el contenido del repositorio, no escribir en él ni tocar las pull requests.</p>
+
+<h3>Qué ocurre con las bifurcaciones</h3>
+
+<p>Un caso particular importa mucho en los repositorios públicos. Según el análisis del laboratorio de seguridad de GitHub, cuando una pull request procede de una <em>bifurcación</em> (<em>fork</em>) y el workflow se activa con <code>pull_request</code>, el flujo recibe un token de solo lectura y no tiene acceso a los secretos del repositorio. Es una protección deliberada: de lo contrario, cualquier desconocido podría abrir una pull request con un workflow modificado para filtrar los secretos. Veremos en una sección posterior qué pasa cuando se usa un desencadenante distinto que rompe esa protección.</p>
+
+<h2>Secretos: guardarlos bien y filtrarlos poco</h2>
+
+<p>Los secretos de GitHub (<em>repository secrets</em>, <em>environment secrets</em> y <em>organization secrets</em>) son valores cifrados que el flujo puede leer en tiempo de ejecución. La guía de uso seguro reúne un conjunto de prácticas que merece la pena enumerar con calma, porque la mayoría de las fugas reales vienen de ignorar alguna de ellas.</p>
+
+<ul>
+  <li><strong>Privilegios mínimos en la credencial.</strong> Las credenciales que se guardan como secretos deberían tener solo los permisos que el flujo necesita. La documentación lo justifica con una frase cruda: cualquiera con acceso de escritura al repositorio tiene acceso de lectura a todos los secretos configurados en él.</li>
+  <li><strong>No guardar datos estructurados como secreto.</strong> Un secreto no debe ser un bloque de JSON, XML o YAML con varias credenciales dentro, porque el mecanismo de enmascarado depende de reconocer el valor exacto en los registros; un secreto estructurado se reconoce peor. Crea un secreto distinto por cada valor sensible.</li>
+  <li><strong>Enmascarar lo que no sea un secreto de GitHub.</strong> Si un valor sensible se genera durante la ejecución o proviene de otra fuente, la instrucción <code>::add-mask::VALOR</code> hace que se oculte en los registros. No se deben escribir esos valores en el archivo del workflow.</li>
+  <li><strong>Registrar los valores derivados.</strong> Un valor que se calcula a partir de un secreto (codificado, transformado, recortado) no se redacta automáticamente. Hay que registrarlo también como secreto o máscara para que se oculte.</li>
+  <li><strong>Reaccionar ante una fuga.</strong> La indicación de la documentación es tajante: si un secreto sin redactar llega a un registro de ejecución, hay que eliminar el registro y <em>rotar</em> el secreto, es decir, invalidarlo y generar uno nuevo. Borrar solo el registro no basta, porque otras personas o procesos pueden haberlo copiado mientras estuvo visible.</li>
+</ul>
+
+<h3>Secretos de entorno con aprobación</h3>
+
+<p>En los repositorios públicos, la documentación de Microsoft sobre la autenticación con Azure recomienda usar <em>secretos de entorno</em> en lugar de secretos de repositorio. Un entorno de GitHub puede exigir la aprobación de revisores antes de que un trabajo acceda a sus secretos: mientras no se apruebe, el trabajo no puede leerlos. Esto crea un punto de control humano antes de que un flujo con permisos sensibles, como un despliegue a producción, pueda ejecutarse, y es especialmente valioso cuando los workflows pueden activarse desde contribuciones externas.</p>
+
+<h2>Inyección de scripts: cuando los datos se convierten en código</h2>
+
+<p>Esta es probablemente la vulnerabilidad más sutil y más frecuente de los workflows. El problema nace de cómo se procesan las expresiones <code>${{ ... }}</code>. GitHub evalúa esas expresiones <em>antes</em> de que el paso se ejecute y sustituye el resultado directamente en el texto del script. Si el valor sustituido contiene caracteres con significado para el intérprete (comillas, punto y coma, comandos), puede terminar de forma inadvertida siendo parte del código que se ejecuta.</p>
+
+<p>La documentación de GitHub usa como ejemplo el título de una pull request, <code>github.event.pull_request.title</code>. El mismo razonamiento se aplica a cualquier valor controlado por un tercero: el título o el cuerpo de un <em>issue</em>, un comentario, el nombre de una rama o el mensaje de un commit. Considera este paso, que parece inocente:</p>
+
+<pre data-lang="yaml"><code># VULNERABLE (ejemplo ilustrativo): el título se sustituye dentro del script
+- name: Registrar el título
+  run: echo "Nueva PR: ${{ github.event.pull_request.title }}"</code></pre>
+
+<p>Si alguien abre una pull request cuyo título contiene una comilla que cierra la cadena y una orden detrás, el texto resultante tras la sustitución es un script distinto del que escribiste, y ese código se ejecuta con los privilegios del flujo, incluidos sus secretos y su token. La cadena de sustitución ocurre antes de que el shell vea nada, de modo que no hay nada que "escapar" de forma fiable a posteriori.</p>
+
+<h3>La mitigación: una variable de entorno intermedia</h3>
+
+<p>La solución que recomienda la documentación es no usar nunca la expresión dentro del script, sino asignarla a una variable de entorno en el paso y leer esa variable desde el shell. Así, el valor viaja como dato en el entorno del proceso y el shell lo trata como una cadena, sin interpretarla como código:</p>
+
+<pre data-lang="yaml"><code># SEGURO (ejemplo ilustrativo): el valor pasa por el entorno
+- name: Registrar el título
+  env:
+    TITULO: ${{ github.event.pull_request.title }}
+  run: echo "Nueva PR: $TITULO"</code></pre>
+
+<p>La guía describe además dos refuerzos. El primero es preferir una acción (por ejemplo, una acción de JavaScript que reciba el valor como argumento) en lugar de un script en línea, de modo que el valor nunca se convierta en parte de un guion de shell generado. El segundo es restringir los permisos del token, para reducir el daño potencial de una explotación, y usar plantillas de análisis de código como las de CodeQL para encontrar patrones vulnerables en los workflows.</p>
+
+<div class="alert">
+  <strong>Regla práctica.</strong> Cada vez que veas <code>${{ github.event.* }}</code> o cualquier otro valor que pueda escribir alguien ajeno dentro de un bloque <code>run:</code>, trátalo como una alerta. Los valores que controla únicamente el propio repositorio (por ejemplo, un secreto o una constante) no suponen el mismo riesgo, aunque conviene mantener la misma disciplina.
+</div>
+
+<h2>Código no confiable y desencadenantes privilegiados</h2>
+
+<p>La tercera familia de problemas tiene que ver con <em>cuándo</em> y <em>con qué contexto</em> se ejecuta un workflow. GitHub ofrece varios desencadenantes para reaccionar a pull requests, y dos de ellos difieren radicalmente en su modelo de seguridad.</p>
+
+<h3>pull_request frente a pull_request_target</h3>
+
+<p>Según el análisis del laboratorio de seguridad de GitHub:</p>
+
+<ul>
+  <li><strong><code>pull_request</code></strong>: para las PR que vienen de una bifurcación, el workflow recibe un token de solo lectura y ningún secreto. Se ejecuta sobre el commit de fusión resultante. Es seguro por diseño porque el código ajeno se ejecuta, pero sin nada valioso a su alcance.</li>
+  <li><strong><code>pull_request_target</code></strong>: el workflow tiene permiso de escritura y acceso a los secretos del repositorio destino. Se ejecuta en el contexto del repositorio base, no en el de la PR, de modo que por defecto el checkout descarga el código de la rama base, que es código de confianza.</li>
+</ul>
+
+<p>El segundo desencadenante existe por una razón legítima: permite hacer cosas útiles que requieren escritura, como etiquetar una PR o comentar en ella, también para PR de bifurcaciones. El peligro aparece cuando el flujo hace algo más.</p>
+
+<h3>El patrón "pwn request"</h3>
+
+<p>Una <em>pwn request</em> es, según la definición del laboratorio de seguridad, un ataque en el que una pull request maliciosa desde una bifurcación consigue que un flujo de CI privilegiado ejecute código controlado por el atacante, con lo que este puede obtener acceso de escritura al repositorio o robar secretos. La receta de la vulnerabilidad es la combinación de <code>pull_request_target</code> con un checkout explícito del código de la PR, algo que el artículo califica como una práctica peligrosa que puede llevar al compromiso del repositorio.</p>
+
+<p>Basta con que ese flujo ejecute cualquier cosa que se apoye en el código descargado: una compilación, una instalación de dependencias, un script del propio repositorio. El análisis cita el ejemplo de un paquete de npm malicioso cuyos <code>preinstall</code> o <code>postinstall</code> se ejecutan al instalarlo. Y aunque el flujo no use secretos, el riesgo persiste: el token con permiso de escritura está en memoria y, además, <code>actions/checkout</code> lo guarda en disco por defecto salvo que se indique <code>persist-credentials: false</code>.</p>
+
+<pre data-lang="yaml"><code># PELIGROSO (ejemplo ilustrativo): contexto privilegiado + código de la PR
+on: pull_request_target
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}   # descarga el código ajeno
+      - run: npm install &amp;&amp; npm test                      # lo ejecuta con permisos del repo base</code></pre>
+
+<p>El mismo análisis precisa que tratar el contenido de la PR como datos pasivos, por ejemplo comparándolo o buscando texto sin ejecutar nada, es en general seguro. El riesgo no está en leer el código ajeno sino en <em>ejecutarlo</em> con privilegios.</p>
+
+<h3>El patrón seguro: dos workflows separados</h3>
+
+<p>La alternativa que recomiendan tanto GitHub como el laboratorio de seguridad es separar el trabajo en dos flujos con un puente de artefactos entre ellos:</p>
+
+<ol>
+  <li>Un flujo sin privilegios, activado por <code>pull_request</code>, que compila y prueba el código de la PR. Como no tiene secretos ni escritura, no puede hacer daño. Guarda sus resultados (el número de la PR, un informe de cobertura) como <em>artefactos</em>.</li>
+  <li>Un flujo con privilegios, activado por <code>workflow_run</code> cuando el primero termina, que descarga los artefactos y actúa sobre ellos, por ejemplo comentando en la PR.</li>
+</ol>
+
+<p>Hay una salvedad crítica que ambas fuentes subrayan: los artefactos que provienen de una PR no confiable son <em>también</em> no confiables. Leer un número o un texto de ellos es aceptable; ejecutar un binario que viene en el artefacto, dentro del flujo privilegiado, reabriría exactamente la misma vulnerabilidad. Además, la guía de GitHub resume la regla general: los flujos que usan <code>pull_request_target</code> o <code>workflow_run</code> no deben hacer checkout explícito de código no confiable, y conviene evitar <code>pull_request_target</code> salvo que el flujo necesite realmente el contexto privilegiado.</p>
+
+<h3>Las etiquetas como "puerta" no bastan</h3>
+
+<p>Una solución popular es exigir que un mantenedor ponga una etiqueta (por ejemplo, "safe to test") antes de ejecutar el flujo sobre el código de la PR. El laboratorio de seguridad la acepta únicamente como parche temporal, y explica por qué es frágil: existe una condición de carrera entre la aprobación y la ejecución. Un atacante puede subir un commit nuevo después de que el mantenedor revise el código y ponga la etiqueta, pero antes de que el flujo se inicie, de modo que se ejecuta código que nadie revisó. El análisis aconseja también cerrar o rebasar las PR abiertas antes de corregir el flujo, porque esas siguen ejecutando la versión antigua del workflow.</p>
+
+<h2>Acciones de terceros: la cadena de suministro</h2>
+
+<p>La reutilización de acciones es la gran ventaja de Actions: una línea <code>uses: otro/repositorio@version</code> incorpora capacidades completas sin escribirlas. Pero cada acción de terceros es código que se ejecuta con tus permisos. La guía de uso seguro lo dice sin rodeos: una acción comprometida tendría acceso a todos los secretos configurados en tu repositorio y, posiblemente, podría usar el <code>GITHUB_TOKEN</code> para escribir en él. Esa es la definición de un ataque a la cadena de suministro.</p>
+
+<h3>Las etiquetas se pueden mover</h3>
+
+<p>La forma habitual de referenciar una acción es por etiqueta (<code>@v4</code>) o por rama (<code>@main</code>). La documentación de GitHub avisa del problema: una etiqueta puede moverse o borrarse si un atacante consigue acceso al repositorio donde vive la acción. Si el atacante repunta la etiqueta hacia un commit malicioso, todos los flujos que la usan ejecutarán el código modificado la próxima vez que se activen, sin que nadie haya cambiado una sola línea en los repositorios que las consumen. Un tag es una promesa; un SHA es un hecho.</p>
+
+<h3>Fijar por SHA</h3>
+
+<p>La medida clásica es referenciar la acción por el hash completo de un commit, que es inmutable. La guía recomienda fijar las referencias a un SHA de commit, con una precaución: comprobar que el SHA procede del repositorio original de la acción y no de una bifurcación. También aconseja revisar el código fuente de la acción para confirmar que trata tu contenido y tus secretos como esperas. En la práctica, se acompaña el SHA con un comentario con la versión legible, para que las revisiones y las herramientas de actualización sepan a qué corresponde.</p>
+
+<p>Para este mismo sitio, que se despliega con GitHub Actions hacia Azure Static Web Apps, los commits vigentes el 27 de octubre de 2026 de las etiquetas que usa el flujo, consultados en la API de GitHub, eran los siguientes. Verifícalos tú mismo antes de copiarlos, porque la etiqueta <code>v1</code> de la acción de despliegue es una etiqueta de versión mayor que puede avanzar:</p>
+
+<pre data-lang="yaml"><code># Ejemplo ilustrativo (no ejecutado): acciones fijadas por SHA con la versión en un comentario
+steps:
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    with:
+      persist-credentials: false
+  - uses: Azure/static-web-apps-deploy@4d27395796ac319302594769cfe812bd207490b1  # v1
+    with:
+      azure_static_web_apps_api_token: ${{ secrets.TOKEN_DE_DESPLIEGUE }}
+      action: "upload"
+      app_location: "/"</code></pre>
+
+<p>Fijar por SHA tiene un coste: dejas de recibir las actualizaciones automáticas de seguridad que traería una etiqueta móvil, así que necesitas un mecanismo de actualización. La documentación sugiere usar Dependabot para mantener actualizadas las referencias a las acciones, con una sutileza que conviene conocer: Dependabot no genera alertas de seguridad para las acciones fijadas por valores SHA, de modo que las actualizaciones de versión (no las alertas) son lo que mantiene ese tipo de referencias al día.</p>
+
+<h3>Políticas de la organización: bloquear y exigir SHA</h3>
+
+<p>Desde el 15 de agosto de 2025, la política de acciones permitidas de GitHub admite dos controles nuevos, según su registro de cambios. El primero es el <strong>bloqueo explícito</strong>: se antepone un signo <code>!</code> a una entrada de la lista para bloquear una acción o una versión concreta, y esa lista de bloqueo se comprueba al final, de modo que prevalece sobre cualquier otra regla que la permitiera. El segundo es la <strong>obligatoriedad del SHA</strong>: los administradores pueden exigir que los workflows fijen las acciones por el SHA completo de un commit, y cualquier workflow que intente usar una acción sin fijar falla. Ambos se configuran en la política de acciones permitidas a nivel de empresa, organización o repositorio.</p>
+
+<p>Esa política convierte la buena práctica en una regla verificable: en lugar de confiar en que cada colaborador fije sus acciones, el sistema rechaza los workflows que no lo hacen. Es la diferencia entre una recomendación y un control.</p>
+
+<h3>Lockfiles de dependencias de workflows (vista previa)</h3>
+
+<p>La guía de uso seguro de GitHub contiene una afirmación que cambia el panorama a medio plazo: la mejor medida es bloquear las dependencias del workflow con un <em>lockfile</em>, algo que describe como la protección más fuerte disponible y que, según la página, sustituye al fijado por SHA para los repositorios que lo adopten. La página conceptual dedicada a estos archivos aporta los detalles:</p>
+
+<ul>
+  <li>Se guardan en <code>.github/workflows/actions.lock</code>, dentro del repositorio, y los genera la extensión de la CLI de GitHub <code>gh actions-lock</code>. El archivo es generado por máquina y no debe editarse a mano.</li>
+  <li>Registran, para cada dependencia, la referencia original (etiqueta o rama), el SHA resuelto del commit y los identificadores numéricos del propietario y del repositorio de origen (<code>owner_id</code> y <code>repo_id</code>).</li>
+  <li>Cubren también las dependencias transitivas, es decir, las acciones que usan las acciones que tú usas, con la excepción de las llamadas a workflows reutilizables.</li>
+  <li>En tiempo de ejecución, GitHub exige que cada dependencia de un workflow incorporado al lockfile esté presente en él, ejecuta el commit bloqueado (que es también el que comprueban las políticas de acciones permitidas) y usa los identificadores de propietario y repositorio para confirmar que el repositorio detrás de un nombre sigue siendo el que bloqueaste.</li>
+</ul>
+
+<p>Esa última comprobación cubre un escenario que el fijado por SHA no contempla: que el nombre de un repositorio pase a apuntar a un repositorio distinto. La documentación solo dice que los identificadores numéricos sirven para confirmar que el repositorio que hay detrás de un nombre sigue siendo el que bloqueaste; el ejemplo concreto de una cuenta que se borra y cuyo nombre registra otra persona es un razonamiento nuestro sobre cómo podría ocurrir, no un caso descrito en la fuente. Pero hay que ser prudente: la propia documentación indica que los lockfiles de dependencias de workflows están en <strong>vista previa pública y sujetos a cambios</strong>, y no precisa cuándo serán de disponibilidad general ni qué planes los incluyen. Es una dirección prometedora, no un estándar consolidado, y por eso en este artículo el fijado por SHA sigue siendo la recomendación práctica de base.</p>
+
+<h3>Revisión de cambios en los workflows</h3>
+
+<p>Una defensa organizativa sencilla y eficaz: añadir <code>.github/workflows</code> al archivo <code>CODEOWNERS</code>, de modo que cualquier cambio en los workflows requiera la aprobación de un revisor designado. Así, un colaborador (o alguien que haya robado sus credenciales) no puede modificar un flujo para filtrar secretos sin que otra persona lo vea. La guía menciona además las puntuaciones de OpenSSF Scorecards, una herramienta que señala prácticas arriesgadas de la cadena de suministro, entre ellas la inyección de scripts, los permisos del token y las acciones sin fijar.</p>
+
+<h2>Un caso real: tj-actions/changed-files</h2>
+
+<p>Los riesgos anteriores no son teóricos. En marzo de 2025, la agencia de ciberseguridad de Estados Unidos (CISA) publicó una alerta sobre el compromiso de una acción muy popular: <code>tj-actions/changed-files</code> (identificada como CVE-2025-30066), que usan miles de repositorios para saber qué archivos han cambiado en una pull request. Según la alerta, el compromiso permitió la <strong>divulgación de secretos</strong>, entre ellos claves de acceso, tokens personales de GitHub, tokens de npm y claves RSA privadas.</p>
+
+<p>Los datos concretos de la alerta merecen ser leídos con atención:</p>
+
+<ul>
+  <li><strong>Ventana de exposición.</strong> CISA indicó que las organizaciones debían auditar el uso de la acción entre las 00:00 UTC del 12 de marzo de 2025 y las 12:00 UTC del 15 de marzo de 2025, y que debían revisarse todas las versiones de la acción en ese periodo, porque la alerta no precisa qué etiquetas se vieron afectadas.</li>
+  <li><strong>Un segundo compromiso relacionado.</strong> La alerta señala que el compromiso de <code>tj-actions/changed-files</code> pudo haberse facilitado por el de otra acción, <code>reviewdog/action-setup@v1</code> (CVE-2025-30154), ocurrido aproximadamente al mismo tiempo (el 11 de marzo de 2025, entre las 18:42 y las 20:31 UTC). Enumera además otras acciones de ese mismo ecosistema que podían estar afectadas, entre ellas <code>reviewdog/action-shellcheck</code>, <code>action-composite-template</code>, <code>action-staticcheck</code>, <code>action-ast-grep</code> y <code>action-typos</code>.</li>
+  <li><strong>La corrección.</strong> La vulnerabilidad se corrigió en la versión 46.0.1, y para el componente de reviewdog se indicó actualizar a un commit concreto o seguir las instrucciones de GitHub.</li>
+  <li><strong>Qué hacer.</strong> CISA pidió rotar de inmediato todos los secretos identificados "porque deben considerarse comprometidos", y revisar los registros de los repositorios cuyos workflows ejecutaron el commit malicioso. La alerta advierte de que el contenido filtrado podía estar ofuscado como una carga con doble codificación en base64. La alerta se publicó el 18 de marzo de 2025, según su dirección, y se revisó por última vez el 26 de marzo.</li>
+</ul>
+
+<h3>Qué enseña este caso (y qué no)</h3>
+
+<p>La lección técnica es la que ya hemos visto: confiar en una etiqueta móvil equivale a ejecutar lo que su propietario (o quien le robe el acceso) decida mañana. Quien referenciaba la acción por etiqueta ejecutó el código modificado sin cambiar nada en su repositorio; quien la tenía fijada por SHA no habría recibido el commit malicioso.</p>
+
+<p>Hay que ser rigurosos sobre un matiz: la alerta de CISA que hemos consultado <strong>no recomienda expresamente</strong> fijar las acciones por SHA, ni describe el mecanismo interno del código malicioso más allá de la divulgación de secretos. La recomendación de fijar por SHA procede de la guía de uso seguro de GitHub, que es la que hemos citado, y el vínculo con este caso es una inferencia razonable, no una conclusión de la alerta. Del mismo modo, la rotación de secretos que pide CISA es la medida de contención que sigue siendo necesaria, incluso para quien hubiera fijado versiones, si ejecutó un flujo con el commit malicioso en ese periodo.</p>
+
+<h2>OpenID Connect: autenticarse sin guardar secretos</h2>
+
+<p>Otro frente de riesgo son las credenciales de larga duración que se guardan como secretos para desplegar en la nube. Si se filtran (por una acción comprometida, por una inyección, por un registro mal protegido), el atacante puede usarlas desde cualquier lugar hasta que se rotan. La alternativa moderna es <strong>OpenID Connect (OIDC)</strong>, que la documentación de GitHub presenta con una motivación clara: no hace falta duplicar las credenciales de la nube como secretos de larga duración en GitHub, y los tokens que se emiten son de corta vida y se renuevan automáticamente.</p>
+
+<h3>Cómo funciona el flujo</h3>
+
+<ol>
+  <li><strong>Relación de confianza.</strong> En el proveedor de nube se configura que ciertos flujos de GitHub pueden solicitar acceso a un rol o identidad concretos.</li>
+  <li><strong>Un token por ejecución.</strong> Para cada trabajo, el proveedor OIDC de GitHub genera un token web JSON (JWT) con reclamaciones que identifican el flujo.</li>
+  <li><strong>Solicitud.</strong> Un paso o acción del trabajo pide ese token y se lo presenta al proveedor de nube.</li>
+  <li><strong>Validación y emisión.</strong> La nube valida las reclamaciones contra las condiciones de confianza y, si coinciden, emite un token de acceso de corta duración disponible solo durante el trabajo.</li>
+</ol>
+
+<p>Las reclamaciones del token son las que permiten escribir condiciones precisas. La documentación muestra, entre otras, <code>sub</code> (el sujeto), <code>aud</code> (la audiencia), <code>iss</code> (el emisor, <code>https://token.actions.githubusercontent.com</code>), <code>repository</code>, <code>ref</code>, <code>environment</code> y <code>job_workflow_ref</code> (la referencia al workflow reutilizable). Para el sujeto presenta formatos como <code>repo:ORG/REPO:ref:refs/heads/main</code>, que identifica una rama de un repositorio, y <code>repo:ORG/REPO:environment:NOMBRE</code>, que identifica un entorno. La buena práctica, que se deduce del propio diseño, es que la condición de confianza sea lo más estrecha posible: una identidad de despliegue vinculada a un entorno concreto con aprobación manual es mucho más segura que una vinculada a todo el repositorio.</p>
+
+<h3>El permiso id-token</h3>
+
+<p>Para que un flujo pueda pedir el token OIDC necesita el permiso <code>id-token: write</code>. La referencia de sintaxis lo confirma: establecer ese ámbito en <code>write</code> permite al flujo obtener un token OpenID Connect. Es un ámbito aparte del resto precisamente para que se conceda de forma explícita y solo donde haga falta.</p>
+
+<h3>Un ejemplo con Azure</h3>
+
+<p>La documentación de Microsoft describe cómo conectar GitHub Actions con Azure por este método. El requisito previo es configurar una <em>credencial de identidad federada</em> en una aplicación de Microsoft Entra (con su entidad de servicio) o en una identidad administrada asignada por el usuario, de modo que confíe en los tokens que emite GitHub Actions para tu repositorio. Después se guardan tres valores como secretos: <code>AZURE_CLIENT_ID</code>, <code>AZURE_TENANT_ID</code> y <code>AZURE_SUBSCRIPTION_ID</code>, que son identificadores de la aplicación, del directorio y de la suscripción; la propia documentación recomienda, para mejorar la seguridad en repositorios públicos, usar secretos de entorno en lugar de secretos de repositorio. El flujo usa la acción de inicio de sesión de Azure:</p>
+
+<pre data-lang="yaml"><code># Basado en el ejemplo de la documentación de Microsoft (ilustrativo, no ejecutado aquí)
+name: Despliegue con OIDC
+on: [push]
+
+jobs:
+  desplegar:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write    # necesario para pedir el token OIDC
+      contents: read
+    steps:
+      - name: Iniciar sesión en Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ejecutar un comando de Azure CLI
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az account show</code></pre>
+
+<p>Fíjate en que no aparece ninguna contraseña ni ningún secreto de cliente: la acción obtiene el token OIDC del trabajo y lo intercambia por un token de Azure válido solo mientras dure la ejecución. La acción de inicio de sesión admite además un parámetro opcional de audiencia, cuyo valor por defecto en las nubes públicas es <code>api://AzureADTokenExchange</code>. Nota que este ejemplo usa etiquetas (<code>@v2</code>); aplica sobre ellas lo dicho antes sobre fijar por SHA.</p>
+
+<p>Este es el mismo principio que mencionábamos en nuestro artículo sobre <a href="/articulos/terraform-infraestructura-codigo.html">Terraform y la automatización en Azure</a> al hablar de GitOps: la identidad con la que el flujo despliega la infraestructura debería ser una identidad federada y no una contraseña guardada. Los tipos de entidad que se pueden usar al crear la credencial federada en Azure (entorno, rama, pull request o etiqueta) son un detalle del proceso de configuración en Azure que damos aquí como conocimiento general, porque no aparecía en el texto de la documentación que consultamos.</p>
+
+<h2>Ejecutores autoalojados</h2>
+
+<p>Los ejecutores alojados por GitHub se crean limpios para cada trabajo y se destruyen al terminar. Los ejecutores autoalojados (<em>self-hosted runners</em>) son máquinas tuyas que ejecutan trabajos, y la documentación de GitHub es muy clara sobre sus riesgos:</p>
+
+<ul>
+  <li><strong>En repositorios públicos casi nunca deberían usarse.</strong> Cualquier usuario puede abrir una pull request que ejecute código en ellos y comprometer el entorno.</li>
+  <li><strong>No garantizan un entorno limpio.</strong> Un ejecutor autoalojado no tiene por qué ser efímero, así que código no confiable puede comprometerlo de forma persistente y afectar a trabajos posteriores. Los ejecutores alojados por GitHub sí ofrecen ese aislamiento.</li>
+  <li><strong>La exposición se comparte.</strong> Los ejecutores de organización o de empresa pueden ejecutar trabajos de varios repositorios, por lo que un compromiso tiene un alcance amplio. Los grupos de ejecutores ayudan a limitarlo.</li>
+  <li><strong>Mitigaciones imperfectas.</strong> Los ejecutores efímeros "just-in-time" ayudan, pero no garantizan un trabajo por ejecutor. Y los secretos pasados como argumentos de línea de comandos pueden ser visibles para otros trabajos de la misma máquina.</li>
+</ul>
+
+<h2>Cómo queda este sitio</h2>
+
+<p>Para aterrizar todo lo anterior, miremos el caso del propio repositorio que aloja esta página, que es público y se despliega con un flujo generado por Azure Static Web Apps. Su estructura es la habitual: se activa con <code>push</code> a <code>main</code> y con pull requests, usa <code>actions/checkout</code> y <code>Azure/static-web-apps-deploy</code> referenciadas por etiqueta, y recibe el token de despliegue de Azure como secreto. Aplicando lo que hemos visto, un análisis honesto señala lo siguiente:</p>
+
+<ul>
+  <li><strong>Etiquetas en lugar de SHA.</strong> Ambas acciones están referenciadas por etiqueta. Es lo más recomendable corregir, con los SHA mostrados arriba como punto de partida (a verificar).</li>
+  <li><strong>Permisos del token.</strong> El flujo no declara <code>permissions</code>, de modo que depende del valor por defecto del repositorio. Declarar un bloque explícito, con <code>contents: read</code> como base, reduciría el daño de un compromiso; la acción de despliegue usa el <code>GITHUB_TOKEN</code> para integraciones como comentarios en pull requests, así que habría que probar qué permisos adicionales necesita antes de cerrarlos del todo. No hemos probado ese ajuste, y lo presentamos como una línea de trabajo, no como un cambio ya hecho.</li>
+  <li><strong>Pull requests de bifurcaciones.</strong> Como el flujo se activa con <code>pull_request</code> y no con <code>pull_request_target</code>, las PR de bifurcaciones no reciben secretos, que es el comportamiento deseado; la consecuencia práctica es que el despliegue de previsualización no funcionará para colaboradores externos, y es un compromiso aceptable.</li>
+  <li><strong>Secreto de despliegue.</strong> Es un token de larga duración con permiso para publicar el sitio; si alguna vez se sospecha de una fuga, hay que regenerarlo en Azure y actualizarlo en GitHub.</li>
+  <li><strong>Revisión de cambios.</strong> En un repositorio de un solo mantenedor no hay segundo revisor, pero un archivo <code>CODEOWNERS</code> que incluya <code>.github/workflows</code> sigue siendo útil en cuanto se sumen colaboradores.</li>
+</ul>
+
+<h2>Lista de verificación</h2>
+
+<p>Para llevarte algo accionable, esta es la lista condensada de controles en orden aproximado de rentabilidad (poco esfuerzo, mucho efecto, primero):</p>
+
+<ol>
+  <li>Declarar <code>permissions</code> en cada workflow, empezando por <code>{}</code> o <code>contents: read</code>, y ampliar por trabajo.</li>
+  <li>Poner el valor por defecto del <code>GITHUB_TOKEN</code> en solo lectura en los ajustes del repositorio u organización.</li>
+  <li>No insertar nunca valores controlables por terceros con <code>${{ }}</code> dentro de <code>run:</code>; pasarlos por variables de entorno.</li>
+  <li>Evitar <code>pull_request_target</code>; si es imprescindible, no hacer checkout del código de la PR ni ejecutar nada procedente de ella, y usar <code>persist-credentials: false</code>.</li>
+  <li>Fijar las acciones de terceros por el SHA completo de un commit, comprobando que procede del repositorio original, y mantenerlas actualizadas con Dependabot.</li>
+  <li>Activar, donde esté disponible, la política que exige SHA y bloquear acciones y versiones concretas con el prefijo <code>!</code>.</li>
+  <li>Preferir OIDC con credenciales de corta duración a los secretos de larga vida para desplegar en la nube, con condiciones de confianza estrechas.</li>
+  <li>Usar secretos de entorno con aprobación de revisores para los despliegues sensibles.</li>
+  <li>Añadir <code>.github/workflows</code> a <code>CODEOWNERS</code>.</li>
+  <li>No usar ejecutores autoalojados en repositorios públicos; si se usan, que sean efímeros y estén aislados por grupos.</li>
+  <li>Analizar los workflows con CodeQL y medir las prácticas con OpenSSF Scorecards.</li>
+  <li>Tener un plan de respuesta: saber cómo rotar cada secreto y dónde mirar los registros.</li>
+</ol>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>"Mis secretos están cifrados, así que no hay riesgo"</h3>
+
+<p>Los secretos se almacenan cifrados, pero en tiempo de ejecución se entregan en claro al proceso que los necesita. Una acción comprometida o una inyección de comandos puede leerlos y enviarlos fuera. El cifrado en reposo no protege de código malicioso que se ejecuta dentro del flujo.</p>
+
+<h3>"El enmascarado de los registros me protege"</h3>
+
+<p>El enmascarado oculta los valores conocidos en la salida, pero no impide que se exfiltren por otro canal, y no cubre valores derivados o codificados que no se hayan registrado. Es una red de seguridad, no un control de acceso.</p>
+
+<h3>"Mi repositorio es privado, no hace falta endurecer los workflows"</h3>
+
+<p>Un repositorio privado reduce la exposición a contribuyentes externos, pero no elimina el riesgo de las acciones de terceros ni el de colaboradores comprometidos. Y los repositorios privados pueden acabar siendo públicos o compartir ejecutores con otros.</p>
+
+<h3>"Fijar por SHA me hace inmune"</h3>
+
+<p>Protege contra el cambio de una etiqueta, pero no contra una acción maliciosa desde su primera versión, ni contra un SHA tomado de una bifurcación en lugar del repositorio original. Y si no se actualiza, se acumulan vulnerabilidades conocidas sin parche. Hay que combinarlo con revisión de código y con actualizaciones controladas.</p>
+
+<h3>"Con una etiqueta de aprobación estoy a salvo"</h3>
+
+<p>Como vimos, la condición de carrera entre la aprobación y la ejecución permite que el código cambie después de revisarlo. Solo se acepta como medida temporal.</p>
+
+<h3>"Los permisos por defecto son los correctos"</h3>
+
+<p>No hay que suponerlo: dependen de la configuración del repositorio u organización y pueden ser más amplios de lo necesario. Declarar <code>permissions</code> en el propio workflow hace explícita la intención y no depende del valor por defecto.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿Qué hago si sospecho que un secreto se ha filtrado?</h3>
+
+<p>Sigue la indicación de la documentación: elimina el registro donde apareció y rota el secreto, es decir, genera uno nuevo en el sistema de origen y retira el antiguo. Después revisa los registros de ejecuciones recientes en busca de actividad inesperada y, si el secreto daba acceso a un servicio, revisa también los accesos en ese servicio.</p>
+
+<h3>¿Es seguro usar acciones de la organización oficial de GitHub?</h3>
+
+<p>Las acciones mantenidas por GitHub (como <code>actions/checkout</code>) tienen menos riesgo que las de autores desconocidos, pero la documentación recomienda el mismo criterio de fijado y revisión para cualquier acción de terceros. Que sean oficiales reduce la probabilidad de compromiso; no la elimina.</p>
+
+<h3>¿Por qué no basta con revisar el código de la acción una vez?</h3>
+
+<p>Porque el código que se ejecuta es el de la versión que resuelve la referencia en cada ejecución. Si usas una etiqueta móvil, la versión puede cambiar sin que lo sepas. Fijar por SHA hace que lo revisado sea lo ejecutado; con un lockfile, GitHub lo verifica por ti.</p>
+
+<h3>¿Qué diferencia hay entre un secreto de repositorio y uno de entorno?</h3>
+
+<p>El de repositorio está disponible para cualquier trabajo del repositorio que lo solicite. El de entorno solo está disponible para los trabajos que despliegan en ese entorno, que puede exigir aprobaciones manuales antes de dar acceso a los secretos. Para valores sensibles, el de entorno ofrece un control adicional.</p>
+
+<h3>¿Puedo usar OIDC con proveedores distintos de Azure?</h3>
+
+<p>La documentación de GitHub describe OIDC de forma genérica, como un mecanismo para establecer una confianza entre GitHub y un proveedor de nube. La configuración concreta depende del proveedor; en este artículo solo hemos verificado el caso de Azure con su documentación oficial.</p>
+
+<h3>¿Los lockfiles sustituyen ya al fijado por SHA?</h3>
+
+<p>La documentación de GitHub dice que, para los repositorios que los adopten, sí lo sustituyen. Pero también indica que están en vista previa pública y sujetos a cambios. Hasta que sean estables, fijar por SHA con actualizaciones controladas sigue siendo la opción de base más segura y más conocida.</p>
+
+<h3>¿Qué es exactamente persist-credentials: false?</h3>
+
+<p>Es una opción de <code>actions/checkout</code> que evita que el token de autenticación se guarde en la configuración local de Git del ejecutor. El laboratorio de seguridad de GitHub la recomienda porque, por defecto, el checkout persiste las credenciales en disco, donde un paso posterior (o código malicioso) podría leerlas.</p>
+
+<h3>¿Cada cuánto debo revisar mis workflows?</h3>
+
+<p>No hay una cifra oficial, pero es razonable revisar los permisos, las referencias a acciones y los secretos cada vez que cambie el equipo o la infraestructura, y automatizar lo posible: Dependabot para actualizar versiones, análisis de código para detectar patrones de inyección y Scorecards para medir la postura general.</p>
+
+<h2>Conclusión</h2>
+
+<p>La seguridad de un pipeline de GitHub Actions no se resuelve con una única configuración, sino con una disciplina coherente: dar a cada pieza solo los permisos que necesita, no mezclar nunca datos de terceros con código ejecutable, no ejecutar código ajeno en contextos con privilegios y no depender de referencias móviles para el código que se ejecuta en tu nombre. Cada una de esas reglas tiene detrás un tipo concreto de ataque documentado: la inyección de scripts, la pwn request, el compromiso de una acción popular como el de <code>tj-actions/changed-files</code>.</p>
+
+<p>La buena noticia es que los controles son baratos comparados con el daño que evitan. Declarar <code>permissions</code>, pasar los valores externos por variables de entorno, fijar las acciones por SHA y reemplazar los secretos de larga vida por OIDC son cambios pequeños en el archivo YAML que reducen de forma radical la superficie de ataque. Y la plataforma avanza en la dirección correcta, con políticas que obligan al fijado y con lockfiles que, cuando maduren, harán verificable lo que hoy se resuelve con disciplina.</p>
+
+<p>Te sugerimos empezar por tus propios workflows con la lista de verificación de este artículo: bastan una hora y un editor de texto para encontrar las primeras mejoras. Si despliegas en la nube, completa el trabajo con una identidad federada y revisa los caminos por los que un secreto podría llegar a un registro. Y si quieres ver cómo se mueven los datos dentro de un flujo antes de endurecerlo, el artículo sobre la <a href="/articulos/github-actions-cache.html">caché de GitHub Actions</a> explica cómo se construyen y se reutilizan sus claves.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>GitHub Docs. «Secure use reference». <a href="https://docs.github.com/en/actions/reference/security/secure-use" rel="noopener">https://docs.github.com/en/actions/reference/security/secure-use</a> (consultado el 27-10-2026).</li>
+  <li>GitHub Docs. «GITHUB_TOKEN» (concepto). <a href="https://docs.github.com/en/actions/concepts/security/github_token" rel="noopener">https://docs.github.com/en/actions/concepts/security/github_token</a> (consultado el 27-10-2026).</li>
+  <li>GitHub Docs. «Workflow syntax for GitHub Actions» (sección permissions). <a href="https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax" rel="noopener">https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax</a> (consultado el 27-10-2026; se leyeron los primeros 100.000 caracteres).</li>
+  <li>GitHub Docs. «OpenID Connect» (concepto). <a href="https://docs.github.com/en/actions/concepts/security/openid-connect" rel="noopener">https://docs.github.com/en/actions/concepts/security/openid-connect</a> (consultado el 27-10-2026).</li>
+  <li>GitHub Docs. «Workflow dependency lockfiles». <a href="https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles" rel="noopener">https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles</a> (consultado el 27-10-2026; función en vista previa pública).</li>
+  <li>GitHub Changelog. «GitHub Actions policy now supports blocking and SHA pinning actions», 15-08-2025. <a href="https://github.blog/changelog/2025-08-15-github-actions-policy-now-supports-blocking-and-sha-pinning-actions/" rel="noopener">https://github.blog/changelog/2025-08-15-github-actions-policy-now-supports-blocking-and-sha-pinning-actions/</a> (consultado el 27-10-2026).</li>
+  <li>Microsoft Learn. «Authenticate to Azure from GitHub Actions by OpenID Connect». <a href="https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect" rel="noopener">https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect</a> (consultado el 27-10-2026).</li>
+  <li>CISA. «Supply Chain Compromise of Third-Party GitHub Action, CVE-2025-30066, and reviewdog/action-setup, CVE-2025-30154». Alerta del 18-03-2025, revisada el 26-03-2025. <a href="https://www.cisa.gov/news-events/alerts/2025/03/18/supply-chain-compromise-third-party-tj-actionschanged-files-cve-2025-30066-and-reviewdogaction" rel="noopener">https://www.cisa.gov/news-events/alerts/2025/03/18/supply-chain-compromise-third-party-tj-actionschanged-files-cve-2025-30066-and-reviewdogaction</a> (consultado el 27-10-2026).</li>
+  <li>GitHub Security Lab. «Keeping your GitHub Actions and workflows secure: Preventing pwn requests». <a href="https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/" rel="noopener">https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/</a> (consultado el 27-10-2026).</li>
+  <li>API de GitHub: commits de las etiquetas <code>actions/checkout@v7.0.1</code>, <code>Azure/static-web-apps-deploy@v1</code> y <code>actions/cache@v6.1.0</code>, consultados el 27-10-2026 en <a href="https://api.github.com/repos/actions/checkout/commits/v7.0.1" rel="noopener">api.github.com</a>.</li>
+</ol>
+</section>

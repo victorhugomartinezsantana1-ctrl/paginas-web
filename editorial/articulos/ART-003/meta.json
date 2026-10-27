@@ -1,0 +1,22 @@
+{
+  "id": "ART-003",
+  "slug": "postgresql-mvcc-vacuum-planificador",
+  "titulo": "PostgreSQL por dentro: MVCC, VACUUM y el planificador de consultas",
+  "etiqueta": "postgresql",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo PostgreSQL lee y escribe a la vez sin bloqueos (MVCC), por qué necesita VACUUM, qué es el wraparound de transacciones y cómo el planificador elige un plan.",
+  "palabra_clave": "postgresql mvcc vacuum",
+  "secundarias": [
+    "niveles de aislamiento",
+    "autovacuum",
+    "EXPLAIN ANALYZE",
+    "estadísticas del planificador",
+    "wraparound"
+  ],
+  "relacionados": [
+    "terraform-infraestructura-codigo",
+    "git-por-dentro-objetos-referencias-packfiles",
+    "contenedores-linux-namespaces-cgroups-seccomp"
+  ],
+  "barra": "azul"
+}

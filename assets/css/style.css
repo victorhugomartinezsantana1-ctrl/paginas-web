@@ -123,6 +123,16 @@ body {
 .alert > :first-child, .alert-success > :first-child, .alert-danger > :first-child { margin-top: 0; }
 .alert > :last-child, .alert-success > :last-child, .alert-danger > :last-child { margin-bottom: 0; }
 
+/* ---------- Texto largo en móvil ---------- */
+.prose { overflow-wrap: anywhere; }   /* las URL largas de las referencias se parten */
+.tabla-scroll {
+  margin: 1.5rem 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.tabla-scroll table { margin: 0; min-width: 34rem; }
+.tabla-scroll th, .tabla-scroll td { overflow-wrap: normal; }
+
 /* Código en línea dentro del texto */
 .prose :where(code):not(:where(pre code)) {
   padding: 0.12rem 0.38rem;

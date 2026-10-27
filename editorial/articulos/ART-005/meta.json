@@ -1,0 +1,22 @@
+{
+  "id": "ART-005",
+  "slug": "github-actions-seguridad-permisos-oidc-cadena-suministro",
+  "titulo": "Seguridad en GitHub Actions: permisos mínimos, OIDC y cadena de suministro",
+  "etiqueta": "seguridad",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo proteger un pipeline de GitHub Actions: permisos mínimos, inyección de scripts, pull_request_target, acciones fijadas por SHA, OIDC con Azure y el caso tj-actions.",
+  "palabra_clave": "seguridad github actions",
+  "secundarias": [
+    "GITHUB_TOKEN",
+    "OIDC",
+    "pull_request_target",
+    "fijar acciones por SHA",
+    "cadena de suministro"
+  ],
+  "relacionados": [
+    "github-actions-cache",
+    "azure-static-web-apps",
+    "terraform-infraestructura-codigo"
+  ],
+  "barra": "naranja"
+}

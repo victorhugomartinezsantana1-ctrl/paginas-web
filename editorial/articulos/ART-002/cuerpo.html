@@ -1,0 +1,499 @@
+<p>Cuando alguien explica qué es un contenedor suele recurrir a una analogía con las máquinas virtuales: una caja ligera que contiene una aplicación y sus dependencias. La analogía es cómoda, pero esconde lo más interesante, y en algunos puntos induce a error. Un contenedor de Linux no es un objeto que el kernel conozca. No existe una llamada al sistema <code>crear_contenedor()</code>. Lo que llamamos contenedor es un proceso corriente (o un grupo de procesos) al que se han aplicado, antes de ejecutarlo, varias restricciones independientes: una vista aislada de los recursos del sistema, un límite de consumo, una lista reducida de privilegios y un filtro de llamadas al sistema.</p>
+
+<p>Esa composición explica muchas cosas que a primera vista resultan desconcertantes. Explica por qué un contenedor arranca en milisegundos (no hay un sistema operativo que iniciar), por qué todos los contenedores de un servidor comparten la misma versión de kernel, por qué un fallo del kernel puede afectar a todos a la vez y por qué la seguridad de un contenedor depende tanto de cómo se configuró y no solo de que "sea un contenedor". También explica por qué herramientas distintas, como Docker, Podman o Kubernetes, pueden ejecutar exactamente la misma imagen: por debajo todas usan las mismas primitivas del kernel.</p>
+
+<p>En este artículo recorremos esas primitivas una a una: los <em>namespaces</em> que aíslan lo que un proceso puede ver, los <em>cgroups</em> que limitan lo que puede consumir, las <em>capabilities</em> que reparten los privilegios del superusuario y <em>seccomp</em>, que filtra las llamadas al sistema permitidas. Nos apoyamos en las páginas del manual de Linux, en la documentación del kernel, en la especificación de tiempo de ejecución de la Open Container Initiative y en la documentación de Docker y Kubernetes. Una advertencia sobre el método: en el equipo con el que se preparó este texto no había un kernel Linux disponible para ejecutar los experimentos, de modo que los comandos que verás son instrucciones basadas en la documentación y no capturas de pantalla; te indicamos en cada caso qué deberías observar y de dónde procede esa información. Si te interesa el lado de las imágenes y su construcción, puedes complementar la lectura con nuestro artículo sobre <a href="/articulos/docker-multi-stage.html">Docker multi-stage y distroless</a>, y para la orquestación, con el de <a href="/articulos/kubernetes-arquitectura-interna.html">Kubernetes bajo el capó</a>.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Un contenedor es un proceso de Linux con namespaces, cgroups, capabilities y un filtro seccomp aplicados; el kernel no tiene un objeto "contenedor".</li>
+    <li>Existen ocho tipos de namespace (cgroup, IPC, red, montajes, PID, tiempo, usuario y UTS), cada uno con su propia bandera <code>CLONE_NEW*</code>.</li>
+    <li>cgroup v2 organiza los procesos en una única jerarquía y limita recursos con archivos como <code>memory.max</code>, <code>cpu.max</code> o <code>pids.max</code>; en Kubernetes, cgroup v1 está obsoleto desde la versión 1.35.</li>
+    <li>El superusuario se divide en capabilities; Docker conserva por defecto un subconjunto reducido (14 según su documentación) y <code>--privileged</code> las concede todas.</li>
+    <li>El perfil seccomp por defecto de Docker es una lista blanca que bloquea alrededor de 44 llamadas al sistema de más de 300.</li>
+    <li>Compartir el kernel significa que el aislamiento de un contenedor es más débil que el de una máquina virtual: conviene aplicar varias capas de defensa.</li>
+  </ul>
+</div>
+
+<h2>Qué es (y qué no es) un contenedor</h2>
+
+<p>Para entender el concepto con precisión conviene separar tres cosas que se mezclan en el lenguaje cotidiano: la <strong>imagen</strong>, el <strong>contenedor</strong> y el <strong>tiempo de ejecución</strong>. La imagen es un conjunto de archivos (el sistema de archivos raíz de la aplicación) más metadatos. El contenedor es el proceso en ejecución creado a partir de esa imagen. El tiempo de ejecución (<em>runtime</em>) es el programa que se encarga de preparar el entorno del proceso y lanzarlo.</p>
+
+<p>Ese último actor es el menos visible y el más importante para este artículo. La Open Container Initiative (OCI) define una especificación de runtime que describe, en un archivo de configuración, todo lo que el runtime debe preparar antes de ejecutar el proceso. La sección específica de Linux de esa especificación es una lista de ingredientes que coincide casi exactamente con la estructura de este artículo. Según el documento <code>config-linux.md</code> de la especificación, la configuración puede indicar:</p>
+
+<ul>
+  <li><strong>namespaces</strong>: una lista de entradas, cada una con un <code>type</code> (<code>pid</code>, <code>network</code>, <code>mount</code>, <code>ipc</code>, <code>uts</code>, <code>user</code>, <code>cgroup</code> o <code>time</code>) y, opcionalmente, una <code>path</code> hacia un namespace existente al que unirse. Si se omite la ruta, el runtime crea uno nuevo; los tipos no listados se heredan del runtime.</li>
+  <li><strong>uidMappings</strong> y <strong>gidMappings</strong>: entradas con <code>containerID</code>, <code>hostID</code> y <code>size</code> para traducir identificadores de usuario y grupo.</li>
+  <li><strong>cgroupsPath</strong> y <strong>resources</strong>: dónde colocar el proceso en la jerarquía de cgroups y qué límites aplicar a memoria, CPU, número de procesos y entrada/salida de bloques.</li>
+  <li><strong>seccomp</strong>: acción por defecto (obligatoria), arquitecturas y una lista de llamadas al sistema con su acción.</li>
+  <li><strong>maskedPaths</strong> y <strong>readonlyPaths</strong>: rutas del contenedor que se ocultan o se hacen de solo lectura (por ejemplo, partes de <code>/proc</code>).</li>
+  <li><strong>rootfsPropagation</strong> y <strong>sysctl</strong>: propagación de montajes y parámetros del kernel que se aplican al arrancar.</li>
+</ul>
+
+<p>Dicho de otro modo, "ejecutar un contenedor" significa que un programa lee esa configuración y, con llamadas al sistema corrientes, construye alrededor de un proceso el entorno que describe. Herramientas como Docker o Kubernetes no inventan el aislamiento: generan configuraciones de este tipo y delegan en un runtime compatible. En las secciones siguientes veremos cada una de las piezas.</p>
+
+<div class="alert">
+  <strong>Contenedores y máquinas virtuales.</strong> Una máquina virtual incluye su propio kernel y, por tanto, su propio conjunto de controladores, tablas de procesos y sistema de ficheros. Un contenedor comparte el kernel del anfitrión. Ese compartir es la fuente de su ligereza y también de su principal limitación de seguridad: una vulnerabilidad en el kernel es una vulnerabilidad en todos los contenedores del equipo.
+</div>
+
+<h2>Namespaces: lo que un proceso puede ver</h2>
+
+<p>Un <em>namespace</em> envuelve un recurso global del sistema en una abstracción que hace que los procesos dentro del namespace crean disponer de su propia instancia aislada de ese recurso. Los cambios que hace un proceso sobre el recurso son visibles para los demás miembros del mismo namespace, pero invisibles para el resto del sistema. La página <code>namespaces(7)</code> del manual de Linux enumera ocho tipos, cada uno con una bandera que se pasa a <code>clone(2)</code> o <code>unshare(2)</code> para crearlo:</p>
+
+<table>
+  <thead>
+    <tr><th>Tipo</th><th>Bandera</th><th>Qué aísla</th><th>Kernel (según el manual)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Mount</td><td><code>CLONE_NEWNS</code></td><td>Puntos de montaje</td><td>3.8</td></tr>
+    <tr><td>PID</td><td><code>CLONE_NEWPID</code></td><td>Identificadores de proceso</td><td>3.8</td></tr>
+    <tr><td>Network</td><td><code>CLONE_NEWNET</code></td><td>Dispositivos de red, pilas de protocolos, puertos</td><td>3.0</td></tr>
+    <tr><td>IPC</td><td><code>CLONE_NEWIPC</code></td><td>IPC System V y colas de mensajes POSIX</td><td>3.0</td></tr>
+    <tr><td>UTS</td><td><code>CLONE_NEWUTS</code></td><td>Nombre de host y nombre de dominio NIS</td><td>3.0</td></tr>
+    <tr><td>User</td><td><code>CLONE_NEWUSER</code></td><td>Identificadores de usuario y grupo</td><td>3.8</td></tr>
+    <tr><td>Cgroup</td><td><code>CLONE_NEWCGROUP</code></td><td>Directorio raíz de cgroups</td><td>4.6</td></tr>
+    <tr><td>Time</td><td><code>CLONE_NEWTIME</code></td><td>Relojes de arranque y monótono</td><td>5.6</td></tr>
+  </tbody>
+</table>
+
+<p>Las versiones de kernel de la última columna proceden de la sección del manual dedicada a los archivos de <code>/proc/[pid]/ns</code>, que es donde la página las indica. Una curiosidad histórica, que no procede de las fuentes citadas sino del conocimiento general sobre el kernel: el namespace de montajes se llama <code>CLONE_NEWNS</code> ("new namespace") a secas porque fue el primero en existir, cuando aún no se preveía que habría más tipos.</p>
+
+<h3>Cómo observar los namespaces de un proceso</h3>
+
+<p>Cada proceso expone sus namespaces en el directorio <code>/proc/[pid]/ns</code>. Son enlaces simbólicos cuyo destino contiene el tipo y un número de nodo-i, algo como <code>uts:[4026531838]</code> según el formato descrito en el manual. Dos procesos pertenecen al mismo namespace si esos enlaces tienen el mismo número de dispositivo e inodo. Esa propiedad convierte una comparación visual en una prueba rigurosa de aislamiento: si el número cambia, el proceso está en otro namespace.</p>
+
+<pre data-lang="bash"><code># Namespaces del shell actual
+ls -l /proc/$$/ns
+
+# Comparar con los de un proceso dentro de un contenedor
+# (sustituye 12345 por el PID del proceso del contenedor visto desde el anfitrión)
+sudo ls -l /proc/12345/ns
+
+# Listar todos los namespaces del sistema (paquete util-linux)
+lsns</code></pre>
+
+<p>El manual precisa que para leer o seguir esos enlaces se necesita superar una comprobación de acceso <code>PTRACE_MODE_READ_FSCREDS</code>, lo que en la práctica significa que necesitarás privilegios para inspeccionar procesos de otros usuarios.</p>
+
+<h3>Las cuatro llamadas al sistema</h3>
+
+<p>El manual agrupa la API de namespaces en cuatro llamadas:</p>
+
+<ul>
+  <li><strong><code>clone(2)</code></strong> crea un proceso nuevo. Si se le pasan banderas <code>CLONE_NEW*</code>, crea los namespaces correspondientes y coloca al hijo en ellos.</li>
+  <li><strong><code>unshare(2)</code></strong> mueve al proceso que la invoca a namespaces nuevos, con las mismas banderas. Es lo que usa el comando <code>unshare</code> que veremos enseguida.</li>
+  <li><strong><code>setns(2)</code></strong> hace que el proceso se una a un namespace ya existente, indicado mediante un descriptor de archivo abierto sobre un archivo de <code>/proc/[pid]/ns</code>. Es el principio de <code>docker exec</code>: entrar con un proceso nuevo en los namespaces de un contenedor en marcha.</li>
+  <li><strong><code>ioctl_nsfs(2)</code></strong> ofrece operaciones para descubrir información sobre namespaces, por ejemplo la jerarquía entre ellos.</li>
+</ul>
+
+<p>Crear la mayoría de los namespaces exige la capacidad <code>CAP_SYS_ADMIN</code>; la excepción son los namespaces de usuario, que desde la versión 3.8 del kernel pueden crearse sin privilegios. Esa excepción es crucial para los contenedores "sin root" (<em>rootless</em>) y la trataremos en su propia sección.</p>
+
+<h3>Ciclo de vida y límites</h3>
+
+<p>Un namespace existe mientras tenga algún miembro. Según el manual, se destruye cuando termina o lo abandona su último proceso, salvo que algo más lo mantenga vivo. La lista de cosas que lo "fijan" es una buena guía de cómo funcionan las herramientas de inspección: un descriptor de archivo abierto o un <em>bind mount</em> sobre el archivo de <code>/proc/[pid]/ns</code> (así es como <code>ip netns</code> conserva redes con nombre sin procesos dentro), un namespace jerárquico (PID o usuario) que tenga hijos, un namespace de usuario que sea propietario de otros namespaces, o un montaje de <code>proc</code> o de colas de mensajes que lo referencie.</p>
+
+<p>El kernel también limita cuántos namespaces puede crear un usuario. Desde la versión 4.9 existen los archivos <code>/proc/sys/user/max_cgroup_namespaces</code>, <code>max_ipc_namespaces</code>, <code>max_mnt_namespaces</code>, <code>max_net_namespaces</code>, <code>max_pid_namespaces</code>, <code>max_user_namespaces</code> y <code>max_uts_namespaces</code> (más <code>max_time_namespaces</code>, desde la 5.7). Son límites por usuario dentro del namespace de usuario donde se abre el archivo; se aplican incluso al UID 0 y solo los procesos privilegiados pueden modificarlos. Superarlos hace que <code>clone</code> o <code>unshare</code> fallen con el error <code>ENOSPC</code>. El valor por defecto en el namespace de usuario inicial es la mitad de <code>/proc/sys/kernel/threads-max</code>, y en los descendientes, el máximo entero. Un detalle de diseño inteligente: la creación de un namespace se contabiliza al usuario creador en cada namespace de usuario ancestro, por lo que crear un namespace de usuario nuevo no sirve para esquivar los límites del padre.</p>
+
+<h2>Un contenedor mínimo con unshare</h2>
+
+<p>El comando <code>unshare</code>, del paquete <code>util-linux</code>, es una envoltura de la llamada del mismo nombre y permite crear contenedores rudimentarios sin ningún runtime. Con él podemos comprobar los efectos de cada namespace de forma aislada. Los siguientes ejemplos requieren un sistema Linux y privilegios de administrador salvo donde se indique.</p>
+
+<h3>Namespace de nombre de host (UTS)</h3>
+
+<pre data-lang="bash"><code>sudo unshare --uts bash
+hostname demo-contenedor
+hostname
+# Dentro del namespace debería mostrar demo-contenedor.
+exit
+hostname
+# Fuera, el nombre del anfitrión no ha cambiado.</code></pre>
+
+<p>Es el aislamiento más simple de observar: el cambio de nombre solo es visible dentro del namespace UTS creado.</p>
+
+<h3>Namespace de procesos (PID)</h3>
+
+<pre data-lang="bash"><code>sudo unshare --pid --fork --mount-proc bash
+ps aux
+# Solo deberías ver bash y ps: el shell figura como PID 1.
+echo $$
+exit</code></pre>
+
+<p>Aquí intervienen tres opciones. <code>--pid</code> crea el namespace de PID; <code>--fork</code> es necesario porque el proceso que llama a <code>unshare</code> no entra en el nuevo namespace de PID, sino sus hijos; y <code>--mount-proc</code> monta una instancia nueva de <code>/proc</code> (en un namespace de montajes propio) para que herramientas como <code>ps</code> muestren los procesos del namespace y no los del anfitrión. El proceso que lanzas se convierte en el PID 1 del nuevo namespace, y esto tiene una consecuencia práctica importante que veremos más adelante.</p>
+
+<h3>Namespace de red</h3>
+
+<pre data-lang="bash"><code>sudo unshare --net bash
+ip link
+# Debería listar solo la interfaz de loopback (lo), sin conexión externa.
+exit</code></pre>
+
+<p>Un namespace de red nuevo nace casi vacío: tiene su propia pila de protocolos, su tabla de rutas y sus puertos, pero ninguna interfaz útil. Para darle conectividad, los runtimes suelen crear un par de interfaces virtuales Ethernet (<code>veth</code>), dejar un extremo en el namespace del contenedor y conectar el otro a un puente (<em>bridge</em>) en el anfitrión. Es una práctica general de las redes de contenedores, no un detalle de las fuentes que citamos aquí. Es también el motivo por el que en Kubernetes los contenedores de un mismo <em>pod</em> comparten dirección IP: se ejecutan en el mismo namespace de red.</p>
+
+<h3>Namespace de usuario sin privilegios</h3>
+
+<pre data-lang="bash"><code>unshare --user --map-root-user bash
+id
+# Debería mostrar uid=0(root) dentro del namespace.
+cat /proc/self/uid_map
+# Una línea con tres números: 0, tu UID real y 1.
+exit</code></pre>
+
+<p>Este experimento no necesita <code>sudo</code>, y es el más ilustrativo de todos. Dentro del namespace pareces ser root, pero solo lo eres en el sentido de la tabla de traducción de identificadores: esa tabla asigna el UID 0 de dentro a tu usuario normal de fuera. Cualquier archivo que crees pertenecerá a tu usuario real en el anfitrión. Lo veremos en detalle en la sección siguiente.</p>
+
+<h2>Namespaces de usuario: ser root sin serlo</h2>
+
+<p>El namespace de usuario es la pieza que hace posible los contenedores sin root, y la que más implicaciones de seguridad tiene. Aísla identificadores de usuario y de grupo, y mantiene una tabla de traducción con el namespace padre. La página <code>user_namespaces(7)</code> describe el formato de esa tabla con precisión: los archivos <code>/proc/[pid]/uid_map</code> y <code>gid_map</code> contienen una línea por cada rango asignado, con tres números separados por espacios: el primer identificador dentro del namespace, el primer identificador al que corresponde fuera (en el namespace padre) y el tamaño del rango.</p>
+
+<p>Una línea como <code>0 1000 1</code> significa: el UID 0 dentro corresponde al UID 1000 fuera, y el rango tiene longitud 1. Con una línea <code>0 100000 65536</code>, los 65.536 identificadores internos del 0 al 65535 se corresponden con los externos del 100000 al 165535, que es el tipo de asignación que usan los runtimes para dar a un contenedor un conjunto completo de usuarios que no existen realmente en el anfitrión.</p>
+
+<h3>Reglas de escritura de los mapas</h3>
+
+<p>El manual establece restricciones estrictas sobre cómo y cuándo se escriben esos mapas, y todas tienen una razón de seguridad:</p>
+
+<ul>
+  <li>El archivo está vacío al crear el namespace y solo se puede escribir <em>una vez</em>, desde su inicio. Un segundo intento falla con <code>EPERM</code>.</li>
+  <li>Cada mapa necesita al menos una línea, rangos de tamaño mayor que cero y sin solapamientos. Desde la versión 4.16 se admiten hasta 340 líneas.</li>
+  <li>Quien escribe el mapa necesita la capacidad <code>CAP_SETUID</code> (o <code>CAP_SETGID</code> para los grupos) en el namespace de destino, y los identificadores asignados deben existir en el padre.</li>
+  <li>Un proceso sin privilegios solo puede escribir una línea que mapee su propio identificador efectivo. Por eso <code>--map-root-user</code> funciona sin <code>sudo</code>: mapea tu UID real al UID 0 interno y nada más.</li>
+  <li>Desde Linux 5.12, mapear el UID 0 al padre exige además <code>CAP_SETFCAP</code>, según el manual.</li>
+</ul>
+
+<h3>Poderes completos, pero solo sobre lo propio</h3>
+
+<p>Un proceso que crea un namespace de usuario (o se une a uno) obtiene un conjunto completo de capacidades <em>dentro</em> de ese namespace, y ninguna en el namespace padre aunque fuera root allí. Las capacidades se evalúan por namespace, y una capacidad poseída en un namespace de usuario se extiende a sus namespaces hijos. La limitación decisiva es que esas capacidades solo gobiernan recursos que pertenecen al namespace: operaciones sobre recursos globales, como cambiar la hora del sistema, cargar módulos del kernel o crear dispositivos, siguen exigiendo privilegios en el namespace de usuario inicial. El manual lo concreta con los sistemas de archivos: montar sistemas basados en bloques requiere <code>CAP_SYS_ADMIN</code> en el namespace inicial, mientras que otros, como <code>proc</code>, <code>sysfs</code>, <code>tmpfs</code> u <code>overlayfs</code>, pueden montarse con <code>CAP_SYS_ADMIN</code> en el namespace de usuario propietario.</p>
+
+<p>Otros detalles de seguridad documentados: los identificadores sin traducción aparecen como el identificador de desbordamiento (65534 por defecto); si el propietario de un archivo con el bit setuid no está mapeado, el bit se ignora; y el UID -1 se deja deliberadamente sin mapear para que no pueda confundirse con un identificador válido en interfaces como <code>setreuid(2)</code>. También existe el archivo <code>/proc/[pid]/setgroups</code>, que desde Linux 3.19 permite desactivar la llamada <code>setgroups(2)</code> en el namespace; hay que escribir <code>deny</code> en él antes de poder escribir <code>gid_map</code> sin privilegios, una medida para impedir que un usuario sin privilegios se quite a sí mismo grupos para ganar acceso a archivos que los excluyen.</p>
+
+<div class="alert alert-danger">
+  <strong>Doble filo.</strong> Los namespaces de usuario sin privilegios reducen el riesgo de ejecutar contenedores, pero también aumentan la superficie de ataque del kernel, porque permiten a cualquier usuario acceder a funciones que antes requerían root (por ejemplo, crear namespaces de red o montar ciertos sistemas de archivos). Algunas distribuciones restringen su creación mediante <code>max_user_namespaces</code> u otros mecanismos. Si administras un servidor compartido, valora esa política con criterio, no por inercia.
+</div>
+
+<h2>El proceso PID 1</h2>
+
+<p>En un namespace de PID nuevo, el primer proceso recibe el identificador 1 y, a ojos del namespace, es el <em>init</em> del sistema. Esto tiene dos consecuencias bien conocidas en el mundo de los contenedores. La primera es que el kernel trata al PID 1 de forma especial respecto de las señales: si el proceso no instala un manejador para una señal, la señal no tiene el efecto por defecto que tendría sobre un proceso normal, lo que explica por qué algunas aplicaciones no responden a <code>SIGTERM</code> al ejecutarse como PID 1 sin estar preparadas para ello. La segunda es que los procesos huérfanos dentro del namespace se reasignan al PID 1, que debe recolectar su estado de salida; si no lo hace, acumulan procesos zombi. Este comportamiento procede de la semántica general de <code>pid_namespaces(7)</code>, página que no hemos consultado directamente para este artículo; trátalo como conocimiento general y confirma los detalles en el manual de tu sistema.</p>
+
+<p>En la práctica, Docker ofrece la opción <code>--init</code>, que lanza un proceso <em>init</em> mínimo como PID 1 para que se ocupe de reenviar señales y recoger zombis, y Kubernetes dispone de mecanismos equivalentes mediante procesos compartidos del pod. Si tu contenedor ejecuta varios procesos o lanza hijos de forma habitual, un init mínimo evita problemas sutiles.</p>
+
+<h2>Namespaces de montaje y sistema de archivos raíz</h2>
+
+<p>El namespace de montajes aísla la lista de puntos de montaje que ve un proceso. Es la pieza que permite que un contenedor tenga su propio sistema de archivos raíz sin afectar al del anfitrión. El procedimiento general consiste en preparar un directorio con el contenido de la imagen, crear un namespace de montajes nuevo y cambiar la raíz del proceso a ese directorio. La especificación OCI contempla el detalle de cómo se propagan los montajes entre namespaces mediante el campo <code>rootfsPropagation</code>, que acepta los valores <code>shared</code>, <code>slave</code>, <code>private</code> o <code>unbindable</code>.</p>
+
+<p>Las imágenes de contenedor se componen de capas de solo lectura, y los runtimes más habituales las apilan con un sistema de archivos de unión como <code>overlayfs</code>, añadiendo encima una capa de escritura efímera. Es una práctica general del ecosistema y no una afirmación basada en las páginas man que citamos. Encaja con la idea de que cada instrucción de un Dockerfile que modifica el sistema de archivos añade una capa, razón por la que, como explicamos en el artículo sobre <a href="/articulos/docker-multi-stage.html">multi-stage</a>, borrar archivos en una capa posterior no reduce el tamaño de la imagen.</p>
+
+<p>Junto al sistema de archivos raíz, la especificación OCI incluye <code>maskedPaths</code> y <code>readonlyPaths</code>. Son listas de rutas absolutas dentro del contenedor: las primeras se ocultan para que no puedan leerse y las segundas se montan en solo lectura. Su finalidad es proteger interfaces del kernel expuestas a través de <code>/proc</code> y <code>/sys</code> que no deberían ser manipuladas desde el interior de un contenedor.</p>
+
+<h2>cgroups v2: lo que un proceso puede consumir</h2>
+
+<p>Los namespaces limitan lo que un proceso ve; los grupos de control (<em>control groups</em>, o cgroups) limitan lo que puede consumir y miden lo que consume. La documentación oficial del kernel describe cgroup v2 como una jerarquía <strong>unificada</strong>: a diferencia de v1, donde cada controlador (CPU, memoria, E/S…) tenía su propia jerarquía independiente, en v2 existe un único árbol de grupos en el que se habilitan los controladores que se necesiten. Se monta con <code>mount -t cgroup2 none $PUNTO_DE_MONTAJE</code>, y las distribuciones modernas lo hacen por defecto en <code>/sys/fs/cgroup</code>.</p>
+
+<h3>Cómo se organiza la jerarquía</h3>
+
+<p>Cada directorio dentro de <code>/sys/fs/cgroup</code> es un grupo, y crear un subdirectorio crea un subgrupo. Los procesos se asignan a un grupo escribiendo su PID en el archivo <code>cgroup.procs</code> de ese directorio. Para que un grupo pueda repartir un recurso entre sus hijos, el controlador correspondiente debe estar habilitado en el grupo padre mediante el archivo <code>cgroup.subtree_control</code>. Según la documentación del kernel:</p>
+
+<ul>
+  <li>Los controladores disponibles se listan en <code>cgroup.controllers</code>, y ninguno está habilitado por defecto.</li>
+  <li>Se habilitan o deshabilitan escribiendo en <code>cgroup.subtree_control</code> con la sintaxis <code>+cpu +memory -io</code>. Una escritura con varias operaciones tiene éxito completo o fracasa completa. Si un mismo controlador aparece dos veces, vale la última entrada.</li>
+  <li>Un controlador solo puede habilitarse si el padre lo tiene habilitado, y no puede deshabilitarse mientras algún hijo lo use.</li>
+  <li>Rige la regla del "<em>no internal process</em>": un grupo no raíz solo puede distribuir recursos a sus hijos con controladores de dominio si no contiene procesos propios. El grupo raíz está exento.</li>
+</ul>
+
+<p>Esa última regla, fácil de pasar por alto, es la causa de un error muy frecuente al experimentar a mano: si intentas habilitar un controlador en un grupo que ya contiene procesos, la escritura es rechazada. La solución es que los procesos vivan en las hojas del árbol y los nodos intermedios sirvan solo para repartir recursos.</p>
+
+<h3>Memoria: cuatro palancas distintas</h3>
+
+<p>El controlador de memoria ofrece varios archivos cuya diferencia es esencial y que a menudo se confunden:</p>
+
+<table>
+  <thead>
+    <tr><th>Archivo</th><th>Valor por defecto</th><th>Qué hace</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>memory.max</code></td><td><code>max</code></td><td>Límite duro. Si el uso lo alcanza y no puede reducirse, se invoca al OOM killer dentro del grupo.</td></tr>
+    <tr><td><code>memory.high</code></td><td><code>max</code></td><td>Límite de ralentización. Al superarlo, los procesos se frenan y sufren una fuerte presión de recuperación de memoria, pero nunca se invoca al OOM killer.</td></tr>
+    <tr><td><code>memory.min</code></td><td><code>0</code></td><td>Protección dura. La memoria por debajo de este umbral no se recupera bajo ninguna circunstancia; si no queda memoria desprotegida recuperable, se invoca al OOM killer.</td></tr>
+    <tr><td><code>memory.low</code></td><td><code>0</code></td><td>Protección de mejor esfuerzo. La memoria por debajo del umbral solo se recupera si no hay memoria recuperable en grupos desprotegidos.</td></tr>
+  </tbody>
+</table>
+
+<p>Además existen <code>memory.current</code> (uso actual del grupo y sus descendientes), <code>memory.events</code> (contadores de eventos <code>low</code>, <code>high</code>, <code>max</code>, <code>oom</code>, <code>oom_kill</code>, <code>oom_group_kill</code> y <code>sock_throttled</code>) y <code>memory.oom.group</code>. Este último, si vale 1, hace que el OOM killer elimine <em>todos</em> los procesos del grupo en bloque o ninguno, en lugar de escoger uno; los procesos con <code>oom_score_adj</code> igual a -1000 nunca se eliminan.</p>
+
+<p>La distinción entre <code>memory.high</code> y <code>memory.max</code> es una de las ideas más útiles de cgroup v2. Con <code>memory.max</code> la aplicación muere cuando excede el límite; con <code>memory.high</code> no muere, pero se vuelve lenta. Una configuración prudente puede combinar ambos: un <code>memory.high</code> algo inferior que sirva de aviso y amortigüe los picos, y un <code>memory.max</code> como techo absoluto.</p>
+
+<h3>CPU: tope y reparto proporcional</h3>
+
+<p>El controlador de CPU ofrece dos mecanismos conceptualmente distintos. <code>cpu.max</code> (por defecto <code>max 100000</code>) fija un <em>techo</em> en el formato <code>$MAX $PERIOD</code>, ambos en microsegundos: el grupo puede consumir hasta <code>$MAX</code> microsegundos de CPU en cada periodo de <code>$PERIOD</code>. Así, <code>50000 100000</code> significa medio núcleo, y <code>200000 100000</code>, dos núcleos. Con <code>max</code> no hay límite. Escribir un solo número solo cambia <code>$MAX</code>.</p>
+
+<p><code>cpu.weight</code> (por defecto 100, con rango de 1 a 10000) es un reparto <em>proporcional</em>: define la cuota de CPU relativa a los grupos hermanos activos cuando hay competencia. No limita nada si la máquina está libre. El archivo <code>cpu.stat</code> informa siempre de <code>usage_usec</code>, <code>user_usec</code> y <code>system_usec</code> y, con el controlador activo, también de <code>nr_periods</code>, <code>nr_throttled</code> y <code>throttled_usec</code>: esas tres cifras son la mejor herramienta para diagnosticar si un contenedor está siendo frenado por su límite de CPU.</p>
+
+<h3>Procesos, E/S y presión</h3>
+
+<p><code>pids.max</code> (por defecto <code>max</code>) impone un límite duro al número de procesos del grupo, contados como identificadores de hilo; si una llamada <code>fork()</code> o <code>clone()</code> excediera el límite, devuelve el error <code>EAGAIN</code>. Es la defensa más simple contra una "bomba de procesos". <code>io.max</code> limita el ancho de banda y las operaciones por segundo de cada dispositivo de bloques mediante las claves <code>rbps</code>, <code>wbps</code>, <code>riops</code> y <code>wiops</code>.</p>
+
+<p>Finalmente, cgroup v2 integra la información de presión (<em>Pressure Stall Information</em>, PSI) a través de archivos como <code>cpu.pressure</code>, <code>memory.pressure</code> y <code>io.pressure</code>. Miden el tiempo que los procesos pasan detenidos esperando un recurso, lo que permite detectar la saturación antes de que cause un fallo. Se puede desactivar el cálculo para un grupo escribiendo 0 en <code>cgroup.pressure</code>.</p>
+
+<h3>Un experimento con cgroups</h3>
+
+<p>Con privilegios de administrador, un sistema con cgroup v2 y los controladores habilitados en el grupo padre, se puede crear un grupo limitado a mano. Hay una advertencia: en sistemas que usan <code>systemd</code>, este es el propietario del árbol de cgroups y lo recomendable es crear los límites a través de él; el ejemplo manual sirve para entender el mecanismo, no como práctica de producción.</p>
+
+<pre data-lang="bash"><code># Comprobar que el sistema usa cgroup v2 (debería escribir cgroup2fs)
+stat -fc %T /sys/fs/cgroup/
+
+# Crear un grupo y limitar memoria y CPU
+sudo mkdir /sys/fs/cgroup/demo
+echo "+memory +cpu" | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+echo 100M            | sudo tee /sys/fs/cgroup/demo/memory.max
+echo "50000 100000"  | sudo tee /sys/fs/cgroup/demo/cpu.max
+
+# Meter el shell actual en el grupo
+echo $$ | sudo tee /sys/fs/cgroup/demo/cgroup.procs
+
+# Observar los contadores
+cat /sys/fs/cgroup/demo/memory.current
+cat /sys/fs/cgroup/demo/memory.events</code></pre>
+
+<p>El mismo resultado, con el beneficio de que respeta la jerarquía que gestiona <code>systemd</code>, se consigue con el comando siguiente. Es una instrucción de uso común de <code>systemd</code>, no extraída de las fuentes de este artículo; consúltala en el manual de tu versión:</p>
+
+<pre data-lang="bash"><code>sudo systemd-run --scope -p MemoryMax=100M -p CPUQuota=50% mi-programa</code></pre>
+
+<h3>De los archivos a Docker y Kubernetes</h3>
+
+<p>Los runtimes traducen sus parámetros a estos archivos. En la documentación de Docker, <code>--memory</code> (abreviado <code>-m</code>) establece el límite de memoria con unidades <code>b</code>, <code>k</code>, <code>m</code> o <code>g</code> y un mínimo de 6 MB; <code>--cpus</code> admite fracciones (<code>0.5</code> es media CPU, y el valor por defecto de <code>0.000</code> significa sin límite); y <code>--memory-swap</code> fija el total de memoria más intercambio, con la particularidad de que, si defines <code>--memory</code> sin esta opción, el intercambio se limita al doble del valor de memoria, y con <code>-1</code> se desactiva el límite de swap. Con la configuración habitual, esos parámetros acaban en <code>memory.max</code> y <code>cpu.max</code>, y en Kubernetes las <em>requests</em> y <em>limits</em> de CPU y memoria de un pod terminan expresadas en archivos equivalentes (el reparto proporcional mediante <code>cpu.weight</code> y los topes mediante <code>cpu.max</code> y <code>memory.max</code>). Es un comportamiento general de los runtimes; los nombres exactos de los archivos usados dependen de la versión y del driver.</p>
+
+<p>Conviene saber, además, que la documentación de Kubernetes establece estas condiciones para usar cgroup v2: una distribución que lo tenga habilitado, un kernel 5.8 o posterior, un runtime compatible (por ejemplo, containerd 1.4 o posterior, o cri-o 1.20 o posterior) y que tanto el kubelet como el runtime usen el <em>driver</em> de cgroups de <code>systemd</code>. El soporte de cgroup v2 se considera estable desde Kubernetes 1.25, y algunas funciones, como la calidad de servicio de memoria (MemoryQoS), dependen exclusivamente de él. Para comprobar qué versión usa un nodo, la documentación propone <code>stat -fc %T /sys/fs/cgroup/</code>, que muestra <code>cgroup2fs</code> en v2 y <code>tmpfs</code> en v1. El dato más relevante para quien mantiene clústeres antiguos: la documentación indica que cgroup v1 quedó <strong>obsoleto en Kubernetes 1.35</strong>, que el kubelet ya no arranca por defecto en un nodo con cgroup v1 y que el comportamiento puede cambiarse con <code>failCgroupV1: false</code> en su archivo de configuración. No fija una versión de eliminación definitiva. Si administras nodos con kernels o distribuciones antiguos, planifica la migración.</p>
+
+<h2>Capabilities: dividir al superusuario</h2>
+
+<p>Tradicionalmente, Unix distinguía solo entre root, que lo puede todo, y los demás usuarios. Linux fragmenta los privilegios de root en unidades independientes llamadas <em>capabilities</em>, que se pueden activar y desactivar por separado y son un atributo de cada hilo. La página <code>capabilities(7)</code> define cinco conjuntos asociados a un hilo:</p>
+
+<ul>
+  <li><strong>Permitted</strong>: el límite superior de las capacidades que el hilo puede hacer efectivas.</li>
+  <li><strong>Effective</strong>: el conjunto que el kernel comprueba realmente al evaluar permisos.</li>
+  <li><strong>Inheritable</strong>: capacidades que se conservan a través de <code>execve(2)</code>.</li>
+  <li><strong>Bounding</strong>: limita qué capacidades pueden obtenerse durante <code>execve(2)</code>. Es por hilo desde Linux 2.6.25.</li>
+  <li><strong>Ambient</strong>: capacidades que se conservan a través de <code>execve(2)</code> de un programa sin privilegios. Existe desde Linux 4.3.</li>
+</ul>
+
+<p>Algunas de las capacidades más relevantes para entender la seguridad de los contenedores son estas, con el significado que les da el manual:</p>
+
+<table>
+  <thead>
+    <tr><th>Capacidad</th><th>Qué permite</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>CAP_NET_BIND_SERVICE</code></td><td>Enlazar sockets a puertos privilegiados, menores de 1024.</td></tr>
+    <tr><td><code>CAP_NET_ADMIN</code></td><td>Operaciones de red como configurar interfaces, cortafuegos y rutas.</td></tr>
+    <tr><td><code>CAP_NET_RAW</code></td><td>Usar sockets RAW y PACKET.</td></tr>
+    <tr><td><code>CAP_SYS_PTRACE</code></td><td>Trazar procesos arbitrarios e inspeccionar su información sensible.</td></tr>
+    <tr><td><code>CAP_CHOWN</code></td><td>Cambiar arbitrariamente propietario y grupo de archivos.</td></tr>
+    <tr><td><code>CAP_DAC_OVERRIDE</code></td><td>Saltarse las comprobaciones de permisos de lectura, escritura y ejecución.</td></tr>
+    <tr><td><code>CAP_SETUID</code></td><td>Manipular arbitrariamente los UID de los procesos.</td></tr>
+    <tr><td><code>CAP_SYS_ADMIN</code></td><td>Una amplísima gama de operaciones de administración.</td></tr>
+  </tbody>
+</table>
+
+<p>La última fila merece un comentario aparte. El propio manual advierte de que <code>CAP_SYS_ADMIN</code> está "sobrecargada" (<em>overloaded</em>): agrupa operaciones sin relación entre sí, hasta el punto de que se aconseja a los desarrolladores del kernel evitar añadirle más funciones. Con el tiempo se han separado de ella capacidades más específicas, como <code>CAP_BPF</code>, <code>CAP_PERFMON</code> y <code>CAP_CHECKPOINT_RESTORE</code>. En la práctica, conceder <code>CAP_SYS_ADMIN</code> a un contenedor se acerca mucho a darle privilegios de root completos sobre el anfitrión.</p>
+
+<h3>Lo que Docker conserva y lo que quita</h3>
+
+<p>La documentación de Docker explica que, por defecto, los contenedores se ejecutan sin privilegios y no pueden acceder a ningún dispositivo. Docker mantiene un conjunto predeterminado de capacidades (la página enumera 14, entre ellas <code>CHOWN</code>, <code>KILL</code>, <code>NET_BIND_SERVICE</code>, <code>NET_RAW</code> y <code>SETUID</code>) y ofrece una segunda tabla con las que no se conceden y se pueden añadir, como <code>NET_ADMIN</code>, <code>SYS_ADMIN</code>, <code>SYS_PTRACE</code> o <code>BPF</code>. Se ajustan con dos opciones: <code>--cap-add</code> añade capacidades y <code>--cap-drop</code> las quita, y ambas aceptan <code>ALL</code>. Un patrón de endurecimiento muy recomendable consiste en quitar todas y devolver solo las necesarias.</p>
+
+<pre data-lang="bash"><code># Quitar todas las capacidades y permitir solo enlazar puertos bajos
+docker run --rm --cap-drop=ALL --cap-add=NET_BIND_SERVICE mi-imagen</code></pre>
+
+<p>La opción más peligrosa es <code>--privileged</code>. Según la documentación, concede todas las capacidades, da acceso a todos los dispositivos del anfitrión y reconfigura AppArmor o SELinux para que el contenedor tenga casi el mismo acceso que un proceso normal del anfitrión. La propia página recomienda usarla con precaución y ofrece alternativas más ajustadas, como <code>--cap-add=NET_ADMIN</code> cuando el contenedor solo necesita modificar interfaces de red, o <code>--device</code> para conceder acceso a un dispositivo concreto sin <code>--privileged</code>.</p>
+
+<h2>seccomp: filtrar las llamadas al sistema</h2>
+
+<p>Las capacidades controlan qué <em>privilegios</em> tiene un proceso; seccomp (<em>secure computing mode</em>) controla qué <em>llamadas al sistema</em> puede invocar, y es la defensa que reduce la superficie del kernel expuesta a un proceso comprometido. La página <code>seccomp(2)</code> describe dos modos. En el modo <strong>estricto</strong> (<code>SECCOMP_SET_MODE_STRICT</code>) solo se permiten <code>read</code>, <code>write</code>, <code>_exit</code> (no <code>exit_group</code>) y <code>sigreturn</code>; cualquier otra llamada termina el hilo, o el proceso entero con <code>SIGKILL</code> si es de un solo hilo. En el modo <strong>filtro</strong> (<code>SECCOMP_SET_MODE_FILTER</code>) se instala un programa BPF que decide qué hacer con cada llamada; este modo existe desde Linux 3.17.</p>
+
+<h3>Cómo decide un filtro</h3>
+
+<p>El programa BPF recibe una estructura <code>seccomp_data</code> con el número de la llamada (<code>nr</code>), la arquitectura (<code>arch</code>), el puntero de instrucción y hasta seis argumentos, y devuelve una acción. El manual enumera las acciones en orden decreciente de precedencia:</p>
+
+<ol>
+  <li><code>SECCOMP_RET_KILL_PROCESS</code>: termina el proceso entero como si lo hubiera matado <code>SIGSYS</code> (desde Linux 4.14).</li>
+  <li><code>SECCOMP_RET_KILL_THREAD</code>: termina solo el hilo que hizo la llamada.</li>
+  <li><code>SECCOMP_RET_TRAP</code>: envía un <code>SIGSYS</code> al hilo y no ejecuta la llamada.</li>
+  <li><code>SECCOMP_RET_ERRNO</code>: no ejecuta la llamada y devuelve a espacio de usuario un código de error.</li>
+  <li><code>SECCOMP_RET_USER_NOTIF</code>: reenvía la llamada a un supervisor en espacio de usuario (desde Linux 5.0).</li>
+  <li><code>SECCOMP_RET_TRACE</code>: notifica a un rastreador basado en <code>ptrace</code>.</li>
+  <li><code>SECCOMP_RET_LOG</code>: ejecuta la llamada tras registrar la acción (desde Linux 4.14).</li>
+  <li><code>SECCOMP_RET_ALLOW</code>: ejecuta la llamada.</li>
+</ol>
+
+<p>Cuando hay varios filtros instalados, se ejecutan todos, empezando por el instalado más recientemente, y prevalece la acción de mayor precedencia. Un detalle del diseño de seccomp, que no hemos contrastado en la página consultada pero es conocido: un filtro instalado no puede retirarse, de modo que un proceso comprometido no puede quitarse la restricción. Para instalarlo, el proceso necesita <code>CAP_SYS_ADMIN</code> en su namespace de usuario o tener activado el bit <code>no_new_privs</code> (mediante <code>prctl(PR_SET_NO_NEW_PRIVS, 1)</code>), que impide que el proceso y sus descendientes ganen privilegios nuevos a través de <code>execve</code>; de lo contrario, la instalación falla con <code>EACCES</code>.</p>
+
+<div class="alert">
+  <strong>Lista blanca, no lista negra.</strong> El manual señala que normalmente es necesario comprobar el campo <code>arch</code>, porque la numeración de las llamadas difiere entre arquitecturas y algunos procesos pueden cambiar de convención de llamada, y recomienda con claridad un enfoque de <em>lista blanca</em> (permitir lo conocido y denegar el resto) frente a una lista negra (denegar lo conocido como peligroso), porque esta última deja pasar cualquier llamada que no se hubiera previsto.
+</div>
+
+<h3>El perfil por defecto de Docker</h3>
+
+<p>Docker aplica a los contenedores un perfil seccomp por defecto. La documentación lo describe como una base moderadamente protectora que "deshabilita alrededor de 44 llamadas del sistema de más de 300" manteniendo una amplia compatibilidad con las aplicaciones. Se basa en una lista blanca: la acción por defecto es <code>SCMP_ACT_ERRNO</code> (que devuelve "permiso denegado") y se marcan como <code>SCMP_ACT_ALLOW</code> las llamadas explícitamente permitidas, algunas de ellas con reglas sobre sus argumentos, como <code>personality</code>.</p>
+
+<p>Los ejemplos de llamadas bloqueadas que ofrece la página muestran el razonamiento de seguridad detrás del perfil:</p>
+
+<ul>
+  <li><code>add_key</code>, <code>keyctl</code> y <code>request_key</code>: el depósito de claves del kernel no está aislado por namespaces.</li>
+  <li><code>clock_settime</code>, <code>settimeofday</code>, <code>stime</code> y <code>clock_adjtime</code>: la hora del sistema no está aislada (salvo el reloj de los namespaces de tiempo).</li>
+  <li><code>mount</code>, <code>umount</code>, <code>umount2</code>, <code>swapon</code> y <code>swapoff</code>: ya están protegidas por <code>CAP_SYS_ADMIN</code>.</li>
+  <li><code>reboot</code>: evita que un contenedor reinicie el anfitrión.</li>
+  <li><code>kexec_load</code> y <code>kexec_file_load</code>: evitan cargar un kernel nuevo.</li>
+  <li><code>perf_event_open</code>: el trazado y el perfilado podrían filtrar información del anfitrión.</li>
+  <li><code>io_uring_setup</code>, <code>io_uring_enter</code> e <code>io_uring_register</code>: bloqueadas por vulnerabilidades que podrían explotarse para escapar del contenedor.</li>
+  <li><code>personality</code>: se impide la emulación de BSD, poco probada y fuente potencial de vulnerabilidades.</li>
+  <li><code>ptrace</code>: según la página, se bloqueaba en kernels anteriores a la versión 4.8 para evitar un salto del filtro; el trazado de procesos se impide además quitando <code>CAP_SYS_PTRACE</code>.</li>
+</ul>
+
+<p>Se puede ejecutar un contenedor con un perfil propio o sin ninguno:</p>
+
+<pre data-lang="bash"><code># Con un perfil personalizado (la ruta se resuelve en la máquina cliente)
+docker run --rm -it --security-opt seccomp=/ruta/perfil.json hello-world
+
+# Sin filtrado seccomp (solo para diagnóstico, nunca en producción)
+docker run --rm -it --security-opt seccomp=unconfined debian:latest bash</code></pre>
+
+<p>La documentación advierte de que no se recomienda modificar el perfil por defecto, y enumera requisitos: que Docker se haya compilado con soporte para seccomp y que el kernel tenga activada la opción <code>CONFIG_SECCOMP</code>, algo que se puede comprobar con <code>grep CONFIG_SECCOMP= /boot/config-$(uname -r)</code>. Un perfil personalizado tiene la forma de un documento JSON con una acción por defecto y una lista de llamadas al sistema, estructura que coincide con la de la sección <code>seccomp</code> de la especificación OCI: <code>defaultAction</code> obligatorio, <code>architectures</code>, y <code>syscalls</code> como lista de entradas con <code>names</code>, <code>action</code> y, opcionalmente, <code>errnoRet</code> y <code>args</code>.</p>
+
+<h2>Todo junto: qué ocurre al ejecutar un contenedor</h2>
+
+<p>Con las cuatro piezas en la mano, podemos describir a grandes rasgos qué ocurre cuando un runtime recibe la orden de ejecutar un contenedor. La secuencia siguiente es una simplificación didáctica: los runtimes reales tienen detalles de orden y de reparto de tareas entre procesos que varían entre implementaciones.</p>
+
+<ol>
+  <li><strong>Lectura de la configuración.</strong> El runtime lee un documento con la estructura OCI: namespaces, mapas de identificadores, ruta de cgroup, recursos, perfil seccomp, rutas enmascaradas y de solo lectura.</li>
+  <li><strong>Creación de los namespaces.</strong> Se crea un proceso nuevo con las banderas <code>CLONE_NEW*</code> apropiadas, o se une a namespaces existentes mediante <code>setns</code> cuando el contenedor comparte alguno (por ejemplo, el de red).</li>
+  <li><strong>Mapa de identificadores.</strong> Si hay namespace de usuario, se escriben <code>uid_map</code> y <code>gid_map</code> según las reglas que vimos.</li>
+  <li><strong>Sistema de archivos.</strong> Se prepara el sistema de archivos raíz de la imagen, se montan <code>/proc</code>, <code>/sys</code> y los dispositivos permitidos, se aplican <code>maskedPaths</code> y <code>readonlyPaths</code> y se cambia la raíz del proceso.</li>
+  <li><strong>cgroups.</strong> El proceso se coloca en su grupo y se escriben los límites en los archivos de control.</li>
+  <li><strong>Capacidades y seccomp.</strong> Se recortan los conjuntos de capacidades y se instala el filtro seccomp. Dado que el filtro no puede retirarse, se instala al final, cuando ya no hacen falta las llamadas que prohíbe.</li>
+  <li><strong>Ejecución.</strong> Se invoca <code>execve</code> con el programa de la imagen, que pasa a ser el PID 1 del namespace de procesos.</li>
+</ol>
+
+<p>Si ejecutas <code>docker exec</code> sobre un contenedor en marcha, el proceso nuevo entra en los namespaces del contenedor con <code>setns</code>, se coloca en su cgroup y hereda sus restricciones, y por eso se comporta como un compañero del proceso principal.</p>
+
+<h2>Aislamiento y seguridad: qué garantiza y qué no</h2>
+
+<p>La conclusión práctica de todo lo anterior es incómoda pero necesaria: un contenedor <strong>no es una frontera de seguridad tan fuerte como una máquina virtual</strong>. Todos los contenedores del equipo comparten el kernel, y las barreras que hemos descrito (namespaces, capacidades, seccomp) son mecanismos de software dentro de ese mismo kernel. Una vulnerabilidad del kernel que permita escalar privilegios puede romperlas todas a la vez. La documentación de Docker lo refleja en pequeño: bloquea llamadas como <code>io_uring_setup</code> y <code>io_uring_enter</code> precisamente porque se han explotado vulnerabilidades para escapar de contenedores.</p>
+
+<p>Esto no significa que los contenedores sean inseguros, sino que su seguridad depende de aplicar varias capas de defensa y de no desactivar las que vienen por defecto sin una buena razón. Una lista de verificación realista de endurecimiento, que se deduce directamente de los mecanismos descritos, sería:</p>
+
+<ul>
+  <li><strong>No ejecutar como root dentro del contenedor.</strong> Usar un usuario sin privilegios en la imagen, y valorar el uso de namespaces de usuario o de runtimes <em>rootless</em> para que el "root" interno no sea root en el anfitrión.</li>
+  <li><strong>Quitar capacidades.</strong> Empezar con <code>--cap-drop=ALL</code> y añadir solo las imprescindibles.</li>
+  <li><strong>No usar <code>--privileged</code></strong> salvo necesidad demostrada; preferir <code>--cap-add</code> o <code>--device</code> concretos.</li>
+  <li><strong>Mantener el perfil seccomp por defecto</strong> y, si hace falta endurecerlo, partir de una lista blanca ajustada a la aplicación.</li>
+  <li><strong>Limitar recursos.</strong> Establecer siempre límites de memoria, CPU y número de procesos para que un fallo o un abuso no afecte al resto del nodo.</li>
+  <li><strong>Reducir el contenido de la imagen.</strong> Cuantas menos herramientas haya en la imagen (sin shell, sin gestor de paquetes), menos recursos tendrá un atacante tras comprometer el proceso. Es el argumento que desarrollamos en el artículo sobre <a href="/articulos/docker-multi-stage.html">imágenes distroless</a>.</li>
+  <li><strong>Mantener el kernel actualizado.</strong> Es la base compartida de todas las demás defensas.</li>
+</ul>
+
+<p>Para cargas que requieren un aislamiento más fuerte, por ejemplo código de terceros no confiable, existen alternativas que añaden una capa adicional entre el contenedor y el kernel del anfitrión, como los entornos basados en máquinas virtuales ligeras o los kernels en espacio de usuario. Son opciones válidas, con costes de rendimiento y compatibilidad que conviene evaluar; su descripción detallada excede el alcance de este artículo, que se ciñe a los mecanismos nativos del kernel.</p>
+
+<h2>Cómo inspeccionar un contenedor en marcha</h2>
+
+<p>Conocer los mecanismos permite diagnosticar problemas con herramientas básicas, sin depender de la interfaz del runtime. Estas consultas son de solo lectura y sirven para responder preguntas frecuentes:</p>
+
+<pre data-lang="bash"><code># ¿En qué namespaces vive el proceso? (PID visto desde el anfitrión)
+sudo ls -l /proc/12345/ns
+
+# ¿En qué cgroup está?
+cat /proc/12345/cgroup
+
+# ¿Qué límites y qué consumo tiene? (la ruta depende del runtime)
+cat /sys/fs/cgroup/RUTA-DEL-GRUPO/memory.max
+cat /sys/fs/cgroup/RUTA-DEL-GRUPO/memory.events
+cat /sys/fs/cgroup/RUTA-DEL-GRUPO/cpu.stat
+
+# ¿Qué capacidades tiene? (campos CapInh, CapPrm, CapEff, CapBnd, CapAmb)
+grep Cap /proc/12345/status
+
+# Decodificar una máscara de capacidades (herramienta capsh, paquete libcap)
+capsh --decode=00000000a80425fb
+
+# ¿Tiene un filtro seccomp? (el campo Seccomp: 0 = ninguno, 1 = estricto, 2 = filtro)
+grep Seccomp /proc/12345/status</code></pre>
+
+<p>Hay dos lecturas especialmente útiles. La primera es <code>memory.events</code>: si el contador <code>oom_kill</code> es mayor que cero, el contenedor ha sido eliminado por exceder su límite de memoria, algo que desde fuera se manifiesta como una salida inexplicada. La segunda es <code>cpu.stat</code>: si <code>nr_throttled</code> y <code>throttled_usec</code> crecen, el contenedor está siendo frenado por su techo de CPU, un problema de latencia que no aparece como un uso de CPU alto. Los valores mostrados para el comando <code>capsh</code> son un ejemplo de formato: la máscara real dependerá de tu contenedor.</p>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>"Un contenedor es una máquina virtual ligera"</h3>
+
+<p>Como hemos visto, no hay un sistema operativo invitado. Un contenedor es un proceso del anfitrión con restricciones. Esa diferencia explica tanto su velocidad como sus límites de aislamiento, y también por qué no puedes ejecutar en un contenedor un kernel distinto del del anfitrión.</p>
+
+<h3>"Ser root dentro del contenedor no es un problema"</h3>
+
+<p>Depende de si existe un namespace de usuario. Sin él, el UID 0 del contenedor es el UID 0 del anfitrión, y la única barrera son las capacidades, los namespaces y seccomp. Con un namespace de usuario bien configurado, el root interno corresponde a un usuario sin privilegios del anfitrión. Por eso los runtimes rootless son una mejora de seguridad relevante.</p>
+
+<h3>"Si limito la memoria, la aplicación se ralentiza"</h3>
+
+<p>Con <code>memory.max</code> no se ralentiza, se elimina. Para un comportamiento de ralentización existe <code>memory.high</code>. Muchas configuraciones por defecto solo establecen el límite duro, lo que explica los reinicios por <code>OOMKilled</code> en Kubernetes cuando se subestima la memoria necesaria.</p>
+
+<h3>"Más CPU asignada significa más rendimiento garantizado"</h3>
+
+<p>El techo de <code>cpu.max</code> puede producir ralentizaciones incluso cuando la máquina tiene CPU libre, porque el grupo se detiene al agotar su cuota en cada periodo. El reparto por <code>cpu.weight</code>, en cambio, no limita nada si no hay competencia. Entender cuál de los dos mecanismos está aplicando tu orquestador evita diagnósticos erróneos.</p>
+
+<h3>"<code>--privileged</code> es solo para depurar"</h3>
+
+<p>En la práctica se deja activado por comodidad y sin que nadie lo revise. Dado que concede todas las capacidades y acceso a todos los dispositivos del anfitrión, un contenedor privilegiado comprometido equivale a un anfitrión comprometido. Si lo necesitas para una función concreta, busca la capacidad o el dispositivo específicos.</p>
+
+<h3>"Mi contenedor está aislado porque tiene su propia red"</h3>
+
+<p>El aislamiento de red del namespace separa pilas de protocolos, pero no impide por sí mismo que dos contenedores se comuniquen si comparten un puente o una red virtual. En Kubernetes, por defecto, todo pod puede hablar con todos los demás; las políticas de red y un plugin de red que las implemente son las que restringen el tráfico, como explicamos en el artículo sobre la <a href="/articulos/kubernetes-arquitectura-interna.html">arquitectura interna de Kubernetes</a>.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿Qué diferencia hay entre Docker, containerd y runc?</h3>
+
+<p>Son capas de una misma pila. Docker es la herramienta de alto nivel que gestiona imágenes, redes y volúmenes; containerd gestiona el ciclo de vida de los contenedores; y un runtime de bajo nivel compatible con la especificación OCI, como runc, es quien prepara los namespaces, los cgroups y el resto de restricciones y lanza el proceso. Esta jerarquía es una descripción general del ecosistema y no una afirmación de las fuentes citadas; su arquitectura exacta cambia entre versiones.</p>
+
+<h3>¿Puedo ejecutar contenedores de Linux en Windows o macOS?</h3>
+
+<p>Sí, pero lo que se ejecuta no son los mismos mecanismos nativos: esos sistemas operativos no tienen namespaces ni cgroups de Linux, por lo que las herramientas de escritorio arrancan una máquina virtual con un kernel Linux y ejecutan allí los contenedores. Por eso, en un equipo de escritorio, el demonio de Docker puede estar inactivo aunque la herramienta esté instalada.</p>
+
+<h3>¿Cómo sé si mi servidor usa cgroup v1 o v2?</h3>
+
+<p>Ejecuta <code>stat -fc %T /sys/fs/cgroup/</code>. Si el resultado es <code>cgroup2fs</code>, usa v2; si es <code>tmpfs</code>, usa v1. Es el comprobante que recoge la documentación de Kubernetes.</p>
+
+<h3>¿Qué ocurre si un contenedor supera su límite de memoria?</h3>
+
+<p>Si el límite es <code>memory.max</code> y el uso no puede reducirse, el OOM killer elimina procesos del grupo; el contador <code>oom_kill</code> de <code>memory.events</code> lo registra. Con <code>memory.oom.group</code> activado, se elimina el grupo completo. Si el límite es solo <code>memory.high</code>, los procesos se ralentizan, pero no se eliminan.</p>
+
+<h3>¿Seccomp y AppArmor o SELinux son lo mismo?</h3>
+
+<p>No. Seccomp filtra llamadas al sistema; AppArmor y SELinux son sistemas de control de acceso obligatorio que restringen lo que un proceso puede hacer con archivos, redes y otros recursos. Se complementan. La documentación de Docker menciona que <code>--privileged</code> reconfigura AppArmor o SELinux, lo que muestra que forman parte del mismo conjunto de defensas.</p>
+
+<h3>¿Se pueden crear namespaces desde un programa propio?</h3>
+
+<p>Sí. Basta con llamar a <code>unshare(2)</code> o a <code>clone(2)</code> con las banderas <code>CLONE_NEW*</code> oportunas, respetando los privilegios requeridos. Es la forma en que están hechos tanto el comando <code>unshare</code> como los runtimes de contenedores.</p>
+
+<h3>¿Por qué <code>unshare --pid</code> necesita <code>--fork</code>?</h3>
+
+<p>Porque, según el comportamiento de los namespaces de PID, el proceso que llama a <code>unshare</code> no se mueve al nuevo namespace de PID: solo lo hacen sus hijos. Con <code>--fork</code>, el comando crea un hijo que sí queda dentro y se convierte en el PID 1.</p>
+
+<h3>¿Qué cambia con los namespaces de tiempo?</h3>
+
+<p>Aíslan los relojes de arranque y monótono, y están disponibles desde Linux 5.6, según el manual de <code>namespaces(7)</code>. La documentación de Docker, por su parte, bloquea las llamadas que modifican la hora del sistema (<code>clock_settime</code>, <code>settimeofday</code>, <code>stime</code>, <code>clock_adjtime</code>) con el argumento de que el reloj no está aislado por namespaces. Los casos de uso concretos de los namespaces de tiempo (por ejemplo, la migración de contenedores) no se han contrastado con las fuentes de este artículo.</p>
+
+<h2>Conclusión</h2>
+
+<p>Un contenedor de Linux no es una tecnología única, sino una receta que combina cuatro mecanismos independientes del kernel. Los namespaces recortan lo que el proceso puede ver; los cgroups, lo que puede consumir; las capacidades, qué privilegios conserva; y seccomp, qué llamadas al sistema puede intentar. La especificación OCI formaliza esa receta en un documento de configuración que cualquier runtime compatible sabe ejecutar, y por eso la misma imagen funciona con Docker, con Podman o con un nodo de Kubernetes.</p>
+
+<p>Comprender esa composición tiene valor práctico inmediato. Permite diagnosticar un reinicio por <code>OOMKilled</code> leyendo <code>memory.events</code>, entender una latencia inexplicada mirando <code>cpu.stat</code>, decidir con criterio entre <code>--cap-add</code> y <code>--privileged</code>, y valorar con realismo qué protege y qué no el aislamiento de un contenedor. También ayuda a seguir la evolución del ecosistema: que Kubernetes marque cgroup v1 como obsoleto o que los runtimes sin root ganen terreno son consecuencias directas de las propiedades del kernel que hemos repasado.</p>
+
+<p>Si quieres profundizar, el mejor ejercicio es reproducir en una máquina Linux los experimentos del artículo con <code>unshare</code> y con un cgroup manual, y después leer una configuración OCI real de un contenedor de tu entorno. Verás que lo que parecía una caja negra es, en el fondo, una colección de llamadas al sistema bien documentadas.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Linux man-pages. «namespaces(7)». man7.org. <a href="https://man7.org/linux/man-pages/man7/namespaces.7.html" rel="noopener">https://man7.org/linux/man-pages/man7/namespaces.7.html</a> (consultado el 27-10-2026).</li>
+  <li>The Linux Kernel documentation. «Control Group v2». docs.kernel.org. <a href="https://docs.kernel.org/admin-guide/cgroup-v2.html" rel="noopener">https://docs.kernel.org/admin-guide/cgroup-v2.html</a> (consultado el 27-10-2026; se leyeron los primeros 100.000 caracteres).</li>
+  <li>Linux man-pages. «seccomp(2)». <a href="https://man7.org/linux/man-pages/man2/seccomp.2.html" rel="noopener">https://man7.org/linux/man-pages/man2/seccomp.2.html</a> (consultado el 27-10-2026).</li>
+  <li>Linux man-pages. «capabilities(7)». <a href="https://man7.org/linux/man-pages/man7/capabilities.7.html" rel="noopener">https://man7.org/linux/man-pages/man7/capabilities.7.html</a> (consultado el 27-10-2026).</li>
+  <li>Linux man-pages. «user_namespaces(7)». <a href="https://man7.org/linux/man-pages/man7/user_namespaces.7.html" rel="noopener">https://man7.org/linux/man-pages/man7/user_namespaces.7.html</a> (consultado el 27-10-2026).</li>
+  <li>Open Container Initiative. «Runtime Specification: Linux Container Configuration (config-linux.md)». <a href="https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md" rel="noopener">https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md</a> (consultado el 27-10-2026 en la rama main).</li>
+  <li>Kubernetes. «About cgroup v2». kubernetes.io. <a href="https://kubernetes.io/docs/concepts/architecture/cgroups/" rel="noopener">https://kubernetes.io/docs/concepts/architecture/cgroups/</a> (consultado el 27-10-2026).</li>
+  <li>Docker Docs. «Seccomp security profiles for Docker». <a href="https://docs.docker.com/engine/security/seccomp/" rel="noopener">https://docs.docker.com/engine/security/seccomp/</a> (consultado el 27-10-2026).</li>
+  <li>Docker Docs. «Running containers: runtime privilege and Linux capabilities, runtime constraints on resources». <a href="https://docs.docker.com/engine/containers/run/" rel="noopener">https://docs.docker.com/engine/containers/run/</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>

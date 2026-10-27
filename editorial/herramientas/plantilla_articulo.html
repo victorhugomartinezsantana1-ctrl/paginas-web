@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>@@TITLE@@ — devlog</title>
+  <meta name="description" content="@@DESC@@">
+@@HEAD_EXTRA@@
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="@@TITLE@@">
+  <meta property="og:description" content="@@DESC@@">
+  <meta property="og:url" content="@@SITE@@/@@PATH@@">
+  <meta property="article:published_time" content="@@DATE@@">
+@@JSONLD@@
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[@@TAG@@]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          @@H1@@
+        </h1>
+        <p class="mt-4 text-muted">@@SUBTITLE@@</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">@@AUTOR@@</span></span>
+          <time datetime="@@DATE@@">@@DATE@@</time>
+          <span>⏱ @@MIN@@ min de lectura</span>
+        </p>
+      </header>
+
+      @@TOC_INLINE@@
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+@@BODY@@
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+@@RELATED@@
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+@@TOC@@
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

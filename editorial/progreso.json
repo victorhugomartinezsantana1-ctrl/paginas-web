@@ -1,0 +1,78 @@
+{
+  "actualizado": "2026-10-27",
+  "objetivo_total": 30,
+  "minimo_aceptable": 20,
+  "ultimo_lote_procesado": 0,
+  "ultimo_articulo_completado": null,
+  "investigados": [
+    "ART-001",
+    "ART-002",
+    "ART-003",
+    "ART-004",
+    "ART-005"
+  ],
+  "redactados": [
+    "ART-001",
+    "ART-002",
+    "ART-003",
+    "ART-004",
+    "ART-005"
+  ],
+  "html_creados": [
+    "ART-001",
+    "ART-002",
+    "ART-003",
+    "ART-004",
+    "ART-005"
+  ],
+  "auditoria_superada": [
+    "ART-001",
+    "ART-002",
+    "ART-003",
+    "ART-004",
+    "ART-005"
+  ],
+  "desplegados": [],
+  "url_verificadas": [],
+  "pendientes": [
+    "ART-001",
+    "ART-002",
+    "ART-003",
+    "ART-004",
+    "ART-005",
+    "ART-006",
+    "ART-007",
+    "ART-008",
+    "ART-009",
+    "ART-010",
+    "ART-011",
+    "ART-012",
+    "ART-013",
+    "ART-014",
+    "ART-015",
+    "ART-016",
+    "ART-017",
+    "ART-018",
+    "ART-019",
+    "ART-020",
+    "ART-021",
+    "ART-022",
+    "ART-023",
+    "ART-024",
+    "ART-025",
+    "ART-026",
+    "ART-027",
+    "ART-028",
+    "ART-029",
+    "ART-030"
+  ],
+  "errores_activos": [],
+  "proxima_accion": "Verificar el despliegue del lote 1 y arrancar el lote 2 (ART-006..ART-010)",
+  "estado_ultimo_despliegue": "Último despliegue de producción: commit c1cfef6 (correcciones de caché). Sin despliegue editorial todavía.",
+  "fase_completada": [
+    "A reconocimiento",
+    "B arquitectura de despliegue",
+    "C auditoría inicial",
+    "D plan editorial"
+  ]
+}

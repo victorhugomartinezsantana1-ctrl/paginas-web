@@ -1,0 +1,20 @@
+# Fuentes — ART-004 FreeRTOS en el ESP32
+
+Consulta: 2026-10-27. Ninguna página muestra fecha de publicación. La documentación de ESP-IDF se consultó en su rama `stable` para el chip ESP32.
+
+| # | Fuente | Organismo | URL | Respalda | Limitaciones |
+|---|---|---|---|---|---|
+| 1 | FreeRTOS (IDF) — IDF FreeRTOS | Espressif (docs.espressif.com) | https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/freertos_idf.html | Base en FreeRTOS v10.5.1 con SMP; `CONFIG_FREERTOS_UNICORE`; pila en bytes; `xTaskCreatePinnedToCore` y `tskNO_AFFINITY`; planificador por núcleo (ejemplo A/B/C); "Best Effort Round Robin"; ticks por núcleo (el núcleo 0 hace todas las tareas del tick); tareas idle por núcleo; `vTaskDelete`; `vTaskSuspendAll` no sirve de exclusión mutua; secciones críticas con `portMUX_TYPE`; `float` ancla la tarea al núcleo; `vTaskDelay` vs `xTaskDelayUntil` | La página tiene ~375.000 caracteres; se leyeron los primeros 100.000. **No** indica la frecuencia de tick por defecto |
+| 2 | Interrupt Allocation | Espressif | https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/intr_alloc.html | Las interrupciones se asignan en el núcleo que llama a `esp_intr_alloc`; `ESP_INTR_FLAG_IRAM`; `ESP_INTR_FLAG_SHARED`; prioridades 4–7 en ensamblador | **No** afirma explícitamente que los manejadores en C estén limitados a los niveles 1–3 |
+| 3 | Watchdogs | Espressif | https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/wdts.html | TWDT (vigila las tareas idle por defecto, `CONFIG_ESP_TASK_WDT_TIMEOUT_S`, aviso+backtrace o pánico con `CONFIG_ESP_TASK_WDT_PANIC`, `esp_task_wdt_add/reset`); IWDT (`CONFIG_ESP_INT_WDT`, `CONFIG_ESP_INT_WDT_TIMEOUT_MS`) | **No** da los valores numéricos por defecto de los tiempos de espera |
+| 4 | Mastering the FreeRTOS Real Time Kernel, cap. 4 «Task Management» | FreeRTOS (GitHub) | https://raw.githubusercontent.com/FreeRTOS/FreeRTOS-Kernel-Book/main/ch04.md | Estados de tarea; planificación expulsiva por prioridad fija con reparto de tiempo; `configUSE_PREEMPTION`/`configUSE_TIME_SLICING`; tarea idle de prioridad 0 y gancho idle; `vTaskDelay` relativo y `vTaskDelayUntil` absoluto; tick; inanición | — |
+| 5 | Ídem, cap. 5 «Queue Management» | FreeRTOS (GitHub) | https://raw.githubusercontent.com/FreeRTOS/FreeRTOS-Kernel-Book/main/ch05.md | Colas FIFO por copia; bloqueo con tiempo de espera; orden de desbloqueo (mayor prioridad, luego más tiempo esperando); conjuntos de colas; punteros y propiedad | — |
+| 6 | Ídem, cap. 7 «Interrupt Management» | FreeRTOS (GitHub) | https://raw.githubusercontent.com/FreeRTOS/FreeRTOS-Kernel-Book/main/ch07.md | API `FromISR`; `xHigherPriorityTaskWoken`; `portYIELD_FROM_ISR`; procesamiento diferido con semáforo/notificación; ISR cortas; anidamiento; `configMAX_SYSCALL_INTERRUPT_PRIORITY` | — |
+| 7 | Ídem, cap. 8 «Resource Management» | FreeRTOS (GitHub) | https://raw.githubusercontent.com/FreeRTOS/FreeRTOS-Kernel-Book/main/ch08.md | Secciones críticas; suspensión del planificador; mutex; inversión y herencia de prioridad (no la "arregla", solo la atenúa); interbloqueo; mutex recursivo; tarea guardiana | Una cita pedida ("fudge") no aparece en el texto |
+| 8 | Ídem, cap. 10 «Task Notifications» | FreeRTOS (GitHub) | https://raw.githubusercontent.com/FreeRTOS/FreeRTOS-Kernel-Book/main/ch10.md | Notificaciones como alternativa ligera; ventajas y límites; funciones `xTaskNotifyGive`, `ulTaskNotifyTake`, `xTaskNotify`, `xTaskNotifyWait` | El texto no da un porcentaje de mejora de velocidad: no se cita ninguna cifra |
+
+## Observaciones
+
+- No se compiló ni ejecutó ningún código: no hay toolchain de ESP-IDF en el equipo de redacción. Todos los fragmentos en C están marcados como ilustrativos.
+- Conocimiento general no contrastado en estas fuentes (señalado en el texto): regla "periodo más corto, prioridad más alta" (planificación monotónica en tasa), uso de `uxTaskGetStackHighWaterMark`.
+- El libro nombra `vTaskDelayUntil`; la documentación de ESP-IDF nombra `xTaskDelayUntil`. El artículo menciona ambos y atribuye cada nombre a su fuente.

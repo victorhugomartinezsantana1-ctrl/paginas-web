@@ -1,0 +1,22 @@
+{
+  "id": "ART-004",
+  "slug": "freertos-esp32-planificador-prioridades-isr",
+  "titulo": "FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización",
+  "etiqueta": "embebidos",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo reparte FreeRTOS la CPU en el ESP32 de dos núcleos: prioridades, ticks, colas, notificaciones, interrupciones, mutex y watchdogs, con ejemplos en C.",
+  "palabra_clave": "freertos esp32 tareas prioridades",
+  "secundarias": [
+    "planificador FreeRTOS",
+    "ISR",
+    "colas y semáforos",
+    "inversión de prioridades",
+    "watchdog"
+  ],
+  "relacionados": [
+    "esp32-control-motores",
+    "rust-vs-cpp-sistemas-embebidos",
+    "cpp-ncurses-terminal"
+  ],
+  "barra": "rosa"
+}

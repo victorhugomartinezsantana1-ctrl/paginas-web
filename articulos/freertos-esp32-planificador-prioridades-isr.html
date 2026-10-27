@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización — devlog</title>
+  <meta name="description" content="Cómo reparte FreeRTOS la CPU en el ESP32 de dos núcleos: prioridades, ticks, colas, notificaciones, interrupciones, mutex y watchdogs, con ejemplos en C.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/freertos-esp32-planificador-prioridades-isr.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización">
+  <meta property="og:description" content="Cómo reparte FreeRTOS la CPU en el ESP32 de dos núcleos: prioridades, ticks, colas, notificaciones, interrupciones, mutex y watchdogs, con ejemplos en C.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/freertos-esp32-planificador-prioridades-isr.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización",
+    "description": "Cómo reparte FreeRTOS la CPU en el ESP32 de dos núcleos: prioridades, ticks, colas, notificaciones, interrupciones, mutex y watchdogs, con ejemplos en C.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 6529,
+    "keywords": "freertos esp32 tareas prioridades, planificador FreeRTOS, ISR, colas y semáforos, inversión de prioridades, watchdog",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/freertos-esp32-planificador-prioridades-isr.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[embebidos]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización
+        </h1>
+        <p class="mt-4 text-muted">Cómo reparte FreeRTOS la CPU en el ESP32 de dos núcleos: prioridades, ticks, colas, notificaciones, interrupciones, mutex y watchdogs, con ejemplos en C.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 33 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-que-promete-un-sistema-operativo-en-tiem" class="text-accent hover:underline">Qué promete un sistema operativo en tiempo real</a></li>
+          <li><a href="#2-freertos-dentro-de-esp-idf" class="text-accent hover:underline">FreeRTOS dentro de ESP-IDF</a></li>
+          <li><a href="#3-las-tareas-y-sus-cuatro-estados" class="text-accent hover:underline">Las tareas y sus cuatro estados</a></li>
+          <li><a href="#4-el-planificador-prioridades-fijas-con-ex" class="text-accent hover:underline">El planificador: prioridades fijas con expulsión</a></li>
+          <li><a href="#5-dos-nucleos-dos-planificadores" class="text-accent hover:underline">Dos núcleos, dos planificadores</a></li>
+          <li><a href="#6-esperar-bien-vtaskdelay-frente-a-xtaskde" class="text-accent hover:underline">Esperar bien: vTaskDelay frente a xTaskDelayUntil</a></li>
+          <li><a href="#7-tareas-idle-y-vigilantes-los-watchdogs-d" class="text-accent hover:underline">Tareas idle y vigilantes: los watchdogs del ESP32</a></li>
+          <li><a href="#8-comunicar-tareas-las-colas" class="text-accent hover:underline">Comunicar tareas: las colas</a></li>
+          <li><a href="#9-interrupciones-lo-minimo-en-la-isr-el-re" class="text-accent hover:underline">Interrupciones: lo mínimo en la ISR, el resto en una tarea</a></li>
+          <li><a href="#10-interrupciones-en-el-esp32-en-particular" class="text-accent hover:underline">Interrupciones en el ESP32 en particular</a></li>
+          <li><a href="#11-proteger-los-datos-compartidos" class="text-accent hover:underline">Proteger los datos compartidos</a></li>
+          <li><a href="#12-borrar-tareas-y-gestionar-su-memoria" class="text-accent hover:underline">Borrar tareas y gestionar su memoria</a></li>
+          <li><a href="#13-disenar-un-sistema-de-tareas" class="text-accent hover:underline">Diseñar un sistema de tareas</a></li>
+          <li><a href="#14-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#15-diagnostico-que-mirar-cuando-algo-no-va" class="text-accent hover:underline">Diagnóstico: qué mirar cuando algo no va bien</a></li>
+          <li><a href="#16-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#17-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>Un programa de microcontrolador sencillo suele escribirse como un bucle infinito: leer sensores, calcular, actuar, esperar un poco y repetir. Funciona perfectamente mientras el sistema hace una sola cosa. El problema aparece cuando hay que hacer varias a la vez con requisitos de tiempo distintos: regular un motor cada diez milisegundos, atender un botón sin perder pulsaciones, enviar datos por WiFi y comprobar una corriente. En ese bucle único, cualquier espera larga de una parte retrasa a todas las demás, y el código acaba llenándose de contadores, banderas y estados que simulan una concurrencia que el programa no tiene.</p>
+
+<p>Un sistema operativo en tiempo real (RTOS) resuelve el problema de raíz: permite escribir cada actividad como un hilo independiente (una <em>tarea</em>) y delega en el sistema operativo el reparto del procesador según prioridades. El ESP32, con sus dos núcleos, WiFi y Bluetooth integrados, incluye FreeRTOS como parte de su entorno oficial de desarrollo, ESP-IDF, y el soporte de Arduino para el chip también se apoya en él (un dato general que no hemos contrastado en las fuentes de este artículo). Si se programa con el estilo de <code>setup()</code> y <code>loop()</code>, <code>loop()</code> se ejecuta, por tanto, dentro de una tarea de FreeRTOS más.</p>
+
+<p>Este artículo explica cómo funciona FreeRTOS en el ESP32 con rigor: cómo decide el planificador qué tarea ejecuta, qué cambia al haber dos núcleos, cómo se comunican y sincronizan las tareas, qué se puede y qué no se puede hacer dentro de una interrupción y qué mecanismos protegen el sistema cuando algo se cuelga. Nos apoyamos en la documentación de Espressif y en el libro oficial del kernel de FreeRTOS. Una advertencia de método: no disponemos aquí de la cadena de herramientas de ESP-IDF, de modo que ninguno de los fragmentos de código se ha compilado ni ejecutado en un chip; están escritos siguiendo las interfaces documentadas y se señalan como ilustrativos. Si estás empezando, puedes leer antes nuestro artículo sobre <a href="/articulos/esp32-control-motores.html">control de motores y telemetría con ESP32</a>, que aplica estas ideas a un caso concreto, y el de <a href="/articulos/rust-vs-cpp-sistemas-embebidos.html">Rust frente a C++ en sistemas embebidos</a>, que compara este modelo basado en tareas con otro asíncrono.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>FreeRTOS planifica con prioridades fijas y expulsión: la tarea lista de mayor prioridad es la que se ejecuta; las de igual prioridad se reparten el tiempo en cada tick.</li>
+    <li>En el ESP32, ESP-IDF usa una versión de FreeRTOS adaptada a dos núcleos (SMP): cada núcleo elige por su cuenta la tarea de mayor prioridad que puede ejecutar, y una tarea puede fijarse a un núcleo con <code>xTaskCreatePinnedToCore</code>.</li>
+    <li>Una tarea de alta prioridad que nunca se bloquea deja sin CPU a las de menor prioridad (inanición): las tareas deben ser dirigidas por eventos y esperar con llamadas bloqueantes.</li>
+    <li>Dentro de una interrupción solo se pueden usar las funciones de la familia <code>FromISR</code>; lo habitual es hacer lo mínimo en la ISR y delegar el trabajo a una tarea mediante una notificación o un semáforo.</li>
+    <li>Una sección crítica en un sistema de dos núcleos necesita un <em>spinlock</em> (<code>portMUX_TYPE</code>); deshabilitar interrupciones o suspender el planificador solo afecta al núcleo actual y no da exclusión mutua.</li>
+    <li>Los mutex de FreeRTOS incluyen herencia de prioridad, que atenúa la inversión de prioridades pero no la elimina; los watchdogs del ESP32 detectan tareas que acaparan la CPU y interrupciones que bloquean al sistema.</li>
+  </ul>
+</div>
+
+<h2 id="1-que-promete-un-sistema-operativo-en-tiem">Qué promete un sistema operativo en tiempo real</h2>
+
+<p>La expresión "tiempo real" se presta a malentendidos. No significa "muy rápido": significa que el sistema es capaz de garantizar que ciertas respuestas ocurren dentro de un plazo conocido. Un regulador de motor que debe actualizarse cada 10 ms necesita que esa actualización ocurra siempre en torno a ese intervalo, no que ocurra en el menor tiempo posible. Lo que importa es la <em>previsibilidad</em> (el peor caso), y un RTOS se diseña para ofrecerla: su planificador es sencillo y determinista, las operaciones del kernel tienen tiempos acotados y las prioridades permiten que lo urgente se adelante siempre a lo que no lo es.</p>
+
+<p>A cambio, un RTOS ofrece pocas comodidades. No hay memoria virtual ni protección entre tareas en la configuración habitual, no hay un sistema de archivos obligatorio y la responsabilidad de no cometer errores de diseño (prioridades mal escogidas, esperas sin límite, interbloqueos) recae en el programador. Esa responsabilidad es el hilo conductor de este artículo.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-freertos-dentro-de-esp-idf">FreeRTOS dentro de ESP-IDF</h2>
+
+<p>Según la documentación de Espressif, el FreeRTOS de ESP-IDF (<em>IDF FreeRTOS</em>) se basa en la versión 10.5.1 del núcleo de FreeRTOS ("Vanilla FreeRTOS") con modificaciones para soportar multiprocesamiento simétrico (SMP), es decir, para repartir las tareas entre los dos núcleos del chip. También puede ejecutarse en un solo núcleo con la opción <code>CONFIG_FREERTOS_UNICORE</code>, que está siempre activada en los chips de un solo núcleo, como el ESP32-S2 o el ESP32-C3. En los chips de dos núcleos, activarla hace que la aplicación se ejecute únicamente en el núcleo 0 y que el comportamiento del planificador coincida con el de FreeRTOS estándar.</p>
+
+<p>Hay diferencias prácticas con el FreeRTOS "de manual" que conviene conocer desde el principio:</p>
+
+<ul>
+  <li><strong>Los tamaños de pila se indican en bytes</strong>, no en palabras, a diferencia de FreeRTOS estándar. Un error común al portar código de otras plataformas es reservar la cuarta parte o cuatro veces más pila de la prevista.</li>
+  <li><strong>Las funciones de creación estándar crean tareas sin afinidad.</strong> <code>xTaskCreate()</code> y <code>xTaskCreateStatic()</code> siguen existiendo, pero crean tareas que pueden ejecutarse en cualquier núcleo (<code>tskNO_AFFINITY</code>).</li>
+  <li><strong>Existen variantes con núcleo explícito.</strong> <code>xTaskCreatePinnedToCore()</code> y <code>xTaskCreateStaticPinnedToCore()</code> añaden un parámetro <code>xCoreID</code>, que puede valer 0, 1 o <code>tskNO_AFFINITY</code>.</li>
+  <li><strong>Deshabilitar interrupciones afecta solo al núcleo actual.</strong> Según la documentación, <code>taskDISABLE_INTERRUPTS()</code> y <code>taskENABLE_INTERRUPTS()</code> actúan únicamente sobre el núcleo desde el que se llaman, por lo que no proporcionan exclusión mutua en un sistema de dos núcleos.</li>
+</ul>
+
+<h2 id="3-las-tareas-y-sus-cuatro-estados">Las tareas y sus cuatro estados</h2>
+
+<p>Una tarea de FreeRTOS es una función que nunca debe terminar sin pedirlo (suele contener un bucle infinito) y que dispone de su propia pila y de una prioridad. El libro del kernel describe cuatro estados en los que puede estar una tarea:</p>
+
+<ul>
+  <li><strong>Running (en ejecución):</strong> el procesador está ejecutando el código de la tarea. En un solo núcleo solo puede haber una tarea en este estado; en el ESP32, hasta una por núcleo.</li>
+  <li><strong>Ready (lista):</strong> la tarea puede ejecutarse, pero ahora mismo no lo hace porque otra de igual o mayor prioridad ocupa el procesador. Es candidata para el planificador.</li>
+  <li><strong>Blocked (bloqueada):</strong> la tarea espera un evento, que puede ser temporal (el vencimiento de un retardo) o de sincronización (la llegada de datos a una cola, o la liberación de un mutex). Mientras espera, no consume CPU.</li>
+  <li><strong>Suspended (suspendida):</strong> la única forma de entrar en este estado es llamar a <code>vTaskSuspend()</code>; la tarea no es candidata a ejecutarse hasta que otra la reanude. La mayoría de las aplicaciones apenas lo usan.</li>
+</ul>
+
+<p>El estado "bloqueada" es la clave de todo diseño con un RTOS. Una tarea sana pasa casi todo su tiempo bloqueada, esperando algo, y solo está lista o en ejecución cuando tiene trabajo que hacer. Es lo opuesto a la espera activa (<em>busy waiting</em>), que consume procesador sin necesidad y perjudica a las demás tareas.</p>
+
+<h2 id="4-el-planificador-prioridades-fijas-con-ex">El planificador: prioridades fijas con expulsión</h2>
+
+<p>Según el libro de FreeRTOS, el algoritmo de planificación por defecto es "planificación expulsiva de prioridad fija con reparto de tiempo" (<em>fixed priority preemptive scheduling with time slicing</em>). Se descompone en tres reglas sencillas:</p>
+
+<ol>
+  <li><strong>Prioridad fija:</strong> el planificador nunca cambia la prioridad de una tarea por su cuenta; solo cambia si el programa lo ordena (o por herencia de prioridad, que veremos más adelante).</li>
+  <li><strong>Expulsión:</strong> la tarea lista de mayor prioridad se ejecuta siempre. Si una tarea de mayor prioridad pasa a estar lista, expulsa inmediatamente a la que se estaba ejecutando. La documentación subraya que la expulsión puede producirse "en cualquier momento", no solo en la interrupción de tick.</li>
+  <li><strong>Reparto de tiempo:</strong> las tareas listas de igual prioridad se turnan, cambiando en cada tick.</li>
+</ol>
+
+<p>El comportamiento se controla con dos opciones de configuración. Con expulsión y reparto de tiempo activados se obtiene el comportamiento descrito. Con la expulsión activada y el reparto desactivado, las tareas de igual prioridad no rotan en cada tick, lo que puede dar tiempos de CPU muy desiguales; el libro lo califica de opción avanzada. Con la expulsión desactivada, el planificador es cooperativo: solo hay cambio de contexto cuando una tarea se bloquea o cede el procesador explícitamente con <code>taskYIELD()</code>.</p>
+
+<h3>La tarea idle</h3>
+
+<p>Cuando se inicia el planificador, FreeRTOS crea automáticamente una tarea <em>idle</em> con prioridad 0, la más baja. Se ejecuta solo cuando ninguna otra tarea está lista, y es expulsada en cuanto lo está alguna. Cumple funciones de mantenimiento, como liberar la memoria de las tareas eliminadas, y permite instalar un <em>gancho</em> (<code>vApplicationIdleHook()</code>) que se llama en cada iteración, por ejemplo para medir carga o poner el procesador en reposo. Un gancho idle jamás debe bloquearse ni suspenderse.</p>
+
+<h3>Inanición: el riesgo de las tareas que no se bloquean</h3>
+
+<p>La contrapartida de la prioridad estricta es que una tarea de alta prioridad que no se bloquea nunca monopoliza el procesador. El libro lo ilustra con un ejemplo en el que una tarea se queda "sin tiempo de proceso" (<em>starved</em>) porque otra de mayor prioridad nunca cede. La solución es el diseño dirigido por eventos: las tareas deben esperar mediante llamadas bloqueantes (<code>vTaskDelay()</code>, esperar en una cola, esperar una notificación) para que el planificador pueda ejecutar a las de menor prioridad.</p>
+
+<div class="alert alert-danger">
+  <strong>Un bucle sin esperas es un error de diseño.</strong> Una tarea como <code>for (;;) { leer_sensor(); }</code>, sin ninguna llamada que la bloquee, acapara el núcleo en el que se ejecuta. En el ESP32 ese comportamiento terminará, además, disparando el watchdog de tareas, como veremos en su sección.
+</div>
+
+<h2 id="5-dos-nucleos-dos-planificadores">Dos núcleos, dos planificadores</h2>
+
+<p>En un ESP32 hay dos núcleos que ejecutan tareas a la vez. La documentación de IDF FreeRTOS describe un comportamiento que no es obvio y que sorprende a quien viene de sistemas de un solo núcleo: <strong>cada núcleo elige por su cuenta la tarea de mayor prioridad que puede ejecutar</strong>. Una tarea es candidata para un núcleo si su afinidad coincide con él (o no tiene afinidad) y si no se está ejecutando ya en el otro.</p>
+
+<p>La documentación lo ilustra con un ejemplo muy claro. Tres tareas: A con prioridad 10 fijada al núcleo 0, B con prioridad 9 fijada también al núcleo 0, y C con prioridad 8 fijada al núcleo 1. El resultado es que A se ejecuta en el núcleo 0 y C en el núcleo 1, mientras que <strong>B no se ejecuta nunca</strong>, aunque sea la segunda tarea de mayor prioridad del sistema, porque su único núcleo permitido está ocupado por A, que no se bloquea. Es un caso de inanición provocado por la afinidad.</p>
+
+<h3>Tareas fijadas y tareas libres</h3>
+
+<p>De ahí se derivan reglas prácticas de diseño:</p>
+
+<ul>
+  <li><strong>Tareas sin afinidad</strong> (<code>tskNO_AFFINITY</code>): pueden ejecutarse en cualquier núcleo. Dan el mejor aprovechamiento del procesador, pero el comportamiento resulta menos predecible, porque la tarea puede migrar de un núcleo a otro. Si una tarea sin afinidad de mayor prioridad se vuelve ejecutable y puede ir a cualquiera de los dos núcleos, el planificador expulsa primero la del núcleo actual.</li>
+  <li><strong>Tareas fijadas</strong>: su comportamiento es mucho más fácil de razonar. Son la opción recomendable para actividades con requisitos temporales estrictos o que dependen de recursos ligados a un núcleo, por ejemplo una interrupción asignada a un núcleo concreto.</li>
+  <li><strong>Reparto de tiempo imperfecto.</strong> La documentación llama al reparto de tiempo entre tareas de igual prioridad "<em>Best Effort Round Robin</em>", y precisa que no es un turno perfecto. Para obtener un reparto ideal, hay que fijar todas las tareas de la misma prioridad al mismo núcleo.</li>
+</ul>
+
+<h3>Los ticks de cada núcleo</h3>
+
+<p>Cada núcleo recibe su propia interrupción de tick periódica, y las dos pueden estar desfasadas. El reparto de funciones es asimétrico, según la documentación: el <strong>núcleo 0</strong> realiza todas las tareas del tick (incrementar el contador de ticks, desbloquear las tareas cuyo plazo ha vencido, comprobar el reparto de tiempo y ejecutar el gancho de tick de la aplicación), mientras que el <strong>núcleo 1</strong> solo comprueba el reparto de tiempo y ejecuta el gancho de tick. Una consecuencia directa: solo el núcleo 0 mantiene el tiempo del sistema, de manera que si se suspende el planificador en el núcleo 0 durante demasiado tiempo, toda la medida del tiempo del sistema se retrasa.</p>
+
+<p>La documentación que hemos consultado no indica la frecuencia de tick por defecto (se configura con <code>CONFIG_FREERTOS_HZ</code>, y su valor puede variar según el entorno, por ejemplo entre ESP-IDF y los marcos construidos sobre él). Por eso conviene expresar siempre los tiempos en milisegundos con <code>pdMS_TO_TICKS()</code> y no suponer una duración fija para un tick.</p>
+
+<h2 id="6-esperar-bien-vtaskdelay-frente-a-xtaskde">Esperar bien: vTaskDelay frente a xTaskDelayUntil</h2>
+
+<p>La forma más simple de bloquear una tarea durante un tiempo es <code>vTaskDelay()</code>. Pero hay una sutileza que provoca errores de temporización. Según el libro, el tiempo en que la tarea abandona el estado bloqueado es <em>relativo</em> al momento en que se llamó a <code>vTaskDelay()</code>. Si la tarea hace trabajo antes de llamarla, ese trabajo se suma al retardo y el periodo total es "trabajo + retardo", que además varía de una iteración a otra. Para una tarea periódica (un regulador, una lectura a frecuencia fija) esa deriva es un problema.</p>
+
+<p>La alternativa son las funciones de espera absoluta. El libro las llama <code>vTaskDelayUntil()</code> y la documentación de ESP-IDF menciona <code>xTaskDelayUntil()</code>, la versión más moderna con valor de retorno: calculan el instante de despertar como un tiempo absoluto a partir del despertar anterior, por lo que el periodo se mantiene constante aunque el trabajo de cada iteración dure un tiempo variable (siempre que quepa en el periodo). El libro las describe como la función que hay que usar "cuando se requiere un periodo de ejecución fijo".</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>c</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+// Ejemplo ilustrativo (no compilado): tarea de control periódica de 10 ms
+static void tarea_control(void *arg)
+{
+    TickType_t ultimo_despertar = xTaskGetTickCount();
+    const TickType_t periodo = pdMS_TO_TICKS(10);
+
+    for (;;) {
+        // 1. Leer sensores, calcular el control, escribir la salida (trabajo corto)
+        // 2. Esperar hasta el siguiente instante absoluto (sin deriva)
+        xTaskDelayUntil(&amp;ultimo_despertar, periodo);
+    }
+}
+
+void app_main(void)
+{
+    // Pila de 4096 bytes (en ESP-IDF la pila se indica en bytes), prioridad 10, núcleo 1
+    xTaskCreatePinnedToCore(tarea_control, "control", 4096, NULL, 10, NULL, 1);
+}</code></pre>
+        </div>
+
+<p>Si el trabajo de una iteración dura más que el periodo, la espera absoluta no puede compensarlo: la tarea no llega a bloquearse y se ejecuta de forma continua. Es un síntoma de que el periodo es demasiado corto para el trabajo, o de que alguna operación (una comunicación por un bus lento, por ejemplo) debe sacarse de esa tarea.</p>
+
+<h2 id="7-tareas-idle-y-vigilantes-los-watchdogs-d">Tareas idle y vigilantes: los watchdogs del ESP32</h2>
+
+<p>En el ESP32, IDF FreeRTOS crea una tarea idle <em>por núcleo</em>, cada una fijada a su núcleo, en lugar de la tarea idle única de FreeRTOS estándar. Cada una libera la memoria de las tareas eliminadas y ejecuta el gancho idle. Esas tareas idle son también el soporte de un mecanismo de protección importante: el <strong>watchdog de tareas</strong> (<em>Task Watchdog Timer</em>, TWDT).</p>
+
+<p>La documentación del watchdog explica que, por defecto, el TWDT vigila las tareas idle de cada CPU. Si una tarea idle no se ejecuta durante un tiempo máximo, significa que otra tarea está monopolizando ese núcleo sin ceder, y el watchdog lo detecta. El tiempo se configura con <code>CONFIG_ESP_TASK_WDT_TIMEOUT_S</code>, y la documentación aconseja establecerlo al menos igual al tiempo más largo que cualquier tarea pueda acaparar la CPU. Al vencer, el comportamiento por defecto es imprimir un aviso con un volcado de la pila de llamadas (<em>backtrace</em>) y seguir funcionando; con <code>CONFIG_ESP_TASK_WDT_PANIC</code> el vencimiento provoca un pánico y un reinicio del sistema.</p>
+
+<p>Cualquier tarea puede además suscribirse al TWDT para ser vigilada: debe llamar a <code>esp_task_wdt_add()</code> con su identificador (o <code>NULL</code> para la tarea actual) y, a partir de entonces, llamar periódicamente a <code>esp_task_wdt_reset()</code>; si deja de hacerlo, el watchdog vence. Es una forma excelente de asegurar que una tarea crítica sigue "viva" y no solo que el sistema no está colgado en general.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>c</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>#include "esp_task_wdt.h"
+
+// Ejemplo ilustrativo (no compilado): una tarea crítica se suscribe al watchdog
+static void tarea_critica(void *arg)
+{
+    esp_task_wdt_add(NULL);          // suscribir la tarea actual
+    for (;;) {
+        // ... trabajo crítico ...
+        esp_task_wdt_reset();        // "sigo viva"
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}</code></pre>
+        </div>
+
+<p>Existe un segundo mecanismo, el <strong>watchdog de interrupciones</strong> (IWDT). Comprueba que las rutinas de servicio de interrupción no queden bloqueadas durante demasiado tiempo, por causas como interrupciones deshabilitadas, secciones críticas largas o interrupciones del mismo nivel o superior que se prolongan. Usa la interrupción de tick de FreeRTOS de cada CPU para "alimentar" el watchdog, de modo que si un tick no llega, es señal de que algo está bloqueando las interrupciones en ese núcleo. Se habilita por defecto mediante <code>CONFIG_ESP_INT_WDT</code>, su plazo se configura con <code>CONFIG_ESP_INT_WDT_TIMEOUT_MS</code> (que debe ser al menos el doble del periodo entre ticks) y, al vencer, el manejador de pánico se ejecuta con un motivo del tipo "Interrupt wdt timeout on CPU0"; si ni siquiera puede ejecutarse, un segundo plazo reinicia físicamente el chip.</p>
+
+<h2 id="8-comunicar-tareas-las-colas">Comunicar tareas: las colas</h2>
+
+<p>Dos tareas necesitan intercambiar datos con frecuencia: un productor que lee un sensor y un consumidor que envía los valores por la red. FreeRTOS ofrece para ello las <strong>colas</strong> (<em>queues</em>), y el libro del kernel precisa sus propiedades esenciales:</p>
+
+<ul>
+  <li>Son buffers FIFO por defecto: los datos se escriben por la cola y se leen por la cabeza (también se pueden escribir por delante).</li>
+  <li><strong>Copian los datos por valor</strong>: lo que se envía se copia byte a byte dentro de la cola. El productor puede reutilizar o destruir su variable inmediatamente después de enviar.</li>
+  <li>Tienen una longitud fija (número de elementos) y un tamaño de elemento fijo, establecidos al crearla con <code>xQueueCreate()</code>. Si no hay memoria suficiente, la función devuelve <code>NULL</code>.</li>
+  <li>Las tareas pueden bloquearse al enviar a una cola llena o al leer de una vacía, con un tiempo máximo de espera expresado en ticks (<code>pdMS_TO_TICKS()</code> convierte milisegundos a ticks). Con tiempo cero, la llamada vuelve de inmediato. Con <code>portMAX_DELAY</code> se espera indefinidamente, siempre que <code>INCLUDE_vTaskSuspend</code> valga 1.</li>
+</ul>
+
+<p>Cuando varias tareas están bloqueadas esperando la misma cola, el libro explica quién se despierta primero: la de mayor prioridad y, entre las de igual prioridad, la que lleva más tiempo esperando. La misma regla vale para las tareas bloqueadas al escribir en una cola llena. Esto da un comportamiento previsible, pero obliga a tenerlo en cuenta al elegir prioridades.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>c</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+
+// Ejemplo ilustrativo (no compilado): productor y consumidor con una cola
+typedef struct {
+    uint32_t t_ms;
+    int32_t  corriente_mA;
+} muestra_t;
+
+static QueueHandle_t q_muestras;
+
+static void tarea_productor(void *arg)
+{
+    for (;;) {
+        muestra_t m = {
+            .t_ms = pdTICKS_TO_MS(xTaskGetTickCount()),
+            .corriente_mA = 0 /* leer_corriente() */
+        };
+        // Tiempo de espera 0: si la cola está llena, no bloquear y contar la pérdida
+        if (xQueueSend(q_muestras, &amp;m, 0) != pdPASS) {
+            // muestras_perdidas++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static void tarea_consumidor(void *arg)
+{
+    muestra_t m;
+    for (;;) {
+        if (xQueueReceive(q_muestras, &amp;m, pdMS_TO_TICKS(1000)) == pdPASS) {
+            // enviar m por WiFi o por el puerto serie
+        } else {
+            // 1 s sin datos: posible fallo del productor
+        }
+    }
+}
+
+void iniciar_telemetria(void)
+{
+    q_muestras = xQueueCreate(16, sizeof(muestra_t));
+    xTaskCreatePinnedToCore(tarea_productor, "prod", 3072, NULL, 8, NULL, 1);
+    xTaskCreatePinnedToCore(tarea_consumidor, "cons", 4096, NULL, 5, NULL, 0);
+}</code></pre>
+        </div>
+
+<p>Observa un detalle de diseño: el productor no se bloquea nunca al enviar (espera 0) y cuenta las pérdidas, mientras que el consumidor espera con un tiempo máximo y trata la ausencia de datos como un indicio de fallo. Es mejor perder una muestra de telemetría que retrasar el lazo de control, y es mejor un consumidor con un plazo explícito que uno que espera eternamente.</p>
+
+<h3>Punteros en las colas y conjuntos de colas</h3>
+
+<p>Copiar estructuras grandes en una cola es caro. La alternativa es enviar un puntero, pero el libro advierte de que exige un diseño cuidadoso: debe haber un propietario claro de la memoria y solo una de las partes accede a ella en cada momento, hay que garantizar que el dato sigue siendo válido mientras alguien lo usa, y exactamente una tarea debe liberarlo. La regla más importante es que un puntero nunca debe usarse para acceder a datos reservados en la pila de una tarea, porque esa memoria desaparece cuando la función termina.</p>
+
+<p>Para esperar a la vez varias colas y semáforos sin sondearlos, existen los <em>conjuntos de colas</em> (<code>xQueueCreateSet()</code>, <code>xQueueAddToSet()</code> y <code>xQueueSelectFromSet()</code>). El propio libro recomienda usarlos solo cuando las restricciones del diseño los hagan "absolutamente necesarios", porque suelen indicar que la arquitectura de comunicación podría simplificarse.</p>
+
+<h2 id="9-interrupciones-lo-minimo-en-la-isr-el-re">Interrupciones: lo mínimo en la ISR, el resto en una tarea</h2>
+
+<p>Una rutina de servicio de interrupción (ISR) se ejecuta en un contexto especial: interrumpe a la tarea en curso, no pertenece a ninguna tarea y no puede bloquearse. El capítulo del libro dedicado a la gestión de interrupciones fija la regla más importante: <strong>nunca se debe llamar desde una ISR a una función de la API de FreeRTOS cuyo nombre no contenga <code>FromISR</code></strong>. Las funciones con ese sufijo son versiones preparadas para este contexto, y son las únicas que una ISR puede utilizar.</p>
+
+<h3>xHigherPriorityTaskWoken y el cambio de contexto</h3>
+
+<p>Las funciones <code>FromISR</code> que pueden desbloquear una tarea (enviar a una cola, dar un semáforo, enviar una notificación) reciben un parámetro adicional, normalmente llamado <code>xHigherPriorityTaskWoken</code>. Debe inicializarse a <code>pdFALSE</code> antes de usarse por primera vez, y la función lo pone a <code>pdTRUE</code> si ha despertado a una tarea de prioridad mayor que la que se estaba ejecutando. En ese caso, la ISR debería solicitar un cambio de contexto antes de salir, de modo que la tarea más urgente se ejecute inmediatamente al terminar la interrupción y no al siguiente tick. Eso se hace con <code>portYIELD_FROM_ISR()</code> o <code>portEND_SWITCHING_ISR()</code>, que el libro describe como las versiones seguras para interrupciones de <code>taskYIELD()</code>.</p>
+
+<h3>Procesamiento diferido</h3>
+
+<p>La práctica recomendada es mantener las ISR "tan cortas como sea posible". Lo habitual es el <em>procesamiento diferido</em>: la ISR se limita a reconocer el evento y a avisar a una tarea manejadora, que realiza el trabajo pesado. Si esa tarea tiene la prioridad suficientemente alta, el libro explica que se garantiza que expulse a las demás, de modo que el procesamiento ocurre de forma ininterrumpida, casi como si se hubiera hecho dentro de la propia ISR, pero sin sus restricciones. Para la señalización entre la ISR y la tarea, el libro describe primero el uso de un semáforo binario y señala después que desbloquear una tarea desde una interrupción con una <strong>notificación directa a la tarea</strong> es más eficiente.</p>
+
+<p>Las notificaciones son un mecanismo ligero: cada tarea tiene un estado de notificación (pendiente o no) y un valor de 32 bits, sin que haga falta crear un objeto aparte. Según el libro, son "significativamente más rápidas" que una cola, un semáforo o un grupo de eventos para una operación equivalente, y requieren "mucha menos RAM". Tienen limitaciones claras: solo pueden enviarse a una tarea (no a una ISR), solo las procesa la tarea destinataria, el valor solo puede contener un dato a la vez y, si el receptor ya tiene una notificación pendiente, el emisor no puede esperar bloqueado a que se libere. No hay funciones de recepción <code>FromISR</code>, porque las interrupciones no están asociadas a ninguna tarea. El libro no ofrece una cifra de mejora de velocidad, por lo que no la citamos.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>c</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+
+// Ejemplo ilustrativo (no compilado): un botón avisa a una tarea mediante una notificación
+static TaskHandle_t h_boton;
+
+static void IRAM_ATTR isr_boton(void *arg)
+{
+    BaseType_t despertar = pdFALSE;
+    vTaskNotifyGiveFromISR(h_boton, &amp;despertar);   // lo mínimo: avisar a la tarea
+    portYIELD_FROM_ISR(despertar);                 // cambio de contexto si procede
+}
+
+static void tarea_boton(void *arg)
+{
+    for (;;) {
+        // Bloqueada sin consumir CPU hasta que llegue una notificación
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // Aquí va el trabajo: antirrebote, actualizar estado, enviar un mensaje...
+    }
+}
+
+void configurar_boton(void)
+{
+    xTaskCreatePinnedToCore(tarea_boton, "boton", 3072, NULL, 12, &amp;h_boton, 1);
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL &lt;&lt; GPIO_NUM_0,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+    };
+    gpio_config(&amp;cfg);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(GPIO_NUM_0, isr_boton, NULL);
+}</code></pre>
+        </div>
+
+<p>La función <code>ulTaskNotifyTake()</code> bloquea la tarea hasta que su valor de notificación sea mayor que cero y después lo pone a cero (con <code>pdTRUE</code>) o lo decrementa, según el parámetro; devuelve el valor previo. Eso permite contar eventos acumulados: si llegan tres pulsaciones mientras la tarea estaba ocupada, la siguiente llamada devolverá 3. El libro recomienda además que el manejador procese todos los eventos pendientes antes de volver a esperar, y que use un tiempo máximo de espera en lugar de uno infinito cuando proceda, para no depender de que la ISR funcione siempre.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="10-interrupciones-en-el-esp32-en-particular">Interrupciones en el ESP32 en particular</h2>
+
+<p>El ESP32 añade matices propios al modelo general, documentados en la sección de asignación de interrupciones de ESP-IDF:</p>
+
+<ul>
+  <li><strong>La interrupción se asigna al núcleo que la solicita.</strong> La documentación dice que asignar una interrupción externa la asigna siempre en el núcleo que realiza la asignación, y que liberarla debe hacerse en ese mismo núcleo. Por eso las tareas que asignan interrupciones deberían fijarse a un núcleo con <code>xTaskCreatePinnedToCore()</code>.</li>
+  <li><strong>Interrupciones compartidas.</strong> Con <code>ESP_INTR_FLAG_SHARED</code>, varias fuentes pueden compartir una línea; cada manejador se invoca en secuencia cuando su fuente está activa, así que cada ISR debe comprobar el estado de su periférico. Las interrupciones compartidas deben ser sensibles al nivel: compartir una línea sensible al flanco puede hacer perder interrupciones.</li>
+  <li><strong>Interrupciones de alta prioridad.</strong> La documentación describe como de "alta prioridad" las de nivel 4 a 7 y señala que requieren manejadores escritos en ensamblador. No afirma de forma expresa que los niveles 1 a 3 sean los únicos disponibles para manejadores en C, así que consulta la tabla de tu chip antes de elegir un nivel.</li>
+  <li><strong><code>ESP_INTR_FLAG_IRAM</code>.</strong> Cuando se escribe o borra la memoria flash, el ESP32 deshabilita la caché, de modo que la flash y la PSRAM dejan de ser accesibles para los manejadores. Un manejador registrado con esta bandera debe ser "seguro para IRAM": su código debe residir en IRAM (se marca con <code>IRAM_ATTR</code>) y solo debe acceder a datos en memoria interna. La ventaja es una latencia menor y más predecible durante operaciones de flash; el coste, memoria interna. La documentación advierte de que nunca se registre un manejador con esta bandera sin estar "100 % seguro" de que todo el código y los datos que toca están en memoria interna, porque un error provoca errores de caché.</li>
+</ul>
+
+<h3>Coma flotante y núcleos</h3>
+
+<p>La documentación de IDF FreeRTOS añade una restricción que a menudo se descubre por las malas: usar <code>float</code> dentro de una tarea la fija al núcleo en el que se está ejecutando, porque los registros de la unidad de coma flotante se guardan de forma perezosa por núcleo. Además, el uso de <code>float</code> dentro de una ISR no está soportado por defecto (hay una opción, <code>CONFIG_FREERTOS_FPU_IN_ISR</code>, para habilitarlo), y el tipo <code>double</code> se implementa por software en estos objetivos, con el coste en velocidad que eso implica. En un lazo de control crítico, conviene usar aritmética entera o <code>float</code> con el conocimiento de estas condiciones.</p>
+
+<h2 id="11-proteger-los-datos-compartidos">Proteger los datos compartidos</h2>
+
+<p>Cuando dos tareas, o una tarea y una ISR, acceden a la misma variable o periférico, hay que garantizar que ninguna ve el recurso en un estado intermedio. El libro de FreeRTOS abre el capítulo de gestión de recursos con una observación de buen diseño: el mejor método de exclusión mutua es no compartir el recurso cuando sea posible, aunque a menudo no es práctico. Cuando es imprescindible, hay varias herramientas, de menor a mayor granularidad.</p>
+
+<h3>Secciones críticas con spinlock</h3>
+
+<p>En un sistema de un solo núcleo, una sección crítica consiste en deshabilitar las interrupciones durante un tramo muy corto (<code>taskENTER_CRITICAL()</code> y <code>taskEXIT_CRITICAL()</code>). El libro insiste en que las secciones críticas básicas deben ser muy cortas, o perjudicarán el tiempo de respuesta a las interrupciones. Pero en el ESP32, con dos núcleos, eso no basta, y por ello IDF FreeRTOS usa un mecanismo distinto: el <em>spinlock</em>, de tipo <code>portMUX_TYPE</code>. La documentación describe su uso:</p>
+
+<ul>
+  <li>Desde una tarea: <code>taskENTER_CRITICAL(&amp;spinlock)</code> y <code>taskEXIT_CRITICAL(&amp;spinlock)</code>. Desde una ISR: <code>taskENTER_CRITICAL_ISR()</code> y <code>taskEXIT_CRITICAL_ISR()</code>.</li>
+  <li>Al entrar, se deshabilitan las interrupciones locales (o se anidan hasta <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code>) y después el núcleo <em>gira</em> (espera activamente) hasta conseguir el bloqueo.</li>
+  <li>Se inicializan de forma estática con <code>portMUX_INITIALIZER_UNLOCKED</code>, o de forma dinámica con <code>portMUX_INITIALIZE()</code>.</li>
+  <li>Pueden anidarse, pero deben ser muy cortas. No deben llamar a funciones de FreeRTOS ni a funciones que bloqueen o cedan el procesador dentro de la sección.</li>
+</ul>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>c</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Ejemplo ilustrativo (no compilado): contador compartido entre una ISR y una tarea
+static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t pulsos = 0;
+
+static void IRAM_ATTR isr_encoder(void *arg)
+{
+    taskENTER_CRITICAL_ISR(&amp;mux);
+    pulsos++;
+    taskEXIT_CRITICAL_ISR(&amp;mux);
+}
+
+uint32_t leer_pulsos(void)
+{
+    uint32_t v;
+    taskENTER_CRITICAL(&amp;mux);
+    v = pulsos;
+    taskEXIT_CRITICAL(&amp;mux);
+    return v;
+}</code></pre>
+        </div>
+
+<div class="alert">
+  <strong>Suspender el planificador no es exclusión mutua.</strong> Según la documentación, <code>vTaskSuspendAll()</code> suspende la planificación únicamente en el núcleo que la llama y no es un método válido de exclusión mutua en SMP: hay que usar mutex o spinlocks. El libro añade que suspender el planificador protege el código de otras tareas, pero no de las interrupciones, y que no se debe llamar a ninguna función de la API de FreeRTOS mientras está suspendido.
+</div>
+
+<h3>Mutex: exclusión mutua entre tareas</h3>
+
+<p>Para secciones de código más largas, o que pueden bloquear, el instrumento adecuado es el <strong>mutex</strong>. Según el libro, un mutex es un tipo especial de semáforo binario que sirve para controlar el acceso a un recurso compartido entre tareas, y debe devolverse siempre tras usarlo. Se crea con <code>xSemaphoreCreateMutex()</code>, se toma con <code>xSemaphoreTake()</code> y se libera con <code>xSemaphoreGive()</code>. Un punto esencial: <code>xSemaphoreTake()</code> no debe usarse desde una ISR, por lo que un mutex no sirve para proteger datos compartidos con interrupciones.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>c</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>#include "freertos/semphr.h"
+
+// Ejemplo ilustrativo (no compilado): proteger un bus I2C compartido por varias tareas
+static SemaphoreHandle_t mtx_i2c;
+
+void iniciar_bus(void)
+{
+    mtx_i2c = xSemaphoreCreateMutex();
+}
+
+bool leer_sensor_i2c(uint8_t *dato)
+{
+    if (xSemaphoreTake(mtx_i2c, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return false;            // tiempo agotado: nunca esperar eternamente
+    }
+    // ... transacción I2C ...
+    xSemaphoreGive(mtx_i2c);     // siempre liberar, también en las rutas de error
+    return true;
+}</code></pre>
+        </div>
+
+<h3>Inversión de prioridades y herencia de prioridad</h3>
+
+<p>Los mutex traen un problema clásico de los sistemas con prioridades: la <strong>inversión de prioridades</strong>. El libro la explica con tres tareas. Una tarea de baja prioridad toma un mutex; una de alta prioridad lo necesita y se bloquea esperando; y entonces una de prioridad media, que no usa el mutex, se vuelve ejecutable y expulsa a la de baja prioridad. Resultado: la tarea de alta prioridad queda retenida indefinidamente por una de prioridad media, porque la de baja, que tiene el mutex, no puede ejecutarse para liberarlo. A esto el libro lo llama inversión de prioridad <em>no acotada</em>.</p>
+
+<p>La defensa de FreeRTOS es la <strong>herencia de prioridad</strong>: los mutex "incluyen un mecanismo básico de herencia de prioridad, mientras que los semáforos binarios no". Funciona elevando temporalmente la prioridad del poseedor del mutex hasta la de la tarea de mayor prioridad que lo espera, de modo que pueda terminar y liberarlo. El libro es muy claro sobre su alcance: no "arregla" la inversión de prioridades, solo atenúa su impacto, y complica el análisis de tiempos, por lo que no recomienda depender de ella. De ahí una consecuencia de diseño: <strong>usa mutex (no semáforos binarios) para exclusión mutua</strong>, mantén las secciones protegidas muy cortas y evita que tareas de prioridades muy distintas compartan recursos.</p>
+
+<h3>Interbloqueo y mutex recursivos</h3>
+
+<p>Otro riesgo es el interbloqueo (<em>deadlock</em>, o "abrazo mortal"): dos tareas esperan cada una un recurso que posee la otra, y ninguna puede avanzar. El libro lo define así y recomienda evitar las esperas indefinidas y usar tiempos máximos. Una versión particular es la tarea que se bloquea a sí misma al intentar tomar dos veces el mismo mutex. Para ese caso existe el <em>mutex recursivo</em>, que una misma tarea puede tomar varias veces y que solo se libera cuando se ha devuelto el mismo número de veces.</p>
+
+<h3>Tareas guardianas</h3>
+
+<p>La técnica más limpia para evitar los problemas anteriores es la <strong>tarea guardiana</strong> (<em>gatekeeper</em>): una tarea que tiene la propiedad exclusiva de un recurso. El resto de tareas no lo tocan directamente, sino que le envían peticiones, normalmente a través de una cola. Como solo una tarea accede al recurso, no hay exclusión mutua que gestionar, y el libro señala que este diseño evita la inversión de prioridades y el interbloqueo. Es la solución natural para una pantalla, un puerto serie de depuración o un bus I2C compartido.</p>
+
+<h2 id="12-borrar-tareas-y-gestionar-su-memoria">Borrar tareas y gestionar su memoria</h2>
+
+<p>La documentación de ESP-IDF advierte de un comportamiento distinto de <code>vTaskDelete()</code> en SMP. Si la tarea que se borra se está ejecutando en el otro núcleo, se provoca un cambio de contexto allí y una tarea idle libera su memoria más tarde; si no se está ejecutando en ningún núcleo, su memoria se libera de inmediato. La página aconseja no borrar tareas que se estén ejecutando en otro núcleo, y propone patrones más seguros: que la tarea se borre a sí misma con <code>vTaskDelete(NULL)</code> tras liberar sus recursos, o suspenderla con <code>vTaskSuspend()</code> antes de que otra la borre. Como cada tarea reserva su pila, el patrón general es crear las tareas al arrancar y mantenerlas durante toda la vida del sistema, en lugar de crear y destruir tareas continuamente.</p>
+
+<h2 id="13-disenar-un-sistema-de-tareas">Diseñar un sistema de tareas</h2>
+
+<p>Con las piezas anteriores, el reto es de diseño: cuántas tareas, con qué prioridades, en qué núcleo y con qué comunicación. No hay una receta universal, pero sí principios que se deducen de lo visto.</p>
+
+<h3>Asignar prioridades</h3>
+
+<p>Una regla práctica muy extendida (que no procede de las fuentes de este artículo, sino de la teoría general de planificación en tiempo real) es dar mayor prioridad a las actividades con plazos más cortos. El lazo de control del motor, con un periodo de 10 ms, debe tener más prioridad que la telemetría por WiFi, que puede tolerar retrasos de cientos de milisegundos. Y las tareas de prioridad alta deben hacer poco trabajo y bloquearse enseguida: si una tarea de alta prioridad ejecuta mucho código, todo lo demás espera.</p>
+
+<h3>Repartir los núcleos</h3>
+
+<p>En el ESP32 hay una asimetría que conviene tener en cuenta: la pila de WiFi y Bluetooth se ejecuta en uno de los núcleos y requiere procesador. Una estrategia común, y la que seguíamos en nuestro artículo sobre <a href="/articulos/esp32-control-motores.html">control de motores</a>, es fijar el lazo de control crítico a un núcleo y dejar la comunicación en el otro, para que las dos cargas no compitan. Recuerda además que el núcleo 0 realiza todas las funciones de mantenimiento del tick, de modo que mantener libre de bloqueos prolongados al núcleo 0 es especialmente importante.</p>
+
+<h3>Dimensionar las pilas</h3>
+
+<p>Una pila demasiado pequeña produce desbordamientos difíciles de diagnosticar; una demasiado grande desperdicia RAM, que en un microcontrolador es escasa. La función <code>uxTaskGetStackHighWaterMark()</code> (herramienta estándar de FreeRTOS, no contrastada en las fuentes consultadas) informa del mínimo de pila libre que ha alcanzado una tarea, y es la forma práctica de ajustar el tamaño: se reserva con margen, se ejecuta con la carga más exigente y se reduce según la marca de agua observada, dejando siempre un margen de seguridad.</p>
+
+<h3>Patrones recomendables</h3>
+
+<ul>
+  <li><strong>Tareas dirigidas por eventos:</strong> cada tarea espera en una cola, una notificación o un temporizador, y solo trabaja cuando recibe algo.</li>
+  <li><strong>ISR mínimas:</strong> reconocer el evento, avisar a una tarea y salir, usando siempre las funciones <code>FromISR</code>.</li>
+  <li><strong>Tareas periódicas con espera absoluta:</strong> para lazos de control a frecuencia fija.</li>
+  <li><strong>Propiedad única de los recursos:</strong> una tarea guardiana o un mutex con tiempo máximo.</li>
+  <li><strong>Tiempos máximos en todas las esperas:</strong> así un fallo se convierte en un error detectable y no en un bloqueo silencioso.</li>
+</ul>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="14-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>"Más prioridad significa más rápido"</h3>
+
+<p>La prioridad no acelera una tarea: solo decide quién se ejecuta cuando hay competencia. Una prioridad alta mal usada produce inanición de las demás, y una tarea de alta prioridad que no se bloquea deja inútil el resto del sistema.</p>
+
+<h3>"Una variable <code>volatile</code> basta para compartir datos"</h3>
+
+<p><code>volatile</code> impide que el compilador optimice los accesos, pero no los hace atómicos ni evita que otro núcleo vea un estado intermedio de una estructura de varios campos. Para datos compartidos entre núcleos hacen falta secciones críticas con spinlock, mutex o colas.</p>
+
+<h3>"Deshabilitar interrupciones es una exclusión mutua"</h3>
+
+<p>En un sistema de un solo núcleo puede serlo; en el ESP32 de dos núcleos, la documentación señala que solo afecta al núcleo actual, y el otro núcleo sigue ejecutando.</p>
+
+<h3>"Un mutex sirve para proteger datos compartidos con una interrupción"</h3>
+
+<p>No: <code>xSemaphoreTake()</code> no puede usarse desde una ISR. Los datos compartidos con una ISR se protegen con una sección crítica con spinlock, con operaciones atómicas o enviando los datos a una cola mediante funciones <code>FromISR</code>.</p>
+
+<h3>"Si la tarea idle no corre, no pasa nada"</h3>
+
+<p>La tarea idle libera memoria de las tareas eliminadas y es la base del watchdog de tareas. Si no llega a ejecutarse porque otra tarea acapara el núcleo, el sistema lo detecta y lo notifica, y es una señal de que hay un fallo de diseño que arreglar, no un aviso para silenciar.</p>
+
+<h3>"El ESP32 reparte las tareas por igual entre los dos núcleos"</h3>
+
+<p>Solo las tareas sin afinidad pueden ir a cualquier núcleo, y las fijadas se quedan donde se las puso. El ejemplo de la documentación (A, B y C) demuestra que una tarea fijada puede quedarse sin ejecutar nunca aunque haya un núcleo libre, si ese núcleo no es el suyo.</p>
+
+<h2 id="15-diagnostico-que-mirar-cuando-algo-no-va">Diagnóstico: qué mirar cuando algo no va bien</h2>
+
+<ol>
+  <li><strong>Reinicios o avisos del watchdog.</strong> Si el TWDT avisa, el mensaje identifica la tarea y el núcleo. Busca bucles sin esperas o esperas con tiempo infinito sobre un recurso.</li>
+  <li><strong>Pánico del watchdog de interrupciones.</strong> Un mensaje del tipo "Interrupt wdt timeout" indica secciones críticas demasiado largas, ISR lentas o interrupciones deshabilitadas durante mucho tiempo en ese núcleo.</li>
+  <li><strong>Una tarea que "no se ejecuta".</strong> Comprueba su prioridad, su afinidad y si otra tarea de mayor prioridad (en el mismo núcleo) acapara el procesador, como en el caso de la tarea B del ejemplo.</li>
+  <li><strong>Fallos intermitentes con datos compartidos.</strong> Revisa que cada variable compartida esté protegida de forma adecuada para su contexto (tarea con tarea, tarea con ISR, núcleo con núcleo).</li>
+  <li><strong>Desbordamientos de pila.</strong> Mide la marca de agua de cada tarea con la carga máxima.</li>
+  <li><strong>Latencias inexplicables en periodos fijos.</strong> Comprueba si usas retardos relativos en una tarea periódica y si el trabajo de cada iteración cabe en el periodo.</li>
+</ol>
+
+<h2 id="16-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Qué diferencia hay entre usar FreeRTOS directamente y el framework Arduino en el ESP32?</h3>
+
+<p>Según el conocimiento general del ecosistema (no contrastado en las fuentes de este artículo), el soporte de Arduino para el ESP32 se construye sobre ESP-IDF, de modo que <code>loop()</code> se ejecuta dentro de una tarea de FreeRTOS. Se puede crear tareas propias en un sketch con las mismas funciones. Las opciones de configuración (como la frecuencia de tick) pueden diferir entre ambos entornos, por lo que conviene comprobarlas en el que uses.</p>
+
+<h3>¿Cuántas tareas puedo crear?</h3>
+
+<p>El límite práctico lo marca la memoria RAM disponible, porque cada tarea reserva su pila y una estructura de control. No hay un número mágico: depende del tamaño de las pilas y del resto de usos de memoria de la aplicación.</p>
+
+<h3>¿Puedo usar printf dentro de una ISR?</h3>
+
+<p>No es recomendable. Una ISR debe ser corta y no puede bloquearse, y las funciones de impresión suelen usar mecanismos que sí pueden bloquear. Registra el evento mediante una cola o una notificación y deja que una tarea lo imprima.</p>
+
+<h3>¿Cuándo uso una cola y cuándo una notificación?</h3>
+
+<p>Una notificación es ideal para avisar a una única tarea (por ejemplo, desde una ISR) y es más ligera. Una cola es mejor cuando se transfieren datos, hay varios productores o se necesita almacenar varios elementos pendientes. Las notificaciones no pueden almacenar más de un valor a la vez.</p>
+
+<h3>¿Qué ocurre si dos tareas de igual prioridad nunca se bloquean?</h3>
+
+<p>Con el reparto de tiempo activado, se turnan en cada tick. En un sistema de dos núcleos el reparto es de "mejor esfuerzo", y la documentación indica que, para un turno ideal, hay que fijar las tareas del mismo nivel de prioridad al mismo núcleo.</p>
+
+<h3>¿Por qué mi tarea periódica se desvía con el tiempo?</h3>
+
+<p>Probablemente usa un retardo relativo (<code>vTaskDelay()</code>), que se mide desde el momento de la llamada y por tanto acumula el tiempo de trabajo de cada iteración. Con una espera absoluta (<code>xTaskDelayUntil()</code>) el periodo se mantiene constante.</p>
+
+<h3>¿Es seguro llamar a funciones de FreeRTOS dentro de una sección crítica?</h3>
+
+<p>La documentación de ESP-IDF indica que no se deben llamar funciones de FreeRTOS ni funciones que bloqueen o cedan el procesador dentro de una sección crítica con spinlock, y que estas deben ser lo más cortas posible.</p>
+
+<h3>¿Cómo se compara este modelo con las tareas asíncronas de Rust?</h3>
+
+<p>En FreeRTOS cada tarea tiene su propia pila y el sistema operativo cambia de contexto entre ellas con expulsión; en los modelos asíncronos cooperativos, las tareas son máquinas de estados que ceden el control en puntos de espera. Cada modelo tiene ventajas y costes distintos, y lo comparamos en el artículo sobre <a href="/articulos/rust-vs-cpp-sistemas-embebidos.html">Rust frente a C++ en sistemas embebidos</a>.</p>
+
+<h2 id="17-conclusion">Conclusión</h2>
+
+<p>FreeRTOS en el ESP32 combina un planificador muy simple (prioridades fijas con expulsión y reparto de tiempo) con la complejidad añadida de dos núcleos. Esa simplicidad es una virtud, porque permite razonar sobre el comportamiento del sistema; la complejidad de los dos núcleos exige tener presentes sus peculiaridades: cada núcleo elige su tarea por su cuenta, la afinidad puede dejar sin ejecutar a una tarea, el tick lo mantiene el núcleo 0 y la exclusión mutua no se logra deshabilitando interrupciones.</p>
+
+<p>Las buenas prácticas se resumen en pocas ideas: esperar siempre con llamadas bloqueantes y con tiempo máximo, mantener las ISR mínimas y delegar el trabajo a tareas, proteger los datos compartidos con el mecanismo adecuado a cada contexto, usar mutex con herencia de prioridad (y entender que no resuelve el problema por completo) o, mejor aún, tareas guardianas, y apoyarse en los watchdogs como red de seguridad y no como método de diseño. Con ellas, el código de un lazo de control, una comunicación y un conjunto de periféricos puede convivir en un mismo chip sin que unos perjudiquen a otros.</p>
+
+<p>Si quieres seguir, el siguiente paso natural es medir. Instrumenta tus tareas para conocer su periodo real, su uso de pila y su carga, y contrasta lo observado con lo que has diseñado. Es en esa comparación donde se descubren los problemas de temporización antes de que lleguen al hardware real.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Espressif Systems. «FreeRTOS (IDF)». Documentación de ESP-IDF (rama stable, ESP32). <a href="https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/freertos_idf.html" rel="noopener">https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/freertos_idf.html</a> (consultado el 27-10-2026; se leyeron los primeros 100.000 caracteres).</li>
+  <li>Espressif Systems. «Interrupt Allocation». Documentación de ESP-IDF. <a href="https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/intr_alloc.html" rel="noopener">https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/intr_alloc.html</a> (consultado el 27-10-2026).</li>
+  <li>Espressif Systems. «Watchdogs». Documentación de ESP-IDF. <a href="https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/wdts.html" rel="noopener">https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/wdts.html</a> (consultado el 27-10-2026).</li>
+  <li>FreeRTOS. <em>Mastering the FreeRTOS Real Time Kernel</em>, cap. 4 «Task Management». <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md" rel="noopener">https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md</a> (consultado el 27-10-2026).</li>
+  <li>FreeRTOS. <em>Mastering the FreeRTOS Real Time Kernel</em>, cap. 5 «Queue Management». <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch05.md" rel="noopener">https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch05.md</a> (consultado el 27-10-2026).</li>
+  <li>FreeRTOS. <em>Mastering the FreeRTOS Real Time Kernel</em>, cap. 7 «Interrupt Management». <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch07.md" rel="noopener">https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch07.md</a> (consultado el 27-10-2026).</li>
+  <li>FreeRTOS. <em>Mastering the FreeRTOS Real Time Kernel</em>, cap. 8 «Resource Management». <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch08.md" rel="noopener">https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch08.md</a> (consultado el 27-10-2026).</li>
+  <li>FreeRTOS. <em>Mastering the FreeRTOS Real Time Kernel</em>, cap. 10 «Task Notifications». <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch10.md" rel="noopener">https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch10.md</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/esp32-control-motores.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[iot]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Control de Motores y Telemetría con ESP32</span>
+          </a></li>
+          <li><a href="/articulos/rust-vs-cpp-sistemas-embebidos.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[hardware]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Exhaustiva: Rust vs C++ en Sistemas Embebidos y ESP32</span>
+          </a></li>
+          <li><a href="/articulos/cpp-ncurses-terminal.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[cpp]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">C++ en la Terminal: Interfaces con Ncurses</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-que-promete-un-sistema-operativo-en-tiem" class="text-muted hover:text-accent">Qué promete un sistema operativo en tiempo real</a></li>
+            <li><a href="#2-freertos-dentro-de-esp-idf" class="text-muted hover:text-accent">FreeRTOS dentro de ESP-IDF</a></li>
+            <li><a href="#3-las-tareas-y-sus-cuatro-estados" class="text-muted hover:text-accent">Las tareas y sus cuatro estados</a></li>
+            <li><a href="#4-el-planificador-prioridades-fijas-con-ex" class="text-muted hover:text-accent">El planificador: prioridades fijas con expulsión</a></li>
+            <li><a href="#5-dos-nucleos-dos-planificadores" class="text-muted hover:text-accent">Dos núcleos, dos planificadores</a></li>
+            <li><a href="#6-esperar-bien-vtaskdelay-frente-a-xtaskde" class="text-muted hover:text-accent">Esperar bien: vTaskDelay frente a xTaskDelayUntil</a></li>
+            <li><a href="#7-tareas-idle-y-vigilantes-los-watchdogs-d" class="text-muted hover:text-accent">Tareas idle y vigilantes: los watchdogs del ESP32</a></li>
+            <li><a href="#8-comunicar-tareas-las-colas" class="text-muted hover:text-accent">Comunicar tareas: las colas</a></li>
+            <li><a href="#9-interrupciones-lo-minimo-en-la-isr-el-re" class="text-muted hover:text-accent">Interrupciones: lo mínimo en la ISR, el resto en una tarea</a></li>
+            <li><a href="#10-interrupciones-en-el-esp32-en-particular" class="text-muted hover:text-accent">Interrupciones en el ESP32 en particular</a></li>
+            <li><a href="#11-proteger-los-datos-compartidos" class="text-muted hover:text-accent">Proteger los datos compartidos</a></li>
+            <li><a href="#12-borrar-tareas-y-gestionar-su-memoria" class="text-muted hover:text-accent">Borrar tareas y gestionar su memoria</a></li>
+            <li><a href="#13-disenar-un-sistema-de-tareas" class="text-muted hover:text-accent">Diseñar un sistema de tareas</a></li>
+            <li><a href="#14-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#15-diagnostico-que-mirar-cuando-algo-no-va" class="text-muted hover:text-accent">Diagnóstico: qué mirar cuando algo no va bien</a></li>
+            <li><a href="#16-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#17-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "id": "ART-001",
+  "slug": "git-por-dentro-objetos-referencias-packfiles",
+  "titulo": "Git por dentro: objetos, referencias, packfiles y reflog",
+  "etiqueta": "git",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo guarda Git el historial: blobs, trees y commits identificados por hash, referencias, packfiles con deltas y reflog, con ejemplos reproducibles ejecutados paso a paso.",
+  "palabra_clave": "cómo funciona git internamente",
+  "secundarias": [
+    "objetos de git",
+    "packfiles",
+    "reflog",
+    "DAG de commits",
+    "SHA-256"
+  ],
+  "relacionados": [
+    "git-rebase-interactivo",
+    "github-actions-cache",
+    "docker-multi-stage"
+  ],
+  "barra": "ambar"
+}

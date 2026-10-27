@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Git por dentro: objetos, referencias, packfiles y reflog — devlog</title>
+  <meta name="description" content="Cómo guarda Git el historial: blobs, trees y commits identificados por hash, referencias, packfiles con deltas y reflog, con ejemplos reproducibles ejecutados paso a paso.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/git-por-dentro-objetos-referencias-packfiles.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Git por dentro: objetos, referencias, packfiles y reflog">
+  <meta property="og:description" content="Cómo guarda Git el historial: blobs, trees y commits identificados por hash, referencias, packfiles con deltas y reflog, con ejemplos reproducibles ejecutados paso a paso.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/git-por-dentro-objetos-referencias-packfiles.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Git por dentro: objetos, referencias, packfiles y reflog",
+    "description": "Cómo guarda Git el historial: blobs, trees y commits identificados por hash, referencias, packfiles con deltas y reflog, con ejemplos reproducibles ejecutados paso a paso.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 5790,
+    "keywords": "cómo funciona git internamente, objetos de git, packfiles, reflog, DAG de commits, SHA-256",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/git-por-dentro-objetos-referencias-packfiles.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[git]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          Git por dentro: objetos, referencias, packfiles y reflog
+        </h1>
+        <p class="mt-4 text-muted">Cómo guarda Git el historial: blobs, trees y commits identificados por hash, referencias, packfiles con deltas y reflog, con ejemplos reproducibles ejecutados paso a paso.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 29 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-un-sistema-de-archivos-direccionable-por" class="text-accent hover:underline">Un sistema de archivos direccionable por contenido</a></li>
+          <li><a href="#2-como-se-calcula-el-identificador-de-un-o" class="text-accent hover:underline">Cómo se calcula el identificador de un objeto</a></li>
+          <li><a href="#3-los-cuatro-tipos-de-objeto" class="text-accent hover:underline">Los cuatro tipos de objeto</a></li>
+          <li><a href="#4-del-contenido-a-la-historia-por-que-los" class="text-accent hover:underline">Del contenido a la historia: por qué los commits son inmutables</a></li>
+          <li><a href="#5-el-indice-la-zona-de-preparacion" class="text-accent hover:underline">El índice: la zona de preparación</a></li>
+          <li><a href="#6-referencias-ramas-etiquetas-y-head" class="text-accent hover:underline">Referencias: ramas, etiquetas y HEAD</a></li>
+          <li><a href="#7-de-los-objetos-sueltos-a-los-packfiles" class="text-accent hover:underline">De los objetos sueltos a los packfiles</a></li>
+          <li><a href="#8-el-reflog-la-red-de-seguridad" class="text-accent hover:underline">El reflog: la red de seguridad</a></li>
+          <li><a href="#9-cuando-el-repositorio-engorda-diagnostic" class="text-accent hover:underline">Cuando el repositorio engorda: diagnóstico del tamaño</a></li>
+          <li><a href="#10-sha-1-colisiones-y-la-transicion-a-sha-2" class="text-accent hover:underline">SHA-1, colisiones y la transición a SHA-256</a></li>
+          <li><a href="#11-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#12-una-receta-para-explorar-cualquier-repos" class="text-accent hover:underline">Una receta para explorar cualquier repositorio</a></li>
+          <li><a href="#13-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#14-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>La mayoría de las personas usa Git como una caja negra con unos pocos comandos: <code>add</code>, <code>commit</code>, <code>push</code>, <code>pull</code>, y alguna vez <code>rebase</code> o <code>reset</code> cuando algo sale mal. Funciona, hasta que deja de funcionar. Un <code>reset --hard</code> que parece haber destruido una tarde de trabajo, un repositorio que de pronto ocupa varios gigabytes, una rama que "desapareció" tras un <code>rebase</code>, un mensaje críptico sobre <em>detached HEAD</em>: todos esos momentos se vuelven mucho menos aterradores cuando uno entiende qué hay realmente dentro de la carpeta <code>.git</code>.</p>
+
+<p>La buena noticia es que el modelo interno de Git es sorprendentemente pequeño. No hay una base de datos oculta ni formatos exóticos: hay un almacén de objetos que se identifican por el hash de su contenido, un puñado de archivos de texto que apuntan a esos objetos (las referencias) y algunos mecanismos de mantenimiento que empaquetan y limpian lo que ya no hace falta. Todo lo que Git hace por encima, desde crear ramas hasta fusionarlas, se construye sobre esas piezas.</p>
+
+<p>Este artículo recorre ese modelo de abajo arriba. No nos limitamos a describirlo: lo comprobamos con comandos que puedes ejecutar en tu equipo. Los resultados que verás en los bloques de código proceden de un laboratorio real ejecutado con Git 2.56.0 el 27 de octubre de 2026, con una identidad y unas fechas fijadas para que los hashes sean reproducibles. Cuando una cifra o un comportamiento proviene de la documentación oficial o del libro <em>Pro Git</em>, se indica con su fuente al final del texto. Si ya conoces el flujo de trabajo cotidiano, te sugerimos leer después nuestro artículo sobre <a href="/articulos/git-rebase-interactivo.html">rebase interactivo y reescritura del historial</a>, que cobra mucho más sentido una vez que se sabe qué significa "reescribir" un commit.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Git es, en su núcleo, un almacén clave-valor: la clave de cada objeto es el hash SHA-1 de su contenido más una cabecera con tipo y tamaño.</li>
+    <li>Existen cuatro tipos de objeto: <em>blob</em> (contenido de un archivo), <em>tree</em> (un directorio), <em>commit</em> (una instantánea con metadatos y padres) y <em>tag</em> (una etiqueta anotada).</li>
+    <li>Las ramas, las etiquetas ligeras y <code>HEAD</code> no son objetos: son archivos pequeños que contienen un hash o apuntan a otra referencia.</li>
+    <li>Los objetos nuevos se guardan sueltos y comprimidos con zlib; <code>git gc</code> los agrupa en <em>packfiles</em> donde las versiones parecidas se almacenan como deltas.</li>
+    <li>El reflog registra cada movimiento de <code>HEAD</code> en local; por defecto caduca a los 90 días (30 si la entrada ya no es alcanzable) y es lo que permite recuperar commits aparentemente perdidos.</li>
+    <li>Git está migrando de SHA-1 a SHA-256, pero la propia documentación presenta esa transición como un diseño en marcha y no como un cambio ya completado.</li>
+  </ul>
+</div>
+
+<h2 id="1-un-sistema-de-archivos-direccionable-por">Un sistema de archivos direccionable por contenido</h2>
+
+<p>La definición más precisa de Git que ofrece <em>Pro Git</em> es que se trata de un sistema de archivos direccionable por contenido (<em>content-addressable filesystem</em>) con una interfaz de control de versiones por encima. Dicho sin jerga: es un almacén en el que guardas datos y recibes a cambio una clave que depende únicamente de esos datos. Si guardas el mismo contenido dos veces obtienes la misma clave y, por tanto, un solo objeto. Si cambias un solo byte obtienes otra clave completamente distinta.</p>
+
+<p>Esa idea, aparentemente simple, tiene consecuencias enormes. La primera es la deduplicación automática: un archivo que no cambia entre cien commits se almacena una única vez, porque en los cien commits apunta al mismo objeto. La segunda es la integridad: como la clave es una función del contenido, Git puede detectar corrupción recalculando el hash y comparándolo con el nombre. La tercera, que veremos más adelante, es la inmutabilidad: un objeto nunca se modifica; si algo cambia, aparece un objeto nuevo con otro identificador.</p>
+
+<h3>Fontanería y porcelana</h3>
+
+<p>En la jerga de Git, los comandos de alto nivel que usamos a diario (<code>add</code>, <code>commit</code>, <code>checkout</code>, <code>merge</code>) forman la "porcelana", mientras que un conjunto de comandos de bajo nivel, pensados originalmente para construir herramientas por encima, constituyen la "fontanería" (<em>plumbing</em>). Los comandos de fontanería que usaremos en este artículo son <code>hash-object</code>, <code>cat-file</code>, <code>update-index</code>, <code>write-tree</code>, <code>commit-tree</code>, <code>update-ref</code>, <code>symbolic-ref</code> y <code>verify-pack</code>. No necesitas memorizarlos: sirven como lupa para observar qué hace la porcelana cuando ejecutas un <code>git commit</code> normal.</p>
+
+<h3>Tu primer objeto</h3>
+
+<p>Crea un repositorio vacío y guarda una cadena de texto directamente en el almacén de objetos. La opción <code>-w</code> pide que se escriba el objeto en la base de datos; sin ella, el comando solo calcula y muestra la clave.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git init demo
+cd demo
+echo 'hola mundo' | git hash-object --stdin
+# 24db42bb7b999597a72801da70efd5876059bc0b
+
+echo 'hola mundo' | git hash-object -w --stdin
+# 24db42bb7b999597a72801da70efd5876059bc0b
+
+git cat-file -t 24db42b   # blob
+git cat-file -s 24db42b   # 11
+git cat-file -p 24db42b   # hola mundo</code></pre>
+        </div>
+
+<p>Observa tres cosas. Primero, el hash es el mismo con y sin <code>-w</code>: la clave solo depende del contenido, no de si lo has guardado o no. Segundo, <code>cat-file -t</code> informa de que el objeto es de tipo <code>blob</code>. Tercero, el tamaño es 11 bytes, que son los diez caracteres de "hola mundo" más el salto de línea que añade <code>echo</code>. Si repites el experimento con <code>echo -n</code>, que omite ese salto de línea, obtendrás un hash distinto, porque el contenido es distinto. Esta sensibilidad a cada byte es exactamente lo que se espera de un sistema direccionable por contenido.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-como-se-calcula-el-identificador-de-un-o">Cómo se calcula el identificador de un objeto</h2>
+
+<p>El hash de un objeto no se calcula solo sobre su contenido. Según <em>Pro Git</em>, Git antepone una cabecera formada por el tipo del objeto, un espacio, el tamaño en bytes expresado en decimal y un byte nulo (<code>\0</code>). El SHA-1 se calcula sobre la concatenación de esa cabecera y el contenido. Después, la misma cadena (cabecera más contenido) se comprime con zlib y se escribe en un archivo cuya ruta se deriva del hash: los dos primeros caracteres hexadecimales forman el nombre de un subdirectorio dentro de <code>.git/objects</code> y los treinta y ocho restantes, el nombre del archivo.</p>
+
+<p>Podemos verificarlo sin Git, con unas líneas de Python. El programa reproduce el cálculo del hash y, de paso, descomprime el objeto real del disco para comprobar que su contenido coincide con la cadena que acabamos de construir.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>import hashlib, zlib
+
+contenido = b'hola mundo\n'
+almacenado = b'blob %d\x00' % len(contenido) + contenido
+
+print(hashlib.sha1(almacenado).hexdigest())
+# 24db42bb7b999597a72801da70efd5876059bc0b  (idéntico al de git hash-object)
+
+ruta = '.git/objects/24/db42bb7b999597a72801da70efd5876059bc0b'
+print(zlib.decompress(open(ruta, 'rb').read()))
+# b'blob 11\x00hola mundo\n'</code></pre>
+        </div>
+
+<p>El resultado confirma el mecanismo descrito por la documentación: el identificador es el SHA-1 de <code>blob 11\0hola mundo\n</code> y el archivo en disco contiene exactamente esos bytes comprimidos. No hay metadatos escondidos ni índices auxiliares: el nombre del archivo es el hash del propio contenido.</p>
+
+<div class="alert">
+  <strong>Por qué importa la cabecera.</strong> Gracias al prefijo con el tipo, un blob y un tree que tuvieran por casualidad los mismos bytes de contenido tendrían identificadores diferentes. La cabecera separa los "espacios de nombres" de los distintos tipos de objeto dentro del mismo almacén.
+</div>
+
+<h2 id="3-los-cuatro-tipos-de-objeto">Los cuatro tipos de objeto</h2>
+
+<p>Con el mecanismo de almacenamiento claro, falta saber qué se guarda. Git utiliza cuatro tipos de objeto. Los tres primeros construyen una instantánea del proyecto; el cuarto sirve para marcar versiones.</p>
+
+<h3>Blob: el contenido de un archivo</h3>
+
+<p>Un <em>blob</em> (de <em>binary large object</em>) almacena los bytes de un archivo y nada más. Es importante recalcar lo que un blob <em>no</em> contiene: ni el nombre del archivo, ni su ruta, ni sus permisos, ni la fecha. Dos archivos con nombres distintos y el mismo contenido comparten el mismo blob. Renombrar un archivo sin tocar su contenido no crea ningún blob nuevo.</p>
+
+<h3>Tree: un directorio</h3>
+
+<p>El nombre, la ruta y los permisos viven en los objetos <em>tree</em>, que representan directorios. Un tree es una lista de entradas, y cada entrada indica un modo, un tipo, el hash del objeto referenciado y un nombre. <em>Pro Git</em> documenta los modos válidos para archivos: <code>100644</code> para un archivo normal, <code>100755</code> para un ejecutable y <code>120000</code> para un enlace simbólico, además de <code>040000</code> para un subdirectorio, que apunta a otro tree. Los árboles se anidan: el tree de la raíz apunta a blobs (archivos) y a otros trees (subdirectorios), y así sucesivamente.</p>
+
+<p>Podemos construir un tree a mano. Primero añadimos al índice una entrada que apunta al blob que ya existe y después pedimos a Git que escriba el índice como tree:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git update-index --add --cacheinfo 100644 24db42bb7b999597a72801da70efd5876059bc0b hola.txt
+git write-tree
+# 10e30303e3aef2eed251953d04e58bb67d6c777a
+
+git cat-file -p 10e30303e3aef2eed251953d04e58bb67d6c777a
+# 100644 blob 24db42bb7b999597a72801da70efd5876059bc0b	hola.txt</code></pre>
+        </div>
+
+<p>Fíjate en que el archivo <code>hola.txt</code> nunca existió en el directorio de trabajo. Le hemos dicho a Git que el nombre <code>hola.txt</code> debe apuntar al blob con ese hash, y Git lo ha registrado. Esta es la prueba más clara de que el contenido y el nombre son cosas separadas.</p>
+
+<h3>Commit: una instantánea con historia</h3>
+
+<p>Un <em>commit</em> es un objeto que apunta al tree raíz del proyecto en un momento dado, a cero o más commits padre y a información de autoría. Su contenido es un texto legible: una línea <code>tree</code> con el hash del directorio raíz, una línea <code>parent</code> por cada commit padre, una línea <code>author</code> y otra <code>committer</code> (cada una con nombre, correo, marca de tiempo y zona horaria), una línea en blanco y el mensaje.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>echo 'Primer commit' | git commit-tree 10e30303e3aef2eed251953d04e58bb67d6c777a
+# fc720b7fb6da046161a1bea8a620832b6eab9c29
+
+git cat-file -p fc720b7
+# tree 10e30303e3aef2eed251953d04e58bb67d6c777a
+# author Ada &lt;ada@example.com&gt; 1767268800 +0000
+# committer Ada &lt;ada@example.com&gt; 1767268800 +0000
+#
+# Primer commit
+
+git cat-file -s fc720b7   # 156</code></pre>
+        </div>
+
+<p>El primer commit no tiene línea <code>parent</code>, porque no hay historia previa. Todos los demás tendrán al menos una. Un detalle útil: el identificador de un commit depende de todo su contenido, incluido el hash del tree, los padres, el autor y la marca de tiempo. Por eso, para obtener hashes reproducibles en este laboratorio fijamos las fechas con las variables de entorno <code>GIT_AUTHOR_DATE</code> y <code>GIT_COMMITTER_DATE</code>. Sin esa precaución, ejecutar los mismos comandos un segundo más tarde produciría un hash diferente.</p>
+
+<h3>Tag: una etiqueta anotada</h3>
+
+<p>El cuarto tipo es el objeto <em>tag</em>, que usan las etiquetas anotadas. Lo veremos en la sección de referencias, porque su función es marcar un punto concreto de la historia y suele ir acompañado de un archivo en <code>refs/tags</code>.</p>
+
+<h2 id="4-del-contenido-a-la-historia-por-que-los">Del contenido a la historia: por qué los commits son inmutables</h2>
+
+<p>Hemos visto que un commit contiene el hash de su tree y los hashes de sus padres. Consideremos las consecuencias. El identificador de un commit se calcula sobre su contenido, que incluye el identificador de su padre. Por tanto, si alguien modificase de algún modo un commit antiguo, su hash cambiaría, y como el hijo lo referencia por hash, el contenido del hijo también cambiaría, y por tanto su hash, y así hasta la punta de la rama. La historia de Git es, en términos técnicos, una cadena de hashes: cualquier alteración se propaga y es detectable.</p>
+
+<p>Esto explica el comportamiento de comandos como <code>rebase</code> o <code>commit --amend</code>. Cuando "modificas" un commit, en realidad Git crea un commit nuevo con otro hash y mueve la rama para que lo apunte; el commit antiguo sigue existiendo, intacto, hasta que algún proceso de limpieza lo elimine. Es exactamente lo que describe <em>Pro Git</em> cuando explica que un rebase toma los commits de tu rama y los reaplica creando nuevos hashes. También explica por qué reescribir historia publicada es problemático: los compañeros que tengan los commits antiguos tienen, literalmente, objetos diferentes de los que ahora hay en el servidor.</p>
+
+<h3>Merge: commits con dos padres</h3>
+
+<p>La historia no es una línea, sino un grafo acíclico dirigido (DAG): cada commit apunta a sus padres y ningún camino puede volver sobre sí mismo. Un commit de fusión (<em>merge</em>) es un commit corriente que tiene dos o más líneas <code>parent</code>. En el laboratorio creamos una rama, añadimos un commit y la fusionamos con <code>--no-ff</code> para forzar un commit de fusión. El resultado en bruto:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git cat-file -p HEAD
+# tree 033036e4414b4f7882f571c381b3cde88bc9f7f8
+# parent 1a787065968d794b6a2e7e1aa3e959aec8d46726
+# parent e12ca9e0b922e44d5d20a1192b64d6b13dc363cc
+# author Ada &lt;ada@example.com&gt; ...</code></pre>
+        </div>
+
+<p>Los dos padres son, por orden, la punta de la rama en la que estábamos (<code>main</code>) y la punta de la rama fusionada. Esa distinción importa: la notación <code>HEAD^1</code> y <code>HEAD~1</code> designan el primer padre, mientras que <code>HEAD^2</code> designa el segundo. Y también explica por qué revertir un merge exige indicar con <code>-m</code> qué padre se considera la línea principal.</p>
+
+<h3>Alcanzabilidad: qué commits "existen" para Git</h3>
+
+<p>Dicho de forma práctica, un commit está vivo mientras sea alcanzable desde alguna referencia (una rama, una etiqueta, <code>HEAD</code>) siguiendo la cadena de padres. Cuando ya no hay ninguna referencia que llegue hasta él, queda huérfano. Los commits huérfanos no desaparecen de inmediato: siguen en el almacén de objetos hasta que la limpieza los elimina, y mientras tanto el reflog suele ofrecer una forma de volver a llegar a ellos. Lo veremos en detalle más abajo.</p>
+
+<h2 id="5-el-indice-la-zona-de-preparacion">El índice: la zona de preparación</h2>
+
+<p>Hasta ahora hemos usado <code>update-index</code> y <code>write-tree</code> sin explicar qué hay entre ambos. Ese intermediario es el <em>índice</em> (o <em>staging area</em>), un archivo binario en <code>.git/index</code> que describe el siguiente tree que se va a confirmar: para cada ruta, el modo, el hash del blob y algunos metadatos que permiten detectar rápidamente cambios en el directorio de trabajo.</p>
+
+<p>Con esa pieza, el comportamiento de los dos comandos más comunes queda desmitificado. Según <em>Pro Git</em>, <code>git add</code> y <code>git commit</code> realizan internamente los mismos pasos que hemos ejecutado a mano: <code>add</code> guarda el contenido de los archivos como blobs y actualiza el índice; <code>commit</code> escribe el índice como una jerarquía de trees, crea un objeto commit que apunta al tree raíz y al commit actual como padre, y mueve la rama actual para que apunte al nuevo commit.</p>
+
+<ol>
+  <li><strong>Guardar los blobs.</strong> Por cada archivo añadido, Git calcula el hash y escribe el objeto, como hicimos con <code>hash-object -w</code>.</li>
+  <li><strong>Actualizar el índice.</strong> La ruta del archivo pasa a apuntar al nuevo blob, igual que con <code>update-index --cacheinfo</code>.</li>
+  <li><strong>Escribir los trees.</strong> Al hacer commit, el índice se convierte en objetos tree anidados (<code>write-tree</code>).</li>
+  <li><strong>Crear el commit.</strong> Se escribe un objeto commit con el tree raíz, el padre y los metadatos (<code>commit-tree</code>).</li>
+  <li><strong>Mover la referencia.</strong> La rama actual se actualiza para apuntar al commit nuevo (<code>update-ref</code>).</li>
+</ol>
+
+<p>Dos efectos prácticos se deducen de esta secuencia. Primero, un archivo que añades con <code>git add</code> y luego modificas otra vez en disco tiene una versión en el índice y otra distinta en el directorio de trabajo; el commit solo recogerá la del índice. Segundo, <code>git add</code> ya ha escrito el blob en el almacén de objetos, así que, incluso si deshaces el <code>add</code>, ese contenido puede quedar en el almacén como objeto suelto hasta una futura limpieza. Es una de las razones por las que a veces <code>git fsck</code> descubre blobs "colgantes" sin ninguna historia asociada.</p>
+
+<h2 id="6-referencias-ramas-etiquetas-y-head">Referencias: ramas, etiquetas y HEAD</h2>
+
+<p>Los objetos son inmutables y se identifican por hashes largos, difíciles de recordar. Para trabajar de forma humana, Git añade una capa de nombres: las <em>referencias</em>. Una referencia es, simplemente, un archivo de texto bajo <code>.git/refs</code> cuyo contenido es un hash. <em>Pro Git</em> lo muestra con un experimento que puedes reproducir: crear una rama es escribir un hash en un archivo.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git update-ref refs/heads/main fc720b7fb6da046161a1bea8a620832b6eab9c29
+
+cat .git/refs/heads/main
+# fc720b7fb6da046161a1bea8a620832b6eab9c29
+
+git log --oneline
+# fc720b7 Primer commit</code></pre>
+        </div>
+
+<p>La documentación recomienda no editar esos archivos a mano y usar <code>git update-ref</code>, que además se encarga de registrar el movimiento en el reflog. Una rama es, por tanto, un puntero móvil: cuando haces un commit estando en ella, Git escribe el hash del nuevo commit en ese archivo. Crear una rama nueva no copia nada; solo crea otro archivo con un hash. Esta es la razón técnica de que las ramas de Git sean tan baratas.</p>
+
+<h3>Los espacios de nombres de las referencias</h3>
+
+<p>Las referencias se organizan por directorios, y ese directorio indica su significado:</p>
+
+<ul>
+  <li><code>refs/heads/</code>: ramas locales.</li>
+  <li><code>refs/tags/</code>: etiquetas.</li>
+  <li><code>refs/remotes/&lt;remoto&gt;/</code>: copias de las ramas de los repositorios remotos, tal como estaban la última vez que te comunicaste con ellos.</li>
+</ul>
+
+<p>Las referencias remotas merecen una nota. Según <em>Pro Git</em>, son prácticamente de solo lectura: puedes hacer <code>checkout</code> de una, pero Git nunca hace que <code>HEAD</code> apunte simbólicamente a ella, de modo que un <code>commit</code> nunca la actualiza. Actúan como marcadores de dónde estaban esas ramas la última vez que hablaste con el servidor. Se actualizan con <code>fetch</code> y <code>push</code>.</p>
+
+<h3>HEAD: la referencia simbólica</h3>
+
+<p>¿Cómo sabe Git en qué rama estás? A través de <code>HEAD</code>. Normalmente <code>HEAD</code> no contiene un hash, sino una <em>referencia simbólica</em>, es decir, el nombre de otra referencia:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>cat .git/HEAD
+# ref: refs/heads/main
+
+git symbolic-ref HEAD
+# refs/heads/main</code></pre>
+        </div>
+
+<p>Cuando haces un commit, Git resuelve <code>HEAD</code> para saber qué rama debe mover, y usa el commit al que apunta esa rama como padre del commit nuevo. Cambiar de rama con <code>checkout</code> o <code>switch</code> consiste, en esencia, en reescribir <code>HEAD</code> para que apunte simbólicamente a otra rama y actualizar el directorio de trabajo para que coincida con su tree.</p>
+
+<div class="alert">
+  <strong>Detached HEAD, sin misterio.</strong> En ocasiones <code>HEAD</code> contiene directamente un hash en lugar de un nombre de rama. Eso ocurre, por ejemplo, al hacer checkout de una etiqueta, de un commit concreto o de una rama remota. En ese estado, los commits que crees no avanzan ninguna rama: si cambias de rama sin crear antes una nueva, esos commits solo serán alcanzables a través del reflog. La solución es tan sencilla como crear una rama en el commit actual antes de marcharte.
+</div>
+
+<h3>Etiquetas ligeras y anotadas</h3>
+
+<p>Existen dos tipos de etiquetas, y la diferencia es puramente estructural. Una etiqueta <strong>ligera</strong> es una referencia en <code>refs/tags</code> que apunta directamente a un commit y nunca se mueve. Una etiqueta <strong>anotada</strong> es un objeto <em>tag</em> independiente, que contiene un puntero al objeto etiquetado, el tipo de ese objeto, el nombre de la etiqueta, el autor de la etiqueta (<em>tagger</em>), una fecha y un mensaje; la referencia en <code>refs/tags</code> apunta a ese objeto tag y no al commit. En el laboratorio creamos una etiqueta anotada y examinamos ambas capas:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git tag -a v1.0 -m "Primera versión"
+
+cat .git/refs/tags/v1.0
+# 123e8dcfe98db0ea4942cad16e589ba83cb7f6f2
+
+git cat-file -t v1.0
+# tag
+
+git cat-file -p v1.0
+# object 86007e628ea5d8d3c58cf9ecafd3b77786a44b39
+# type commit
+# tag v1.0
+# tagger Ada &lt;ada@example.com&gt; ...
+#
+# Primera versión</code></pre>
+        </div>
+
+<p>El archivo de la etiqueta contiene el hash del objeto tag (<code>123e8dc…</code>), y este contiene a su vez el hash del commit (<code>86007e6…</code>). Esa capa intermedia es lo que permite añadir un mensaje, una fecha y, opcionalmente, una firma criptográfica. <em>Pro Git</em> añade un detalle curioso: una etiqueta puede apuntar a cualquier tipo de objeto, no solo a commits. El propio repositorio de Git etiqueta un blob con la clave pública GPG de su mantenedor, y la primera etiqueta del kernel de Linux apunta a un tree.</p>
+
+<h3>packed-refs: cuando las referencias dejan de ser archivos sueltos</h3>
+
+<p>Un repositorio con miles de etiquetas o ramas tendría miles de archivos diminutos bajo <code>refs</code>. Para evitarlo, <code>git gc</code> empaqueta las referencias en un único archivo, <code>.git/packed-refs</code>. En el laboratorio ejecutamos <code>git gc</code> y comprobamos el resultado: los directorios <code>refs/heads</code> y <code>refs/tags</code> quedaron vacíos y toda la información pasó a un único archivo de texto.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git gc
+ls .git/refs/heads .git/refs/tags
+# (ambos directorios vacíos)
+
+cat .git/packed-refs
+# # pack-refs with: peeled fully-peeled sorted
+# 86007e628ea5d8d3c58cf9ecafd3b77786a44b39 refs/heads/main
+# e12ca9e0b922e44d5d20a1192b64d6b13dc363cc refs/heads/rama
+# 123e8dcfe98db0ea4942cad16e589ba83cb7f6f2 refs/tags/v1.0
+# ^86007e628ea5d8d3c58cf9ecafd3b77786a44b39</code></pre>
+        </div>
+
+<p>La línea que empieza por <code>^</code> es la versión "pelada" (<em>peeled</em>) de la etiqueta anotada: indica el commit final al que lleva, para no tener que abrir el objeto tag cada vez. Por supuesto, todo esto es transparente: <code>git branch</code> o <code>git tag</code> seguirán funcionando igual, leyendo primero el archivo suelto, si existe, y después <code>packed-refs</code>.</p>
+
+<h2 id="7-de-los-objetos-sueltos-a-los-packfiles">De los objetos sueltos a los packfiles</h2>
+
+<p>Todo lo que hemos creado hasta ahora está en formato <em>suelto</em> (<em>loose</em>): un archivo comprimido por objeto. Es un formato muy simple y rápido de escribir, pero ineficiente cuando el repositorio crece. <em>Pro Git</em> lo ilustra con un ejemplo: si modificas una sola línea de un archivo de 22 KB, Git guarda la segunda versión completa, de nuevo con unos 7 KB comprimidos, aunque casi todo su contenido sea idéntico al de la primera. Con miles de versiones, el desperdicio sería considerable.</p>
+
+<h3>Qué hace git gc</h3>
+
+<p>La solución son los <em>packfiles</em>. Según la documentación del libro, Git empaqueta objetos cuando hay demasiados sueltos, cuando ejecutas <code>git gc</code> a mano y cuando haces <code>push</code> a un servidor. Un packfile es un único archivo que contiene muchos objetos; viene acompañado de un archivo de índice (<code>.idx</code>) con las posiciones de cada objeto dentro del pack, de modo que Git puede saltar directamente a uno concreto. Ambos se llaman <code>pack-&lt;hash&gt;.pack</code> y <code>pack-&lt;hash&gt;.idx</code>.</p>
+
+<p>La documentación oficial de <code>git-gc</code> fija los umbrales por defecto de la ejecución automática. Cuando una operación de Git invoca <code>gc --auto</code>, la limpieza solo se lleva a cabo si hay más de 6700 objetos sueltos (<code>gc.auto</code>) o más de 50 packs (<code>gc.autoPackLimit</code>). El libro redondea esa cifra a "unos 7.000 objetos"; la documentación de referencia da el valor exacto. Establecer <code>gc.auto</code> a cero desactiva también el resto de heurísticas automáticas.</p>
+
+<h3>Deltas: guardar solo las diferencias</h3>
+
+<p>La parte inteligente del empaquetado es la compresión por deltas. Durante el empaquetado, Git busca archivos con nombres y tamaños parecidos y almacena un objeto completo (la <em>base</em>) y, para los demás, solo las diferencias respecto a esa base. <em>Pro Git</em> explica que, en el ejemplo del libro, la versión más reciente del archivo se guarda íntegra y la antigua se guarda como un delta que referencia a la nueva, con la justificación de que normalmente se necesita con más frecuencia la versión actual.</p>
+
+<p>Lo comprobamos en el laboratorio. Creamos un archivo de 400 líneas, lo confirmamos, modificamos una sola línea (el archivo crece 11 bytes) y volvimos a confirmar. Antes de <code>gc</code>, <code>git count-objects -v</code> informaba de 6 objetos sueltos; después, de 6 objetos dentro de un único pack:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git gc -q
+git count-objects -v
+# count: 0
+# size: 0
+# in-pack: 6
+# packs: 1
+# size-pack: 2
+
+git verify-pack -v .git/objects/pack/pack-*.idx | grep -E "blob|chain|non delta"
+# 56cffe52829f6790e6a8583abe0f981a7fa137b6 blob   33611 1195 285
+# 79df026f2f7869b14507329af7c78d0851cb68eb blob   18 30 1576 1 56cffe52829f6790e6a8583abe0f981a7fa137b6
+# non delta: 5 objects
+# chain length = 1: 1 object</code></pre>
+        </div>
+
+<p>Las columnas de <code>verify-pack -v</code> son, por orden: el hash del objeto, su tipo, el tamaño sin comprimir, el tamaño que ocupa dentro del pack, el desplazamiento dentro del archivo y, solo para los deltas, la profundidad de la cadena y el hash de la base. Aquí vemos que la versión nueva (<code>56cffe5…</code>, 33611 bytes) se almacena completa y ocupa 1195 bytes comprimidos, mientras que la versión antigua (<code>79df02…</code>) es un delta de apenas 18 bytes (30 dentro del pack) con profundidad 1 cuya base es la versión nueva. En otras palabras, la diferencia entre dos versiones de un archivo de más de 33 KB se guardó en 30 bytes. El resumen final, "<code>non delta: 5 objects</code>" y "<code>chain length = 1: 1 object</code>", indica que cinco objetos están completos y uno es un delta de un solo salto.</p>
+
+<div class="alert">
+  <strong>La base no siempre es la versión nueva.</strong> La explicación del libro describe el criterio habitual (la más reciente completa, la antigua como delta), y nuestro laboratorio lo reproduce con un archivo que crece. Pero Git decide las bases con heurísticas y no con una regla fija. En un primer intento de laboratorio, con un archivo que <em>encogía</em>, la base fue la versión antigua, que resultó ser la mayor de las dos (ese intento tenía además una conversión accidental de saltos de línea, así que lo descartamos como medición). No lo tomes como una regla universal: es una decisión de optimización interna, no una garantía del formato.
+</div>
+
+<h3>git gc --aggressive</h3>
+
+<p>La opción <code>--aggressive</code> merece cuidado. Según la documentación, ejecuta <code>git repack</code> con <code>-f</code>, que descarta los deltas existentes y los recalcula desde cero, y utiliza una ventana de búsqueda mucho mayor: <code>gc.aggressiveWindow</code> vale 250 por defecto, frente a los 10 de una búsqueda normal, y la profundidad (<code>gc.aggressiveDepth</code>) es de 50. El resultado puede ocupar menos espacio, pero tarda mucho más. La propia documentación aconseja no usarla sin medir antes si el ahorro compensa; para la mayoría de los repositorios, el <code>gc</code> normal es suficiente.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="8-el-reflog-la-red-de-seguridad">El reflog: la red de seguridad</h2>
+
+<p>Cada vez que <code>HEAD</code> o una rama cambia de posición, Git lo anota en un registro local llamado <em>reflog</em>, almacenado bajo <code>.git/logs</code>. <em>Pro Git</em> aclara que lo actualizan los commits, los cambios de rama y <code>git reset</code>, además de <code>git update-ref</code>. El reflog responde a una pregunta que el historial normal no puede contestar: "¿dónde estuvo <code>HEAD</code> antes de este cambio?".</p>
+
+<p>El laboratorio crea tres commits (A, B y C), retrocede con un <code>reset --hard</code> y recupera todo con ayuda del reflog:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git reflog
+# 1a78706 HEAD@{0}: commit: Commit C
+# edc6699 HEAD@{1}: commit: Commit B
+# 30347a4 HEAD@{2}: commit (initial): Commit A
+
+git reset --hard HEAD~2
+git reflog
+# 30347a4 HEAD@{0}: reset: moving to HEAD~2
+# 1a78706 HEAD@{1}: commit: Commit C
+# edc6699 HEAD@{2}: commit: Commit B
+# 30347a4 HEAD@{3}: commit (initial): Commit A
+
+git log --oneline
+# 30347a4 Commit A        (los commits B y C ya no aparecen en el log)
+
+git reset --hard 'HEAD@{1}'
+git log --oneline
+# 1a78706 Commit C
+# edc6699 Commit B
+# 30347a4 Commit A</code></pre>
+        </div>
+
+<p>El <code>reset --hard HEAD~2</code> hizo que B y C dejaran de ser alcanzables desde cualquier rama, pero los objetos seguían en el almacén y el reflog guardaba su posición anterior. Con <code>HEAD@{1}</code> (la posición de <code>HEAD</code> justo antes del último movimiento) volvimos exactamente al estado anterior. Este es el mecanismo que explica el consejo más repetido tras un accidente con Git: antes de dar nada por perdido, consulta <code>git reflog</code>.</p>
+
+<h3>Cuánto dura la red de seguridad</h3>
+
+<p>El reflog no es eterno. La documentación de <code>git-gc</code> establece dos plazos por defecto: las entradas del reflog caducan a los 90 días (<code>gc.reflogExpire</code>) y, si además la entrada ya no es alcanzable desde la punta actual, a los 30 días (<code>gc.reflogExpireUnreachable</code>). Una vez caducada la entrada, los commits que solo ella mantenía vivos pasan a ser objetos huérfanos, y la limpieza de objetos inalcanzables aplica su propio periodo de gracia: <code>gc.pruneExpire</code> vale dos semanas por defecto. El libro resume esa limpieza diciendo que <code>git gc</code> elimina objetos inalcanzables con antigüedad de "unos meses", lo que concuerda en orden de magnitud con la suma de plazos.</p>
+
+<p>Dos matices importantes. Primero, el reflog es estrictamente local: no viaja con <code>push</code> ni <code>clone</code>, de modo que solo protege contra errores cometidos en <em>tu</em> copia del repositorio. Segundo, las marcas de tiempo del reflog corresponden a cuándo ocurrió el evento, así que el cálculo de caducidad depende de cuándo realizaste la operación, no de cuándo se escribió el commit. Un caso real que encontramos en el laboratorio ilustra cómo se aplican esos plazos: al fijar fechas de 2026-01-01 para los commits y ejecutar después <code>git gc</code>, las entradas de <code>commit</code> del reflog desaparecieron por tener más de 90 días respecto al momento de ejecución. Esa es una advertencia práctica para quien automatiza repositorios de prueba con fechas fijas.</p>
+
+<h3>Recuperar sin reflog: git fsck</h3>
+
+<p>Si el reflog ya no tiene la entrada, aún queda <code>git fsck</code>, que recorre el almacén buscando objetos inalcanzables. Para ilustrarlo creamos una rama que apuntaba a un commit, la borramos con <code>git branch -D</code> y caducamos el reflog con <code>git reflog expire --expire=now --all</code>. Con ello el commit quedó sin ninguna referencia, pero <code>fsck</code> lo encontró:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git branch -D recuperada
+git reflog expire --expire=now --all
+
+git fsck --lost-found
+# dangling commit d9f7408eea5f2373577451e72230551c8a7c0f2e
+
+# Para rescatarlo:
+git branch recuperada d9f7408eea5f2373577451e72230551c8a7c0f2e</code></pre>
+        </div>
+
+<p>La etiqueta <code>dangling</code> (colgante) significa que el objeto existe pero nada lo referencia. <em>Pro Git</em> recomienda precisamente este procedimiento: localizar el commit tras la palabra "dangling commit" y crear una rama que apunte a su hash. Si, en cambio, quieres que esos objetos desaparezcan de verdad, <code>git gc --prune=now</code> los elimina sin esperar al periodo de gracia. En el laboratorio, el recuento de objetos en el pack pasó de 6 a 3 tras ejecutar esa orden, porque el commit colgante y los objetos que solo él referenciaba fueron eliminados.</p>
+
+<div class="alert alert-danger">
+  <strong>Antes de podar, comprueba.</strong> <code>git gc --prune=now</code> y <code>git reflog expire --expire=now --all</code> son operaciones destructivas: eliminan la red de seguridad. Úsalas solo cuando estés seguro de que no necesitas recuperar nada, por ejemplo después de reescribir un repositorio para quitar un archivo enorme o una credencial filtrada.
+</div>
+
+<h2 id="9-cuando-el-repositorio-engorda-diagnostic">Cuando el repositorio engorda: diagnóstico del tamaño</h2>
+
+<p>Un repositorio que crece sin control suele deberse a un archivo grande que se confirmó una vez y sigue existiendo en la historia aunque se borrara después. Con lo visto hasta ahora, el diagnóstico es directo. <em>Pro Git</em> propone un procedimiento en varios pasos que combina las herramientas que ya conocemos.</p>
+
+<ol>
+  <li><strong>Medir.</strong> <code>git count-objects -v</code> muestra los objetos sueltos (<code>count</code> y <code>size</code>) y los empaquetados (<code>in-pack</code>, <code>packs</code>, <code>size-pack</code>). Las cifras de tamaño se expresan en kilobytes.</li>
+  <li><strong>Localizar los objetos más pesados.</strong> El libro ordena la salida de <code>verify-pack -v</code> por la tercera columna (tamaño) y se queda con los últimos.</li>
+  <li><strong>Identificar el archivo.</strong> Con <code>git rev-list --objects --all</code> se obtiene la lista de objetos con su nombre de ruta, y un <code>grep</code> del prefijo del hash revela a qué archivo corresponde el blob.</li>
+  <li><strong>Encontrar los commits afectados.</strong> <code>git log --oneline --branches -- ruta/al/archivo</code> lista los commits que tocaron ese archivo.</li>
+</ol>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git count-objects -v
+
+git verify-pack -v .git/objects/pack/pack-*.idx | sort -k 3 -n | tail -3
+
+git rev-list --objects --all | grep &lt;prefijo-del-hash&gt;
+
+git log --oneline --branches -- archivo-grande.tgz</code></pre>
+        </div>
+
+<p>El paso siguiente, eliminar el archivo de toda la historia, reescribe todos los commits afectados y, por tanto, todos los hashes posteriores. Es una operación mucho más seria que un <code>commit</code> corriente. El libro la describe con <code>git filter-branch</code> y advierte de que es destructiva para la historia de commits; en el ejemplo del libro el tamaño empaquetado del repositorio pasa de unos 5 MB a 8 KB una vez eliminadas las referencias antiguas, el reflog y los objetos sueltos. Consulta siempre la documentación de la versión de Git que utilices antes de reescribir un repositorio compartido, y avisa a todo el equipo: cada colaborador tendrá que sincronizar su copia con la historia reescrita.</p>
+
+<h2 id="10-sha-1-colisiones-y-la-transicion-a-sha-2">SHA-1, colisiones y la transición a SHA-256</h2>
+
+<p>Todo lo anterior se ha descrito con SHA-1, que sigue siendo el algoritmo de identificación en la mayoría de los repositorios. La documentación del proyecto, en el documento de diseño de la transición de función hash, explica por qué se quiere abandonar. En 2017 se demostró un ataque práctico de colisión sobre SHA-1 (el conocido como SHAttered). Git incorporó desde la versión 2.13.0 una variante endurecida de SHA-1 que no es vulnerable a ese ataque concreto, pero el documento insiste en que "SHA-1 sigue siendo débil" y que resulta prudente dejar atrás cualquier variante.</p>
+
+<p>El proyecto eligió SHA-256 a finales de 2018. Los criterios fueron una longitud de 256 bits, su amplia disponibilidad en implementaciones como OpenSSL, su adecuación a las necesidades de Git en cuanto a colisiones y segundas preimágenes, y el rendimiento como criterio de desempate. Según el diseño, la migración debe poder hacerse repositorio por repositorio, sin que ninguna otra parte tenga que hacer nada, y un repositorio SHA-256 debería poder comunicarse con servidores SHA-1 mediante conversión de objetos al hacer fetch y push.</p>
+
+<p>Con una versión moderna de Git puedes crear hoy un repositorio de ese tipo. En el laboratorio lo hicimos con la opción <code>--object-format=sha256</code> y comprobamos el resultado:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>git init --object-format=sha256 demo256
+cd demo256
+echo hola &gt; a.txt &amp;&amp; git add a.txt &amp;&amp; git commit -m "sha256"
+
+git rev-parse HEAD
+# 941de503f5ee7b61365a7e98989e93ed06dec137ee3c5baf5e77299f28588bf0
+
+git config extensions.objectformat          # sha256
+git config core.repositoryformatversion     # 1</code></pre>
+        </div>
+
+<p>El identificador tiene 64 caracteres hexadecimales en lugar de 40, y el repositorio queda marcado con la versión de formato 1 y la extensión <code>objectformat = sha256</code>, un mecanismo para que versiones antiguas de Git se nieguen a abrirlo en lugar de interpretarlo mal, tal como describe el documento de diseño. Eso significa también que un repositorio SHA-256 no puede ser leído por versiones antiguas de Git, que no se admiten clones superficiales ni alternos en la propuesta original y que el documento desaconseja explícitamente alojar repositorios SHA-256 en servidores públicos mientras el protocolo de Git no incorpore soporte para ese formato.</p>
+
+<div class="alert">
+  <strong>Qué no sabemos (y por qué importa).</strong> El documento de diseño está redactado en futuro condicional: describe un plan y no indica qué partes están implementadas en cada versión ni establece una fecha para que SHA-256 sea el formato por defecto. Por eso este artículo no afirma que lo sea. Si necesitas saber qué soporta tu versión concreta de Git, consulta sus notas de versión y su documentación, y comprueba también qué soporta tu plataforma de alojamiento.
+</div>
+
+<h2 id="11-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<p>Conocer el modelo interno permite desmontar varias creencias populares que a menudo causan problemas.</p>
+
+<h3>"Git guarda diferencias entre versiones"</h3>
+
+<p>No en el modelo lógico. Cada commit apunta a una instantánea completa del proyecto (un tree raíz). Los deltas son un detalle de almacenamiento del packfile, invisible para los comandos de alto nivel y decidido por heurísticas de compresión. Que un objeto esté almacenado como delta no cambia nunca su identificador ni su contenido lógico.</p>
+
+<h3>"Borrar una rama borra sus commits"</h3>
+
+<p>Borrar una rama elimina un archivo de referencia. Los commits siguen en el almacén y, mientras exista una entrada de reflog que los alcance, pueden recuperarse con <code>git branch &lt;nombre&gt; &lt;hash&gt;</code>. Pasados los plazos de caducidad y una limpieza, desaparecen de verdad.</p>
+
+<h3>"Un rebase modifica mis commits"</h3>
+
+<p>Un rebase no modifica ningún objeto, porque los objetos son inmutables. Crea commits nuevos con contenido parecido y mueve la rama. Los antiguos quedan huérfanos y recuperables vía reflog. Gracias a eso, el reflog (y la referencia <code>ORIG_HEAD</code> que Git deja antes de operaciones como el rebase) permiten volver a la posición anterior si algo sale mal; si te interesa ese flujo completo, lo desarrollamos en el artículo sobre <a href="/articulos/git-rebase-interactivo.html">rebase interactivo</a>.</p>
+
+<h3>"El reflog me protege del servidor"</h3>
+
+<p>El reflog es local. Si alguien fuerza un <code>push --force</code> que sobrescribe una rama en el servidor, el reflog del servidor (si lo mantiene) no es el tuyo, y los commits perdidos solo se recuperan si tú los tenías en tu copia. Por eso, antes de forzar un push, conviene entender qué commits quedarán sin referencia en el remoto.</p>
+
+<h3>"git gc solo ocupa tiempo"</h3>
+
+<p>Un <code>gc</code> periódico mantiene el rendimiento: reduce el número de archivos sueltos, empaqueta referencias y genera packs con deltas. En equipos grandes, las plataformas de alojamiento lo ejecutan en segundo plano; en local, Git lo lanza automáticamente cuando se superan los umbrales que hemos visto. Desactivarlo (<code>gc.auto=0</code>) solo tiene sentido en situaciones controladas, como el laboratorio de este artículo, donde queríamos observar el estado antes y después de empaquetar.</p>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="12-una-receta-para-explorar-cualquier-repos">Una receta para explorar cualquier repositorio</h2>
+
+<p>Con todo lo anterior puedes diseccionar un repositorio real. La siguiente secuencia no modifica nada y te permite recorrer la estructura desde la rama hasta el contenido de un archivo:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># 1. ¿En qué rama estoy y a qué commit apunta?
+git symbolic-ref HEAD
+git rev-parse HEAD
+
+# 2. ¿Cómo es ese commit?
+git cat-file -p HEAD
+
+# 3. ¿Cómo es el directorio raíz?
+git cat-file -p HEAD^{tree}
+
+# 4. ¿Cuál es el contenido de un archivo concreto en ese commit?
+git cat-file -p HEAD:README.md
+
+# 5. ¿Cuántos objetos hay y cómo están almacenados?
+git count-objects -v
+
+# 6. ¿Qué referencias existen?
+git for-each-ref</code></pre>
+        </div>
+
+<p>La notación <code>HEAD^{tree}</code> resuelve el tree del commit apuntado por <code>HEAD</code>, y <code>HEAD:README.md</code> resuelve directamente el blob de ese archivo en ese commit. Con estas dos expresiones basta para navegar el modelo de datos completo sin salir de la terminal.</p>
+
+<h2 id="13-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Por qué el hash cambia si solo modifico el mensaje del commit?</h3>
+
+<p>Porque el mensaje forma parte del contenido del objeto commit y el hash se calcula sobre todo el contenido. Cambiar el mensaje con <code>commit --amend</code> produce un commit nuevo con otro identificador, y los commits posteriores que lo tuvieran como padre dejarían de coincidir.</p>
+
+<h3>¿Dos archivos idénticos ocupan el doble?</h3>
+
+<p>No. Al tener el mismo contenido tienen el mismo hash y comparten un único blob. Los dos nombres aparecen como entradas distintas del tree, pero apuntan al mismo objeto.</p>
+
+<h3>¿Puedo ver el contenido de un objeto con un editor de texto?</h3>
+
+<p>No directamente, porque los objetos sueltos están comprimidos con zlib. Se pueden leer con <code>git cat-file -p</code> o, como hicimos arriba, descomprimiendo el archivo con cualquier herramienta capaz de leer zlib.</p>
+
+<h3>¿Qué diferencia hay entre HEAD~1 y HEAD^?</h3>
+
+<p>Para un commit con un solo padre son equivalentes. Se distinguen en los commits de fusión: <code>HEAD^2</code> es el segundo padre, mientras que <code>HEAD~2</code> es el abuelo siguiendo siempre el primer padre.</p>
+
+<h3>¿Cuánto tiempo tengo para recuperar un commit tras un reset?</h3>
+
+<p>Depende de los plazos de caducidad configurados. Con los valores por defecto documentados, las entradas del reflog duran 90 días, o 30 si ya no eran alcanzables, y los objetos sueltos inalcanzables tienen además un periodo de gracia de dos semanas antes de poder ser podados. En la práctica, cuanto antes revises el reflog, mejor.</p>
+
+<h3>¿Es seguro ejecutar git gc en cualquier momento?</h3>
+
+<p>El <code>gc</code> normal es una operación de mantenimiento pensada para ejecutarse sin riesgo; respeta los periodos de gracia antes de eliminar nada. Lo peligroso son las variantes que acortan esos plazos a cero, como <code>--prune=now</code>, o que reescriben mucho trabajo, como <code>--aggressive</code> en repositorios enormes.</p>
+
+<h3>¿Las etiquetas y las ramas se comportan igual?</h3>
+
+<p>Ambas son referencias, pero una rama avanza cuando haces commit estando en ella, mientras que una etiqueta se queda siempre apuntando al mismo objeto salvo que la muevas explícitamente. Las etiquetas anotadas, además, son objetos con autor, fecha y mensaje.</p>
+
+<h3>¿Qué pasa con los submódulos?</h3>
+
+<p>Un submódulo se registra en el tree con un modo especial y apunta a un commit de otro repositorio en lugar de a un blob o a un tree. Es un tipo de entrada distinto de los tres modos de archivo vistos aquí, y por eso <em>Pro Git</em> señala que los modos de archivo válidos para blobs son solo tres.</p>
+
+<h2 id="14-conclusion">Conclusión</h2>
+
+<p>Git parece complejo desde fuera, pero por dentro se reduce a una idea y tres estructuras. La idea es el direccionamiento por contenido: cada objeto se identifica por el hash de lo que contiene. Las estructuras son los objetos inmutables (blob, tree, commit y tag), las referencias mutables que les ponen nombre (ramas, etiquetas, <code>HEAD</code>) y la maquinaria de mantenimiento (packfiles, reflog y recolección de basura) que mantiene todo eficiente y recuperable.</p>
+
+<p>Entender esas piezas cambia la forma de usar Git. Un <code>reset --hard</code> deja de dar miedo porque sabes que el reflog guarda la posición anterior; un rebase deja de ser magia porque sabes que produce commits nuevos; un repositorio gigante deja de ser un misterio porque sabes cómo medirlo y qué comandos revelan qué objeto lo infla. Y, sobre todo, aprendes a desconfiar de las explicaciones simplificadas: Git no guarda diferencias, no borra al borrar una rama y no "modifica" commits. Lo que hace es mucho más elegante: añade objetos nuevos, mueve punteros y limpia más tarde lo que nadie referencia.</p>
+
+<p>Si quieres seguir explorando, te recomendamos reproducir los experimentos de este artículo en un directorio de pruebas y complementarlos con la lectura de los capítulos de <em>Pro Git</em> sobre el funcionamiento interno. Y si trabajas con automatizaciones, el artículo sobre <a href="/articulos/github-actions-cache.html">caché en GitHub Actions</a> muestra cómo el mismo principio de direccionamiento por contenido (el hash de un archivo de bloqueo) se usa para decidir si una caché es válida.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Chacon, S. y Straub, B. <em>Pro Git</em>. «Git Internals – Git Objects». git-scm.com. <a href="https://git-scm.com/book/en/v2/Git-Internals-Git-Objects" rel="noopener">https://git-scm.com/book/en/v2/Git-Internals-Git-Objects</a> (consultado el 27-10-2026).</li>
+  <li>Chacon, S. y Straub, B. <em>Pro Git</em>. «Git Internals – Packfiles». <a href="https://git-scm.com/book/en/v2/Git-Internals-Packfiles" rel="noopener">https://git-scm.com/book/en/v2/Git-Internals-Packfiles</a> (consultado el 27-10-2026).</li>
+  <li>Chacon, S. y Straub, B. <em>Pro Git</em>. «Git Internals – Git References». <a href="https://git-scm.com/book/en/v2/Git-Internals-Git-References" rel="noopener">https://git-scm.com/book/en/v2/Git-Internals-Git-References</a> (consultado el 27-10-2026).</li>
+  <li>Chacon, S. y Straub, B. <em>Pro Git</em>. «Git Internals – Maintenance and Data Recovery». <a href="https://git-scm.com/book/en/v2/Git-Internals-Maintenance-and-Data-Recovery" rel="noopener">https://git-scm.com/book/en/v2/Git-Internals-Maintenance-and-Data-Recovery</a> (consultado el 27-10-2026).</li>
+  <li>Proyecto Git. «hash-function-transition». Documentación de Git. <a href="https://git-scm.com/docs/hash-function-transition" rel="noopener">https://git-scm.com/docs/hash-function-transition</a> (consultado el 27-10-2026).</li>
+  <li>Proyecto Git. «git-gc». Documentación de Git. <a href="https://git-scm.com/docs/git-gc" rel="noopener">https://git-scm.com/docs/git-gc</a> (consultado el 27-10-2026).</li>
+  <li>Laboratorio propio con Git 2.56.0 (Windows), 27-10-2026. Registro de comandos y salidas en el repositorio del sitio: <code>editorial/fuentes/lab_git.md</code>.</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/git-rebase-interactivo.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[git]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Git Rebase Interactivo y Rewriting History</span>
+          </a></li>
+          <li><a href="/articulos/github-actions-cache.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[devops]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Caché en GitHub Actions</span>
+          </a></li>
+          <li><a href="/articulos/docker-multi-stage.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[docker]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Docker Multi-stage y Distroless</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-un-sistema-de-archivos-direccionable-por" class="text-muted hover:text-accent">Un sistema de archivos direccionable por contenido</a></li>
+            <li><a href="#2-como-se-calcula-el-identificador-de-un-o" class="text-muted hover:text-accent">Cómo se calcula el identificador de un objeto</a></li>
+            <li><a href="#3-los-cuatro-tipos-de-objeto" class="text-muted hover:text-accent">Los cuatro tipos de objeto</a></li>
+            <li><a href="#4-del-contenido-a-la-historia-por-que-los" class="text-muted hover:text-accent">Del contenido a la historia: por qué los commits son inmutables</a></li>
+            <li><a href="#5-el-indice-la-zona-de-preparacion" class="text-muted hover:text-accent">El índice: la zona de preparación</a></li>
+            <li><a href="#6-referencias-ramas-etiquetas-y-head" class="text-muted hover:text-accent">Referencias: ramas, etiquetas y HEAD</a></li>
+            <li><a href="#7-de-los-objetos-sueltos-a-los-packfiles" class="text-muted hover:text-accent">De los objetos sueltos a los packfiles</a></li>
+            <li><a href="#8-el-reflog-la-red-de-seguridad" class="text-muted hover:text-accent">El reflog: la red de seguridad</a></li>
+            <li><a href="#9-cuando-el-repositorio-engorda-diagnostic" class="text-muted hover:text-accent">Cuando el repositorio engorda: diagnóstico del tamaño</a></li>
+            <li><a href="#10-sha-1-colisiones-y-la-transicion-a-sha-2" class="text-muted hover:text-accent">SHA-1, colisiones y la transición a SHA-256</a></li>
+            <li><a href="#11-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#12-una-receta-para-explorar-cualquier-repos" class="text-muted hover:text-accent">Una receta para explorar cualquier repositorio</a></li>
+            <li><a href="#13-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#14-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

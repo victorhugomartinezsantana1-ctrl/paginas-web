@@ -1,0 +1,490 @@
+<p>Hay bases de datos que se comportan como un cuello de botella silencioso: funcionan bien durante meses y de pronto una tabla ocupa diez veces más de lo que debería, una consulta que tardaba milisegundos pasa a tardar segundos o un trabajo nocturno bloquea el sistema. Con PostgreSQL, buena parte de esos episodios tiene su origen en tres mecanismos que trabajan en conjunto y que casi nunca se explican juntos: el control de concurrencia multiversión (MVCC), la limpieza de versiones muertas mediante VACUUM y el planificador de consultas, que decide cómo ejecutar cada sentencia a partir de estadísticas.</p>
+
+<p>Entender esas tres piezas cambia la forma de operar una base de datos. Deja de ser un misterio por qué una transacción abierta olvidada puede hacer crecer una tabla; por qué el nivel de aislamiento por defecto puede dar resultados distintos en dos lecturas seguidas; o por qué el planificador elige un recorrido secuencial cuando "claramente" hay un índice. En este artículo recorremos el modelo de abajo arriba: primero cómo se guarda una fila en el disco, después cómo conviven varias versiones de ella, a continuación qué trabajo de mantenimiento resulta de esa convivencia y, por último, cómo se eligen los planes de ejecución.</p>
+
+<p>Toda la información procede de la documentación oficial de PostgreSQL en su versión 18. Una advertencia de método: en el equipo con el que se preparó este texto no había PostgreSQL instalado, por lo que no hemos ejecutado las sentencias SQL que verás; las presentamos como ejemplos ilustrativos y las únicas cifras de salida que aparecen son las que figuran en los ejemplos de la propia documentación, indicadas como tales. Si te interesa la parte de infraestructura, en nuestro artículo sobre <a href="/articulos/terraform-infraestructura-codigo.html">Terraform y Azure</a> se despliega un servidor PostgreSQL flexible; este artículo explica qué ocurre dentro de él una vez en marcha.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>En MVCC, según la documentación, leer nunca bloquea escribir y escribir nunca bloquea leer, porque cada transacción trabaja sobre una versión consistente de los datos.</li>
+    <li>Un <code>UPDATE</code> o un <code>DELETE</code> no eliminan la fila antigua: crean versiones nuevas o marcan las viejas. Esas versiones muertas se limpian después con <code>VACUUM</code>.</li>
+    <li>PostgreSQL ofrece en la práctica tres niveles de aislamiento: Read Committed (por defecto), Repeatable Read y Serializable. Read Uncommitted se comporta como Read Committed.</li>
+    <li>Los identificadores de transacción son de 32 bits, así que cada tabla debe vacuumarse al menos una vez cada dos mil millones de transacciones para evitar el desbordamiento (<em>wraparound</em>).</li>
+    <li>El planificador estima costes en unidades arbitrarias a partir de estadísticas; si esas estadísticas están obsoletas o no capturan la correlación entre columnas, el plan puede ser malo.</li>
+    <li><code>EXPLAIN ANALYZE</code> ejecuta realmente la consulta: envuélvelo en una transacción que termine en <code>ROLLBACK</code> si modifica datos.</li>
+  </ul>
+</div>
+
+<h2>La idea de MVCC: varias versiones de cada fila</h2>
+
+<p>Una base de datos relacional debe resolver un problema clásico: ¿qué ocurre cuando una transacción lee datos mientras otra los modifica? La solución más simple es el bloqueo: si alguien escribe, los demás esperan. Es correcta, pero penaliza la concurrencia: un informe largo que lee una tabla impediría escribir en ella, y una escritura lenta detendría todas las lecturas.</p>
+
+<p>PostgreSQL adopta otra estrategia, el control de concurrencia multiversión (<em>multiversion concurrency control</em>, MVCC). En lugar de modificar una fila "en el sitio", mantiene varias versiones de ella y hace que cada transacción vea la versión que le corresponde según el momento en que empezó. La documentación del capítulo de control de concurrencia resume el beneficio principal en una frase: los bloqueos que se adquieren para consultar datos no entran en conflicto con los que se adquieren para escribirlos, de modo que leer nunca bloquea escribir y escribir nunca bloquea leer.</p>
+
+<p>Es importante no exagerar el alcance de esa garantía. MVCC elimina el conflicto entre lectores y escritores, pero no entre dos escritores que modifican la misma fila: esos sí se serializan, como veremos en la sección sobre niveles de aislamiento. Tampoco hace desaparecer el coste de mantener versiones: el espacio que ocupan las versiones antiguas y el trabajo de limpiarlas son la contrapartida directa de esta ventaja, y de ellos se ocupa buena parte de este artículo.</p>
+
+<h2>Anatomía física: páginas, punteros y tuplas</h2>
+
+<p>Para entender cómo conviven las versiones hay que bajar un nivel y ver cómo se guarda una fila. La documentación sobre la disposición de las páginas de la base de datos describe una estructura bastante regular. Los datos de las tablas (y de los índices) se almacenan en archivos divididos en <strong>páginas</strong> de tamaño fijo, que por defecto son de 8 kB, aunque el tamaño puede cambiarse al compilar el servidor. Cada página tiene cinco partes:</p>
+
+<ol>
+  <li><strong>PageHeaderData</strong>: 24 bytes con información general de la página, incluidos los punteros al espacio libre.</li>
+  <li><strong>ItemIdData</strong>: una matriz de punteros de línea (<em>line pointers</em>); cada uno es un par (desplazamiento, longitud) de 4 bytes.</li>
+  <li><strong>Espacio libre</strong>: el hueco sin asignar. Los identificadores de elemento se asignan desde su comienzo y los elementos propiamente dichos, desde su final, de modo que crecen uno hacia el otro.</li>
+  <li><strong>Elementos</strong>: los datos reales. En una tabla, cada elemento es una fila.</li>
+  <li><strong>Espacio especial</strong>: datos específicos del método de acceso; está vacío en las tablas ordinarias.</li>
+</ol>
+
+<p>Un identificador de tupla (TID, también llamado <code>ctid</code>) se compone de un número de página y de un índice dentro de la matriz de punteros de línea. Esa indirección tiene una ventaja importante, que es una consecuencia del diseño y no algo que la página enuncie con estas palabras: como el TID identifica un puntero de línea y no la posición física exacta del dato, la fila puede reorganizarse dentro de la página sin que las referencias externas dejen de ser válidas.</p>
+
+<h3>La cabecera de cada tupla</h3>
+
+<p>Cada fila almacenada, que la documentación llama <em>heap tuple</em>, empieza con una cabecera de tamaño fijo. Los campos que describe la página son estos:</p>
+
+<table>
+  <thead>
+    <tr><th>Campo</th><th>Tamaño</th><th>Significado</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>t_xmin</code></td><td>4 bytes</td><td>Identificador de la transacción que insertó esta versión de la fila.</td></tr>
+    <tr><td><code>t_xmax</code></td><td>4 bytes</td><td>Identificador de la transacción que borró esta versión.</td></tr>
+    <tr><td><code>t_cid</code></td><td>4 bytes</td><td>Identificador de comando de inserción y/o borrado (comparte espacio con <code>t_xvac</code>).</td></tr>
+    <tr><td><code>t_ctid</code></td><td>6 bytes</td><td>TID actual de esta versión o de otra más nueva.</td></tr>
+    <tr><td><code>t_infomask2</code></td><td>2 bytes</td><td>Número de atributos y algunos bits de estado.</td></tr>
+    <tr><td><code>t_infomask</code></td><td>2 bytes</td><td>Varios bits de estado.</td></tr>
+    <tr><td><code>t_hoff</code></td><td>1 byte</td><td>Desplazamiento hasta los datos del usuario.</td></tr>
+  </tbody>
+</table>
+
+<p>La suma de los campos que no se solapan (4 + 4 + 4 + 6 + 2 + 2 + 1) da 23 bytes, que es el tamaño de la cabecera fija en la mayoría de las máquinas. Después puede venir un mapa de bits de nulos, presente solo si algún campo es nulo, y a continuación los datos del usuario a partir de <code>t_hoff</code>, que debe ser múltiplo del alineamiento de la plataforma. Un efecto práctico: una tabla con filas muy pequeñas paga ese coste fijo en cada fila, lo que explica por qué una tabla de dos enteros ocupa bastante más de lo que sugiere la suma de sus columnas.</p>
+
+<p>Los dos campos clave para MVCC son <code>t_xmin</code> y <code>t_xmax</code>. Marcan, respectivamente, qué transacción creó la versión y cuál la eliminó (o cero si sigue vigente). El campo <code>t_ctid</code>, según la documentación, contiene "el TID actual de esta versión o de otra más nueva", lo que permite enlazar las versiones sucesivas de una misma fila.</p>
+
+<h3>Cómo mirar esos campos</h3>
+
+<p>Aunque no se vean en un <code>SELECT *</code>, <code>xmin</code>, <code>xmax</code> y <code>ctid</code> están disponibles como <em>columnas del sistema</em> en cualquier tabla. Eso permite observar MVCC con sentencias normales. Los siguientes ejemplos no se han ejecutado en la preparación de este artículo; el comportamiento que describen sigue de la estructura documentada arriba.</p>
+
+<pre data-lang="sql"><code>CREATE TABLE demo (id int PRIMARY KEY, valor text);
+INSERT INTO demo VALUES (1, 'a');
+
+SELECT xmin, xmax, ctid, * FROM demo;
+-- xmin es la transacción que insertó la fila; xmax vale 0 (nadie la ha borrado).
+
+UPDATE demo SET valor = 'b' WHERE id = 1;
+
+SELECT xmin, xmax, ctid, * FROM demo;
+-- La fila visible tiene otro xmin (la transacción del UPDATE) y otro ctid:
+-- es una versión física nueva, no la misma modificada en su sitio.</code></pre>
+
+<p>Para ver también la versión antigua, que ya no es visible para ninguna consulta pero sigue ocupando espacio hasta que se limpie, se puede usar la extensión <code>pageinspect</code>, que ofrece una función para examinar los elementos de una página:</p>
+
+<pre data-lang="sql"><code>CREATE EXTENSION pageinspect;
+
+SELECT lp, t_xmin, t_xmax, t_ctid
+FROM heap_page_items(get_raw_page('demo', 0));
+-- Se esperan dos filas: la versión antigua (con t_xmax rellenado)
+-- y la nueva, a la que apunta el t_ctid de la antigua.</code></pre>
+
+<div class="alert">
+  <strong>Qué sabemos y qué inferimos.</strong> La página de documentación consultada describe el significado de los campos <code>t_xmin</code>, <code>t_xmax</code> y <code>t_ctid</code>, pero no detalla paso a paso cómo los usa una actualización. La explicación de que un <code>UPDATE</code> marca la versión antigua con su <code>xmax</code> e inserta una versión nueva es la interpretación general del modelo MVCC de PostgreSQL y encaja con la descripción de los campos; para el detalle exacto del protocolo de visibilidad, consulta la documentación interna de la versión que utilices.
+</div>
+
+<h2>UPDATE y DELETE: crear versiones, no sobrescribir</h2>
+
+<p>Con la anatomía anterior, la mecánica de las operaciones de escritura se entiende de forma natural. La documentación sobre mantenimiento rutinario lo dice sin rodeos: un <code>UPDATE</code> o un <code>DELETE</code> de una fila no elimina inmediatamente la versión antigua. Veamos qué ocurre en cada caso con el modelo simplificado:</p>
+
+<ul>
+  <li><strong>INSERT</strong>: se escribe una versión nueva con <code>xmin</code> igual al identificador de la transacción que inserta y <code>xmax</code> vacío.</li>
+  <li><strong>DELETE</strong>: la versión no se retira de la página; su <code>xmax</code> se rellena con el identificador de la transacción que borra. Para las transacciones que empezaron antes de ese borrado, la fila sigue siendo visible.</li>
+  <li><strong>UPDATE</strong>: equivale a un <code>DELETE</code> de la versión antigua más un <code>INSERT</code> de una versión nueva, y el <code>t_ctid</code> de la antigua pasa a apuntar a la nueva.</li>
+</ul>
+
+<p>Las versiones que ya no puede ver ninguna transacción se llaman <strong>tuplas muertas</strong>. Se quedan en la página, ocupando espacio, hasta que <code>VACUUM</code> las marca como reutilizables. Esa es la raíz de dos problemas operativos muy comunes: el aumento del tamaño de las tablas (<em>bloat</em>) cuando se actualizan muchas filas y la dependencia del rendimiento de un mantenimiento periódico.</p>
+
+<h3>Cuándo es visible una versión: la regla simplificada</h3>
+
+<p>Aunque la regla completa es compleja, su esencia es sencilla de enunciar. Una versión de fila es visible para una transacción si la transacción que la creó (<code>xmin</code>) ya había confirmado antes de que la instantánea de la transacción lectora se tomara, y la que la borró (<code>xmax</code>), si existe, o bien no ha confirmado, o bien confirmó después de tomarse esa instantánea. Esta formulación es una simplificación general del funcionamiento de MVCC; la implementación real contempla además las subtransacciones, los identificadores de comando dentro de una misma transacción y los bits de la máscara <code>t_infomask</code> que cachean el estado de las transacciones para no consultarlo cada vez.</p>
+
+<p>Lo que más importa es una consecuencia: <strong>qué es visible depende de la instantánea</strong> (<em>snapshot</em>) de cada transacción. Y el momento en que se toma esa instantánea es precisamente lo que diferencia los niveles de aislamiento.</p>
+
+<h2>Niveles de aislamiento: cuándo se toma la fotografía</h2>
+
+<p>El estándar SQL define cuatro niveles de aislamiento. La documentación de PostgreSQL aclara que el sistema los acepta todos, pero implementa solo tres comportamientos distintos: el nivel <em>Read Uncommitted</em> se comporta exactamente como <em>Read Committed</em>, porque, según la documentación, es la única forma sensata de asignar los niveles estándar a una arquitectura multiversión. El nivel por defecto es <em>Read Committed</em>.</p>
+
+<p>Cada nivel previene un conjunto distinto de fenómenos de concurrencia. La documentación define cuatro:</p>
+
+<ul>
+  <li><strong>Lectura sucia</strong> (<em>dirty read</em>): una transacción lee datos escritos por otra que aún no ha confirmado.</li>
+  <li><strong>Lectura no repetible</strong>: una transacción vuelve a leer datos que ya había leído y comprueba que otra transacción, confirmada entre ambas lecturas, los ha modificado.</li>
+  <li><strong>Lectura fantasma</strong>: una transacción repite una consulta que devuelve un conjunto de filas según una condición y comprueba que ese conjunto ha cambiado por otra transacción recién confirmada.</li>
+  <li><strong>Anomalía de serialización</strong>: el resultado de confirmar con éxito un grupo de transacciones es incoherente con cualquier orden posible de ejecutarlas una a una.</li>
+</ul>
+
+<table>
+  <thead>
+    <tr><th>Nivel</th><th>Lectura sucia</th><th>No repetible</th><th>Fantasma</th><th>Anomalía de serialización</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Read uncommitted</td><td>No en PostgreSQL</td><td>Posible</td><td>Posible</td><td>Posible</td></tr>
+    <tr><td>Read committed</td><td>No</td><td>Posible</td><td>Posible</td><td>Posible</td></tr>
+    <tr><td>Repeatable read</td><td>No</td><td>No</td><td>No en PostgreSQL</td><td>Posible</td></tr>
+    <tr><td>Serializable</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+  </tbody>
+</table>
+
+<p>Fíjate en que PostgreSQL es más estricto que el estándar en dos casillas: no permite lecturas sucias ni siquiera en el nivel más bajo, y su <em>Repeatable Read</em> tampoco permite lecturas fantasma, aunque el estándar sí lo toleraría. El nivel se establece con <code>SET TRANSACTION</code> o con la opción correspondiente de <code>BEGIN</code>.</p>
+
+<h3>Read Committed: una instantánea por sentencia</h3>
+
+<p>En este nivel, que es el predeterminado, cada sentencia ve una instantánea de la base de datos tomada en el instante en que empieza a ejecutarse. Dos <code>SELECT</code> consecutivos dentro de la misma transacción pueden por tanto devolver datos distintos si otra transacción confirmó entre ambos. Para muchas aplicaciones es un comportamiento razonable y barato, y la documentación lo considera adecuado en los casos simples, como una transferencia en la que cada sentencia toca filas predeterminadas.</p>
+
+<pre data-lang="sql"><code>BEGIN;
+UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 12345;
+UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 7534;
+COMMIT;</code></pre>
+
+<p>La parte sutil aparece con las escrituras concurrentes. Si un <code>UPDATE</code> o un <code>DELETE</code> encuentra una fila que otra transacción ya ha modificado y todavía no ha confirmado, <strong>espera</strong> a que esa transacción termine. Según la documentación, si la primera confirma, la segunda ignorará la fila si aquella la borró, y en caso contrario intentará aplicar su operación sobre la versión actualizada. La documentación advierte de una consecuencia que a veces sorprende: una sola sentencia puede ver una instantánea que no es del todo coherente, porque esa reevaluación sobre la fila actualizada puede hacer que un <code>DELETE</code> no tenga efecto aunque existiera una fila que coincidía antes y después de un <code>UPDATE</code> concurrente.</p>
+
+<h3>Repeatable Read: una instantánea por transacción</h3>
+
+<p>En <em>Repeatable Read</em> la instantánea se toma al comienzo de la primera sentencia de la transacción que no sea de control de transacciones, y se reutiliza para todas las demás. Por eso, sucesivos <code>SELECT</code> dentro de una única transacción ven los mismos datos. A cambio, ocurre algo importante con las escrituras: si la transacción intenta modificar o bloquear una fila que otra transacción cambió y confirmó después de que ella empezara, fracasa con un error de serialización:</p>
+
+<pre data-lang="text"><code>ERROR:  could not serialize access due to concurrent update</code></pre>
+
+<p>La documentación es explícita sobre qué debe hacer la aplicación: abortar la transacción actual y reintentarla desde el principio. Las transacciones de solo lectura nunca sufren conflictos de serialización en este nivel. Pero hay una limitación que conviene tener presente: <em>Repeatable Read</em> en PostgreSQL implementa el aislamiento de instantánea (<em>snapshot isolation</em>), que todavía permite anomalías de serialización. Según la documentación, intentar hacer cumplir reglas de negocio con transacciones de este nivel probablemente no funcione bien sin el uso cuidadoso de bloqueos explícitos.</p>
+
+<h3>Serializable: el nivel que "emula" la ejecución en serie</h3>
+
+<p>El nivel más estricto garantiza que el resultado de las transacciones confirmadas es equivalente al de ejecutarlas una tras otra en algún orden. PostgreSQL lo implementa como <em>Serializable Snapshot Isolation</em> (SSI): funciona como <em>Repeatable Read</em> y añade una vigilancia de las condiciones que podrían producir un resultado incompatible con un orden serial. Para ello utiliza bloqueos de predicado, que la documentación describe como bloqueos que permiten saber cuándo una escritura habría afectado al resultado de una lectura anterior de una transacción concurrente. Aparecen en <code>pg_locks</code> con el modo <code>SIReadLock</code> y, según la documentación, no provocan bloqueos de espera ni pueden causar interbloqueos.</p>
+
+<p>El precio es que algunas transacciones fracasan, y la aplicación debe estar preparada. El ejemplo de la documentación usa dos transacciones: una suma los valores de la clase 1 y los inserta en la clase 2, y la otra hace lo contrario. Si ambas confirmaran, el resultado no se correspondería con ningún orden en serie, de modo que una de ellas fallará con:</p>
+
+<pre data-lang="text"><code>ERROR:  could not serialize access due to read/write dependencies among transactions</code></pre>
+
+<p>Estos fallos de serialización llevan siempre el código SQLSTATE <code>40001</code>. La documentación insiste en que un entorno que use esta técnica debe tener una forma generalizada de gestionarlos, y recomienda reintentar la transacción hasta que tenga éxito; también advierte de que no hay que fiarse de los datos leídos en una transacción serializable hasta que esta confirme con éxito. Un patrón típico de reintento en Python con <code>psycopg</code> sería el siguiente (ejemplo ilustrativo, no ejecutado en la preparación de este artículo):</p>
+
+<pre data-lang="python"><code>import time
+import psycopg
+from psycopg import errors
+
+
+def ejecutar_con_reintentos(dsn, trabajo, max_intentos=5):
+    """Ejecuta trabajo(conn) en una transacción SERIALIZABLE, reintentando si falla."""
+    for intento in range(1, max_intentos + 1):
+        with psycopg.connect(dsn) as conn:
+            conn.isolation_level = psycopg.IsolationLevel.SERIALIZABLE
+            try:
+                with conn.transaction():
+                    return trabajo(conn)
+            except errors.SerializationFailure:
+                if intento == max_intentos:
+                    raise
+                time.sleep(0.05 * 2 ** intento)  # espera creciente</code></pre>
+
+<p>Hay un caso especial que la documentación señala: una transacción declarada <code>SERIALIZABLE READ ONLY DEFERRABLE</code> espera hasta poder tomar una instantánea "segura" y, una vez lo logra, no puede fallar por conflictos de serialización. Es el único caso en que las transacciones serializables se bloquean mientras que las de <em>Repeatable Read</em> no.</p>
+
+<h3>Recomendaciones para usar Serializable sin sufrir</h3>
+
+<p>La documentación ofrece una lista de consejos de ajuste que conviene resumir, porque marcan la diferencia entre un uso saludable y uno problemático:</p>
+
+<ul>
+  <li>Declarar las transacciones como <code>READ ONLY</code> siempre que sea posible.</li>
+  <li>Limitar el número de conexiones activas, por ejemplo con un <em>pool</em> de conexiones.</li>
+  <li>Mantener las transacciones pequeñas.</li>
+  <li>Evitar sesiones paradas en "<em>idle in transaction</em>" y considerar el parámetro <code>idle_in_transaction_session_timeout</code>.</li>
+  <li>Retirar los bloqueos explícitos y los <code>SELECT FOR UPDATE</code>/<code>FOR SHARE</code> que ya no hagan falta porque el nivel serializable protege los datos.</li>
+  <li>Aumentar <code>max_pred_locks_per_transaction</code>, <code>max_pred_locks_per_relation</code> o <code>max_pred_locks_per_page</code> si los bloqueos de predicado se están agrupando en bloqueos más gruesos.</li>
+  <li>Recordar que un recorrido secuencial siempre toma un bloqueo de predicado a nivel de relación; bajar <code>random_page_cost</code> o subir <code>cpu_tuple_cost</code> puede favorecer planes con índice.</li>
+</ul>
+
+<div class="alert">
+  <strong>Las secuencias no son transaccionales.</strong> Los cambios en una secuencia, incluido el contador que hay detrás de una columna <code>serial</code>, son visibles de inmediato para todas las demás transacciones y no se deshacen si la transacción que los hizo aborta. Por eso un <code>ROLLBACK</code> puede dejar huecos en una columna autoincremental, y no debe usarse una secuencia esperando una numeración continua.
+</div>
+
+<h2>Por qué hace falta VACUUM</h2>
+
+<p>Con MVCC, las versiones muertas se acumulan. El capítulo de mantenimiento rutinario de la documentación enumera los motivos por los que hay que ejecutar <code>VACUUM</code> con regularidad:</p>
+
+<ol>
+  <li><strong>Recuperar espacio de las versiones muertas.</strong> <code>VACUUM</code> elimina las versiones obsoletas de las filas y marca su espacio como disponible para reutilización futura.</li>
+  <li><strong>Actualizar las estadísticas del planificador.</strong> <code>ANALYZE</code> recoge las estadísticas que el planificador usa, y puede ejecutarse por separado o como paso de <code>VACUUM</code>.</li>
+  <li><strong>Mantener el mapa de visibilidad.</strong> Esa estructura acelera los recorridos solo de índice, como veremos.</li>
+  <li><strong>Evitar el desbordamiento del identificador de transacción.</strong> La documentación indica que es necesario vacuumar cada tabla de cada base de datos al menos una vez cada dos mil millones de transacciones.</li>
+</ol>
+
+<h3>VACUUM frente a VACUUM FULL</h3>
+
+<p>El <code>VACUUM</code> ordinario puede ejecutarse a la vez que las operaciones normales (<code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code> y <code>DELETE</code>). Pero devuelve poco espacio al sistema operativo: según la documentación, solo lo hace en el caso especial de que una o varias páginas del final de la tabla queden completamente libres. Lo habitual es que el espacio liberado se quede dentro del archivo de la tabla, disponible para futuras inserciones.</p>
+
+<p><code>VACUUM FULL</code> es distinto: reescribe la tabla completa en un archivo nuevo. Puede recuperar mucho más espacio, pero es mucho más lento, necesita un bloqueo <code>ACCESS EXCLUSIVE</code> (que impide cualquier otra operación sobre la tabla mientras dura) y requiere espacio de disco adicional para la copia nueva. La documentación recomienda el <code>VACUUM</code> ordinario y evitar <code>VACUUM FULL</code> en la medida de lo posible.</p>
+
+<h3>El demonio autovacuum</h3>
+
+<p>Ejecutar <code>VACUUM</code> a mano en un sistema vivo no es realista, y por eso PostgreSQL incluye el demonio <em>autovacuum</em>, que la documentación califica de opcional pero muy recomendable y que exige tener <code>track_counts</code> activado. Decide cuándo vacuumar cada tabla comparando el número de tuplas muertas con un umbral que calcula con esta fórmula:</p>
+
+<pre data-lang="text"><code>umbral de vacuum = Mínimo(umbral máximo, umbral base + factor de escala × número de tuplas)</code></pre>
+
+<p>El umbral base es <code>autovacuum_vacuum_threshold</code>, el factor de escala es <code>autovacuum_vacuum_scale_factor</code> y el número de tuplas procede de <code>pg_class.reltuples</code>. La página consultada no indica los valores por defecto de esos dos parámetros; según la referencia general de PostgreSQL son 50 y 0,2 (es decir, un 20 % de la tabla), cifras que debes confirmar en la documentación de configuración de tu versión. La consecuencia de la fórmula es relevante: con el factor de escala por defecto, una tabla de cien millones de filas acumularía del orden de veinte millones de tuplas muertas antes de que el autovacuum la procese, por lo que las tablas grandes y activas suelen requerir ajustes específicos por tabla. Además, la documentación señala que las tablas cuyo <code>relfrozenxid</code> supere <code>autovacuum_freeze_max_age</code> se vacuuman siempre, aunque autovacuum esté desactivado, por motivos que veremos a continuación.</p>
+
+<h2>El desbordamiento del identificador de transacción</h2>
+
+<p>Esta es, probablemente, la parte más misteriosa de MVCC y la que más daño puede causar si se ignora. Los identificadores de transacción (XID) tienen 32 bits y se comparan con aritmética módulo 2<sup>32</sup>: para cualquier XID normal, dos mil millones de XID son "más antiguos" y otros dos mil millones son "más nuevos". Si no se interviniera, una versión de fila creada hace más de dos mil millones de transacciones pasaría a parecer que está en el futuro, y se volvería invisible de repente. Es el problema que en la documentación se denomina <em>transaction ID wraparound</em>.</p>
+
+<h3>La solución: congelar las tuplas</h3>
+
+<p>La solución es la <strong>congelación</strong> (<em>freezing</em>). <code>VACUUM</code> marca las versiones suficientemente antiguas como "congeladas": PostgreSQL reserva un identificador especial, <code>FrozenTransactionId</code>, que siempre se considera más antiguo que cualquier XID normal. La documentación precisa que, desde la versión 9.4, la congelación consiste en activar un bit de estado y conservar el <code>xmin</code> original, lo que además conserva información útil para el diagnóstico.</p>
+
+<p>Varios parámetros regulan este proceso:</p>
+
+<ul>
+  <li><strong><code>vacuum_freeze_min_age</code></strong>: controla cuán antiguo debe ser un XID para que se congelen las filas que lo llevan. Aumentarlo evita trabajo inútil sobre filas que pronto cambiarán; reducirlo acorta el tiempo que una tabla puede pasar sin necesitar otro vacuum.</li>
+  <li><strong><code>autovacuum_freeze_max_age</code></strong>: la documentación da como valor por defecto 200 millones de transacciones. Se fuerza un autovacuum en toda tabla que pueda contener XID más antiguos que ese valor, incluso con autovacuum desactivado.</li>
+  <li><strong><code>vacuum_freeze_table_age</code></strong>: dispara un vacuum agresivo (que examina toda la tabla) y está limitado a 0,95 veces <code>autovacuum_freeze_max_age</code>.</li>
+</ul>
+
+<p>Si, aun así, el sistema se acerca al límite, PostgreSQL empieza a emitir avisos cuando faltan 40 millones de transacciones para el desbordamiento, y se niega a asignar nuevos XID cuando quedan menos de tres millones. Es una medida de protección extrema: en ese punto el servidor deja de aceptar escrituras hasta que se complete un vacuum. La documentación ofrece dos consultas para vigilar la edad de las tablas y de las bases de datos:</p>
+
+<pre data-lang="sql"><code>SELECT c.oid::regclass AS table_name,
+       greatest(age(c.relfrozenxid), age(t.relfrozenxid)) AS age
+FROM pg_class c
+LEFT JOIN pg_class t ON c.reltoastrelid = t.oid
+WHERE c.relkind IN ('r', 'm');
+
+SELECT datname, age(datfrozenxid) FROM pg_database;</code></pre>
+
+<p>Una edad que se acerque a los 200 millones no es un problema en sí: es el punto en que el autovacuum forzado entra en acción. Lo inquietante es que la edad siga creciendo por encima de ese umbral, señal de que algo impide que el vacuum complete su trabajo. Las causas habituales son una transacción abierta durante días, una réplica o una ranura de replicación que retienen versiones, o un autovacuum bloqueado o sin recursos suficientes; las analizamos en una sección próxima.</p>
+
+<h2>El mapa de visibilidad y los recorridos solo de índice</h2>
+
+<p>Además de limpiar, <code>VACUUM</code> mantiene una estructura auxiliar: el <strong>mapa de visibilidad</strong>. Registra qué páginas contienen únicamente tuplas visibles para todas las transacciones. Esto produce dos beneficios que la documentación destaca. El primero es que los vacuums posteriores pueden saltarse esas páginas. El segundo es que acelera los recorridos solo de índice (<em>index-only scans</em>): cuando todas las tuplas de una página son visibles para todos, el ejecutor no necesita acudir a la tabla para comprobar la visibilidad, solo al índice. El mapa es mucho más pequeño que la tabla, de modo que puede mantenerse fácilmente en caché incluso con tablas muy grandes.</p>
+
+<p>La conclusión práctica es que un índice cubriente (que incluye todas las columnas que necesita la consulta) solo da su máximo rendimiento si el mapa de visibilidad está al día, es decir, si el vacuum se ejecuta con regularidad. En la salida de <code>EXPLAIN ANALYZE</code>, un nodo <em>Index Only Scan</em> muestra la métrica <code>Heap Fetches</code>: si vale cero, el recorrido no tuvo que consultar la tabla; si es alto, el mapa de visibilidad está desactualizado.</p>
+
+<h2>Cuando una transacción abierta lo estropea todo</h2>
+
+<p>De lo anterior se deduce un principio que explica muchos problemas reales: un vacuum no puede eliminar una versión muerta mientras alguna transacción siga necesitando verla. Y una transacción con una instantánea antigua (una en <em>Repeatable Read</em>, o una sesión parada "idle in transaction" que ya ha ejecutado alguna consulta) sigue necesitando versiones de hace horas o días. El resultado es que el autovacuum se ejecuta, pero no puede limpiar nada, las tablas siguen creciendo y la edad de los XID sigue aumentando. Este razonamiento es una consecuencia lógica del modelo MVCC; no se enuncia así en las páginas concretas consultadas, pero es coherente con las recomendaciones de la documentación sobre evitar sesiones "idle in transaction".</p>
+
+<p>Dos consultas de diagnóstico sencillas permiten localizar a los sospechosos habituales. Ambas leen vistas estándar del sistema y no modifican nada (ejemplos ilustrativos, no ejecutados aquí):</p>
+
+<pre data-lang="sql"><code>-- Tablas con más tuplas muertas y su último autovacuum
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC
+LIMIT 10;
+
+-- Transacciones abiertas más antiguas
+SELECT pid, state, now() - xact_start AS duracion, left(query, 60) AS consulta
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+ORDER BY xact_start
+LIMIT 10;</code></pre>
+
+<p>Si la segunda consulta muestra una sesión en estado <code>idle in transaction</code> con una duración de horas, ese es casi con seguridad el origen del problema. Las medidas preventivas son las que la documentación ya sugiere: establecer <code>idle_in_transaction_session_timeout</code> y mantener las transacciones cortas.</p>
+
+<h2>El planificador de consultas</h2>
+
+<p>Hasta aquí hemos hablado de cómo se guardan y se limpian los datos. La otra mitad de la historia es cómo se leen: cuando envías una consulta SQL, PostgreSQL no la ejecuta tal cual. Un componente llamado <em>planificador</em> o <em>optimizador</em> estudia las formas posibles de ejecutarla (con qué índices, en qué orden unir las tablas, con qué algoritmos) y elige la que estima más barata. Es un optimizador basado en costes, y eso significa que sus decisiones son tan buenas como sus estimaciones.</p>
+
+<h3>Cómo se calcula un coste</h3>
+
+<p>La documentación de <code>EXPLAIN</code> explica el modelo con un ejemplo completo. El coste se expresa en unidades arbitrarias, tradicionalmente medidas en "recuperaciones de una página de disco". Para un recorrido secuencial, el coste se calcula con esta fórmula:</p>
+
+<pre data-lang="text"><code>coste = (páginas leídas × seq_page_cost) + (filas recorridas × cpu_tuple_cost)</code></pre>
+
+<p>Con los valores por defecto, <code>seq_page_cost</code> vale 1,0 y <code>cpu_tuple_cost</code> vale 0,01. En el ejemplo de la documentación, la tabla <code>tenk1</code> ocupa 345 páginas y tiene 10.000 filas, de modo que el coste de recorrerla entera es 345 × 1,0 + 10.000 × 0,01 = 445. Es exactamente lo que muestra el plan:</p>
+
+<pre data-lang="text"><code>EXPLAIN SELECT * FROM tenk1;
+ Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)</code></pre>
+
+<p>Si se añade un filtro, el ejemplo muestra que el coste sube a 470,00 y que las filas estimadas bajan a 7000 (para la condición <code>unique1 &lt; 7000</code>). La documentación explica que el aumento corresponde a evaluar la condición sobre cada fila: 10.000 veces <code>cpu_operator_cost</code>. La diferencia entre 470 y 445 es 25, lo que es coherente con un <code>cpu_operator_cost</code> de 0,0025 (un valor que la página no cita expresamente, pero que se deduce de esos números).</p>
+
+<h3>Cómo leer una línea de EXPLAIN</h3>
+
+<p>Cada nodo del plan muestra cuatro cifras entre paréntesis: <code>(cost=inicio..total rows=N width=A)</code>.</p>
+
+<ul>
+  <li><strong>Coste de arranque</strong>: lo que se gasta antes de que el nodo pueda empezar a producir salida; por ejemplo, el tiempo de ordenar en un nodo de ordenación.</li>
+  <li><strong>Coste total</strong>: lo que costaría ejecutar el nodo hasta el final, devolviendo todas las filas. Un nodo padre puede no llegar a consumirlas todas, como ocurre con <code>LIMIT</code>. El coste de un nodo incluye siempre el de todos sus hijos.</li>
+  <li><strong>rows</strong>: número estimado de filas que produce el nodo, no las que recorre.</li>
+  <li><strong>width</strong>: anchura media estimada de las filas de salida, en bytes.</li>
+</ul>
+
+<h3>Tipos de nodo de acceso</h3>
+
+<p>La documentación presenta los recorridos más habituales con ejemplos y cifras concretas, que resumimos para ver cuándo cada uno resulta más adecuado:</p>
+
+<ul>
+  <li><strong>Seq Scan</strong>: lee la tabla completa. Ejemplo del manual: <code>cost=0.00..445.00 rows=10000</code>. Es lo mejor cuando se necesita una gran parte de las filas.</li>
+  <li><strong>Index Scan</strong>: recorre el índice y va a la tabla fila a fila. Ejemplo: <code>cost=0.29..8.30 rows=1</code> para una igualdad sobre una columna única. Las filas se leen en el orden del índice, lo que las hace más caras de obtener, por lo que se usa sobre todo para pocas filas.</li>
+  <li><strong>Bitmap Index Scan + Bitmap Heap Scan</strong>: el índice localiza las filas, esas ubicaciones se ordenan en el orden físico de la tabla y después se lee la tabla. Ejemplo: <code>Bitmap Heap Scan ... cost=5.06..224.98 rows=100</code>. Es un punto intermedio que sigue siendo más barato que un recorrido secuencial si no hay que visitar todas las páginas.</li>
+  <li><strong>Index Only Scan</strong>: responde solo con el índice cuando este contiene todas las columnas necesarias y el mapa de visibilidad lo permite. Ejemplo: <code>cost=0.29..6.90 rows=1</code> con <code>Heap Fetches: 0</code>.</li>
+</ul>
+
+<h3>Tipos de nodo de unión</h3>
+
+<p>Para unir tablas, el planificador dispone de tres algoritmos, ilustrados también con cifras del manual:</p>
+
+<ul>
+  <li><strong>Nested Loop</strong>: ejecuta el hijo interno una vez por cada fila del externo. Ejemplo: <code>cost=4.65..118.50 rows=10</code>. Es eficiente cuando el lado externo tiene pocas filas y el interno tiene un buen índice.</li>
+  <li><strong>Hash Join</strong>: carga las filas de una tabla en una tabla hash en memoria y luego recorre la otra consultando esa tabla hash. Ejemplo: <code>cost=226.23..709.73 rows=100</code>.</li>
+  <li><strong>Merge Join</strong>: requiere que las dos entradas estén ordenadas por la clave de unión. Ejemplo: <code>cost=0.56..233.49 rows=10</code>.</li>
+</ul>
+
+<p>La documentación incluye un experimento revelador: desactivando temporalmente un algoritmo con <code>SET enable_mergejoin = off;</code> se obliga al planificador a elegir otro, y se puede comparar el coste. En ese ejemplo, el hash join resultante cuesta <code>226.23..344.08</code> frente a <code>0.56..233.49</code> del merge join, y la documentación comenta que sería casi un 50 % más caro. Es una técnica excelente para comprobar si el planificador eligió bien, con una advertencia: los parámetros <code>enable_*</code> son herramientas de diagnóstico y no deberían quedar desactivados en producción.</p>
+
+<h2>EXPLAIN ANALYZE: lo estimado frente a lo real</h2>
+
+<p><code>EXPLAIN</code> muestra el plan y las estimaciones sin ejecutar la consulta. <code>EXPLAIN ANALYZE</code> la ejecuta de verdad y añade las mediciones reales, lo que permite compararlas con las estimaciones. Una salida de ejemplo de la documentación tiene este aspecto:</p>
+
+<pre data-lang="text"><code> Nested Loop  (cost=4.65..118.50 rows=10 width=488) (actual time=0.017..0.051 rows=10.00 loops=1)
+   ...
+   ->  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..7.90 rows=1 width=244)
+         (actual time=0.003..0.003 rows=1.00 loops=10)
+ Planning Time: 0.485 ms
+ Execution Time: 0.073 ms</code></pre>
+
+<p>Hay varios detalles que conviene saber leer:</p>
+
+<ul>
+  <li>El tiempo <strong>real</strong> (<code>actual time</code>) está en milisegundos de reloj, mientras que los costes estimados están en unidades arbitrarias, por lo que no tienen por qué coincidir.</li>
+  <li>El campo <code>loops</code> indica cuántas veces se ejecutó el nodo, y los tiempos y filas mostrados son <em>promedios por ejecución</em>. Para obtener el total hay que multiplicar por <code>loops</code>. En el ejemplo, el recorrido de índice interno tarda 0,003 ms por ejecución y se ejecuta 10 veces: 0,030 ms en total.</li>
+  <li><code>Planning Time</code> es el tiempo de generar y optimizar el plan, sin incluir el análisis sintáctico ni la reescritura. <code>Execution Time</code> incluye el arranque y cierre del ejecutor y los disparadores, pero no el análisis, la reescritura ni la planificación.</li>
+</ul>
+
+<div class="alert alert-danger">
+  <strong>EXPLAIN ANALYZE ejecuta la consulta.</strong> Si es un <code>UPDATE</code>, un <code>DELETE</code> o un <code>INSERT</code>, los efectos secundarios ocurren de verdad aunque el resultado se descarte. La documentación propone envolver la sentencia en una transacción y deshacerla al terminar.
+</div>
+
+<pre data-lang="sql"><code>BEGIN;
+EXPLAIN ANALYZE UPDATE tenk1 SET hundred = hundred + 1 WHERE unique1 &lt; 100;
+ROLLBACK;</code></pre>
+
+<p>La documentación añade que la medición excluye la transmisión por red y, salvo que se pida con la opción <code>SERIALIZE</code>, el coste de convertir la salida, y que el propio cronometraje puede añadir una sobrecarga notable en sistemas donde la función <code>gettimeofday()</code> es lenta. La herramienta <code>pg_test_timing</code> permite medirla.</p>
+
+<h2>Estadísticas: el combustible del planificador</h2>
+
+<p>Todas las estimaciones de filas y costes dependen de las estadísticas sobre los datos. La documentación del capítulo del planificador describe dos niveles. El primero es la información general de cada tabla en <code>pg_class</code>: <code>reltuples</code> (número aproximado de filas) y <code>relpages</code> (número de bloques de disco). Esos valores no se actualizan sobre la marcha, sino con <code>VACUUM</code>, <code>ANALYZE</code> y algunas operaciones de definición como <code>CREATE INDEX</code>; el planificador los escala al tamaño físico actual de la tabla.</p>
+
+<p>El segundo nivel son las estadísticas por columna, que se guardan en <code>pg_statistic</code> (solo legible para superusuarios) y se consultan a través de la vista <code>pg_stats</code>. Entre otras cosas, incluyen el número de valores distintos (<code>n_distinct</code>) y los valores más comunes (<code>most_common_vals</code>). La documentación subraya que son siempre aproximadas, incluso recién calculadas. El número de entradas que se guardan para los valores más comunes y para el histograma lo controla <code>default_statistics_target</code>, que vale 100 por defecto y puede ajustarse globalmente o por columna con <code>ALTER TABLE ... SET STATISTICS</code>. Subirlo mejora las estimaciones para distribuciones irregulares, a costa de más espacio en <code>pg_statistic</code> y más tiempo de cálculo.</p>
+
+<pre data-lang="sql"><code>SELECT relname, relkind, reltuples, relpages
+FROM pg_class
+WHERE relname LIKE 'tenk1%';
+
+SELECT attname, inherited, n_distinct,
+       array_to_string(most_common_vals, E'\n') AS most_common_vals
+FROM pg_stats
+WHERE tablename = 'road';</code></pre>
+
+<h3>Cuando las columnas están correlacionadas</h3>
+
+<p>Las estadísticas de una sola columna tienen una limitación estructural: el planificador asume que las condiciones sobre varias columnas son independientes y multiplica sus selectividades. Si las columnas están relacionadas, esa suposición subestima el resultado y puede llevar a planes malos. El ejemplo de la documentación usa una tabla de códigos postales: conocer el código postal determina la ciudad, así que filtrar por ambas no reduce el resultado tanto como sugiere el producto de las dos selectividades.</p>
+
+<p>Para esos casos existen las <strong>estadísticas extendidas</strong>, que se crean con <code>CREATE STATISTICS</code> y se rellenan con la siguiente ejecución de <code>ANALYZE</code>:</p>
+
+<pre data-lang="sql"><code>CREATE STATISTICS stts (dependencies) ON city, zip FROM zipcodes;
+ANALYZE zipcodes;</code></pre>
+
+<p>Hay tres tipos:</p>
+
+<ul>
+  <li><strong>Dependencias funcionales</strong> (<code>dependencies</code>): cuantifican hasta qué punto una columna determina otra. En el ejemplo de la documentación, los coeficientes eran <code>{"1 => 5": 1.000000, "5 => 1": 0.423130}</code>: el código postal determina la ciudad con total certeza (1,0), mientras que la ciudad solo determina el código en un 42 % de los casos. Se aplican únicamente a comparaciones de igualdad con constantes y a listas <code>IN</code> de constantes, y no ayudan con rangos, expresiones ni <code>LIKE</code>.</li>
+  <li><strong>Recuentos de valores distintos</strong> (<code>ndistinct</code>): mejoran la estimación del número de grupos en consultas con <code>GROUP BY</code> sobre varias columnas.</li>
+  <li><strong>Listas multivariantes de valores más comunes</strong> (<code>mcv</code>): capturan combinaciones frecuentes de valores. En el ejemplo del manual, la combinación "Washington, DC" aparecía con una frecuencia muestreada en torno al 0,35 %, frente a una frecuencia "base" calculada a partir de las columnas por separado de solo el 0,0027 %, una subestimación de unos dos órdenes de magnitud.</li>
+</ul>
+
+<p>La recomendación de la documentación es prudente: crear estos objetos únicamente para las combinaciones de columnas que se filtran juntas y cuyo error de estimación provoca planes malos, porque aumentan el coste de <code>ANALYZE</code>.</p>
+
+<h2>Diagnóstico: una guía rápida</h2>
+
+<p>Con los tres mecanismos entendidos, se puede seguir un procedimiento ordenado ante una consulta lenta o una tabla que crece sin motivo. No es una receta cerrada, pero sí un buen punto de partida.</p>
+
+<ol>
+  <li><strong>Mira el plan.</strong> Ejecuta <code>EXPLAIN</code> (y, si es seguro, <code>EXPLAIN ANALYZE</code> dentro de una transacción que termine en <code>ROLLBACK</code>). Compara <code>rows</code> estimado con las filas reales de cada nodo: una diferencia de órdenes de magnitud es la señal clásica de estadísticas malas.</li>
+  <li><strong>Comprueba las estadísticas.</strong> Consulta <code>pg_stats</code> y la fecha del último análisis en <code>pg_stat_user_tables</code>. Si están obsoletas, ejecuta <code>ANALYZE</code>. Si las columnas están correlacionadas, valora estadísticas extendidas.</li>
+  <li><strong>Revisa la limpieza.</strong> Busca tablas con muchas tuplas muertas y un <code>last_autovacuum</code> muy antiguo o nulo.</li>
+  <li><strong>Busca transacciones largas.</strong> Una sesión "idle in transaction" antigua bloquea la limpieza y el avance del congelado.</li>
+  <li><strong>Vigila la edad de los XID.</strong> Las consultas de <code>age(relfrozenxid)</code> y <code>age(datfrozenxid)</code> muestran la distancia al desbordamiento.</li>
+  <li><strong>Evalúa los índices.</strong> Comprueba si el planificador debería poder usar uno, y si el mapa de visibilidad está al día cuando esperas recorridos solo de índice.</li>
+</ol>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>"VACUUM FULL libera espacio, así que lo ejecuto a menudo"</h3>
+
+<p>Reescribe la tabla y bloquea el acceso con <code>ACCESS EXCLUSIVE</code>. Para un mantenimiento regular, el <code>VACUUM</code> ordinario (o el autovacuum bien ajustado) evita que el problema aparezca. <code>VACUUM FULL</code> es una medida excepcional para recuperar espacio ya acumulado.</p>
+
+<h3>"El índice existe, por tanto debe usarlo"</h3>
+
+<p>El planificador compara costes. Si estima que va a necesitar una fracción grande de la tabla, un recorrido secuencial es más barato que ir y venir entre el índice y la tabla. Un índice no usado puede ser la decisión correcta, o un síntoma de estadísticas incorrectas; el criterio es comparar las filas estimadas con las reales.</p>
+
+<h3>"Read Committed da el mismo resultado en dos lecturas seguidas"</h3>
+
+<p>Solo si nadie confirma entre ambas. En este nivel cada sentencia toma su propia instantánea, y dos <code>SELECT</code> seguidos pueden diferir. Si necesitas una vista estable durante toda la transacción, usa <em>Repeatable Read</em> y prepárate para reintentar ante errores de serialización.</p>
+
+<h3>"Serializable es el nivel seguro, así que lo uso siempre"</h3>
+
+<p>Ofrece las garantías más fuertes, pero obliga a gestionar reintentos y tiene un coste de vigilancia. No es "mejor": es más estricto. Úsalo donde las anomalías de serialización sean inaceptables y la aplicación esté preparada para repetir transacciones.</p>
+
+<h3>"Un ROLLBACK deja la base como estaba, incluidas las secuencias"</h3>
+
+<p>Las secuencias no son transaccionales. Un <code>ROLLBACK</code> no devuelve los valores consumidos, y por eso puede haber huecos en columnas generadas automáticamente.</p>
+
+<h3>"Si autovacuum está activado, no tengo que pensar en ello"</h3>
+
+<p>Autovacuum es imprescindible, pero sus umbrales por defecto están pensados para tablas medianas. Las tablas muy grandes o con muchísimas actualizaciones suelen necesitar parámetros propios por tabla, y cualquier transacción larga puede neutralizar su efecto.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿Por qué mi tabla ocupa más después de un UPDATE masivo?</h3>
+
+<p>Porque cada actualización crea una versión nueva de la fila y deja la antigua como tupla muerta. El espacio de las versiones muertas solo se reutiliza tras un <code>VACUUM</code>. Una tabla en la que se actualiza una gran parte de las filas puede llegar a duplicar su tamaño hasta que se limpie.</p>
+
+<h3>¿Qué es exactamente la "edad" de una transacción?</h3>
+
+<p>Es la distancia, en número de transacciones, entre un identificador y el XID actual. La función <code>age()</code> la calcula. El peligro del desbordamiento aparece cuando esa distancia se acerca a los dos mil millones sin que las tablas se hayan congelado.</p>
+
+<h3>¿Puedo desactivar autovacuum en una tabla concreta?</h3>
+
+<p>Puede configurarse por tabla, pero hacerlo solo es seguro si hay otro mecanismo de limpieza. La documentación indica que las tablas cuyo <code>relfrozenxid</code> supere <code>autovacuum_freeze_max_age</code> se vacuuman siempre, incluso con autovacuum desactivado, precisamente para evitar el desbordamiento.</p>
+
+<h3>¿Qué diferencia hay entre ANALYZE y VACUUM ANALYZE?</h3>
+
+<p><code>ANALYZE</code> recoge estadísticas para el planificador. <code>VACUUM ANALYZE</code> hace además la limpieza de tuplas muertas. Según la documentación, el análisis puede ejecutarse por sí solo o como un paso de <code>VACUUM</code>.</p>
+
+<h3>¿Por qué un EXPLAIN ANALYZE muestra tiempos menores que la consulta real?</h3>
+
+<p>Porque la medición excluye la transmisión del resultado por la red y, por defecto, la conversión de la salida. Además, la propia medición del tiempo tiene una sobrecarga. Para la latencia que percibe el cliente hay que medir también desde la aplicación.</p>
+
+<h3>¿Los índices se actualizan con MVCC igual que las tablas?</h3>
+
+<p>Los índices apuntan a tuplas de la tabla, así que las versiones nuevas requieren entradas de índice nuevas, y las entradas que apuntan a tuplas muertas también las limpia el vacuum. Los detalles de las optimizaciones que evitan crear entradas de índice en ciertas actualizaciones (las llamadas HOT) no se han tratado en las fuentes de este artículo.</p>
+
+<h3>¿Cómo sé si necesito estadísticas extendidas?</h3>
+
+<p>Cuando el plan estimado de una consulta con filtros sobre varias columnas muestra un número de filas que difiere en órdenes de magnitud del real, y las columnas están correlacionadas (como código postal y ciudad). Es el caso para el que se diseñaron las dependencias funcionales y las listas multivariantes.</p>
+
+<h3>¿Se aplica todo esto a otras bases de datos?</h3>
+
+<p>Algunas ideas son comunes, pero el diseño de PostgreSQL es específico. Otras bases de datos también usan MVCC, pero lo implementan de formas distintas (por ejemplo, guardando las versiones antiguas aparte en lugar de en la misma página), con costes y mantenimientos diferentes. Este artículo describe únicamente PostgreSQL.</p>
+
+<h2>Conclusión</h2>
+
+<p>MVCC, VACUUM y el planificador son tres caras del mismo diseño. MVCC permite que lectores y escritores no se bloqueen entre sí a cambio de guardar varias versiones de cada fila. VACUUM es el mantenimiento que ese diseño exige: recupera el espacio de las versiones muertas, mantiene el mapa de visibilidad, actualiza estadísticas y congela las filas antiguas para evitar que los identificadores de transacción de 32 bits se desborden. Y el planificador, alimentado por esas estadísticas, convierte cada consulta en un plan de ejecución elegido por coste.</p>
+
+<p>Las consecuencias operativas se deducen casi solas. Las transacciones largas son peligrosas porque impiden la limpieza. El nivel de aislamiento define cuándo se toma la instantánea y qué errores debe gestionar la aplicación. Las estadísticas obsoletas o incompletas producen planes malos, y <code>EXPLAIN ANALYZE</code>, comparando lo estimado con lo real, es la herramienta que permite verlo, siempre dentro de una transacción reversible cuando la sentencia modifica datos. Con este modelo mental, los síntomas que antes parecían caprichos de la base de datos tienen explicaciones concretas y comprobables.</p>
+
+<p>Si quieres seguir explorando, el siguiente paso natural es el diseño de índices: cómo elegirlos, cómo combinarlos y cómo comprobar con <code>EXPLAIN</code> que realmente se usan. Mientras tanto, te recomendamos reproducir en una base de datos de pruebas los ejemplos de este artículo, empezando por las columnas del sistema <code>xmin</code> y <code>ctid</code>, y contrastar lo que observes con la documentación de la versión que ejecutes.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>PostgreSQL Global Development Group. «13.1. Introduction» (Concurrency Control). Documentación de PostgreSQL 18. <a href="https://www.postgresql.org/docs/current/mvcc-intro.html" rel="noopener">https://www.postgresql.org/docs/current/mvcc-intro.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «13.2. Transaction Isolation». <a href="https://www.postgresql.org/docs/current/transaction-iso.html" rel="noopener">https://www.postgresql.org/docs/current/transaction-iso.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «24.1. Routine Vacuuming». <a href="https://www.postgresql.org/docs/current/routine-vacuuming.html" rel="noopener">https://www.postgresql.org/docs/current/routine-vacuuming.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «66.6. Database Page Layout». <a href="https://www.postgresql.org/docs/current/storage-page-layout.html" rel="noopener">https://www.postgresql.org/docs/current/storage-page-layout.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «14.1. Using EXPLAIN». <a href="https://www.postgresql.org/docs/current/using-explain.html" rel="noopener">https://www.postgresql.org/docs/current/using-explain.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «14.2. Statistics Used by the Planner». <a href="https://www.postgresql.org/docs/current/planner-stats.html" rel="noopener">https://www.postgresql.org/docs/current/planner-stats.html</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>
