@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Iniciar sesión — devlog</title>
+  <meta name="description" content="Inicia sesión en devlog con tu cuenta de GitHub o Microsoft.">
+  <meta name="robots" content="noindex">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight"><span class="text-muted">~/</span>devlog<span class="text-muted">$</span></a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-muted hover:text-accent">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main class="flex-1 w-full px-4 py-16">
+    <div class="mx-auto max-w-md">
+      <p class="font-mono text-muted text-sm mb-3">user@devlog:~$ login</p>
+      <h1 class="text-3xl font-bold text-head mb-3">Iniciar sesión</h1>
+      <p class="leading-relaxed">
+        Accede con tu cuenta de GitHub o de Microsoft. No guardamos contraseñas: el inicio de sesión lo gestiona
+        el proveedor y solo recibimos tu nombre de usuario o correo para identificarte.
+      </p>
+
+      <div data-login-panel class="mt-8 space-y-3">
+        <a data-login="github" href="/.auth/login/github" class="flex items-center justify-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 font-medium text-head shadow-sm transition hover:border-accent hover:shadow-md"><svg class="h-5 w-5" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> Continuar con GitHub</a>
+        <a data-login="aad" href="/.auth/login/aad" class="flex items-center justify-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 font-medium text-head shadow-sm transition hover:border-accent hover:shadow-md"><svg class="h-5 w-5" viewBox="0 0 23 23" aria-hidden="true"><path fill="#f25022" d="M1 1h10v10H1z"/><path fill="#7fba00" d="M12 1h10v10H12z"/><path fill="#00a4ef" d="M1 12h10v10H1z"/><path fill="#ffb900" d="M12 12h10v10H12z"/></svg> Continuar con Microsoft</a>
+        <p class="pt-2 text-xs text-muted">
+          Al continuar aceptas nuestra <a href="/privacidad.html" class="text-accent hover:underline">Política de Privacidad</a>.
+          El inicio de sesión es opcional: puedes leer todos los artículos sin cuenta.
+        </p>
+      </div>
+
+      <div data-account-panel hidden class="mt-8 rounded-lg border border-line bg-surface p-5 shadow-sm">
+        <p class="text-sm text-muted">Sesión iniciada como</p>
+        <p data-account-name class="mt-1 break-all text-lg font-semibold text-head"></p>
+        <p class="mt-1 text-xs text-muted">Proveedor: <span data-account-provider></span></p>
+        <div class="mt-5 flex flex-wrap gap-3">
+          <a href="/" class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700">Ir al inicio</a>
+          <a data-account-logout href="/.auth/logout" class="rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent">Cerrar sesión</a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>

@@ -37,19 +37,21 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
-          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
           colors: {
-            term: {
-              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
-              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
-            }
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
           }
         }
       }
@@ -60,20 +62,26 @@
   <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
   <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
 </head>
-<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
 
-  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
 
   <!-- ===== Header ===== -->
-  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
     <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
-      <a href="/" class="text-term-green font-bold tracking-tight">
-        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
       </a>
       <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
-        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
-        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
-        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
       </nav>
     </div>
   </header>
@@ -83,26 +91,26 @@
     <!-- ===== Artículo ===== -->
     <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
 
-      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
-        <a href="/" class="hover:text-term-green">~</a> /
-        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
-        <span class="text-term-text">azure-static-web-apps</span>
+      <nav aria-label="Ruta" class="font-mono text-xs text-muted mb-6">
+        <a href="/" class="hover:text-accent">~</a> /
+        <a href="/#articulos" class="hover:text-accent">articulos</a> /
+        <span class="text-ink">azure-static-web-apps</span>
       </nav>
 
       <header class="mb-8">
-        <p class="text-xs text-term-amber mb-3">[azure]</p>
-        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+        <p class="text-xs text-warm mb-3">[azure]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
           Investigación Profunda: Azure Static Web Apps
         </h1>
-        <p class="mt-4 text-term-muted">Arquitectura, pipelines CI/CD automatizados, entornos de PRs y configuración avanzada de enrutamiento.</p>
-        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
-          <span>por <span class="text-term-text">Victor Martinez</span></span>
+        <p class="mt-4 text-muted">Arquitectura, pipelines CI/CD automatizados, entornos de PRs y configuración avanzada de enrutamiento.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
           <time datetime="2026-10-20">2026-10-20</time>
           <span>⏱ 15 min de lectura</span>
         </p>
       </header>
 
-      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
             
         <h2 id="1-arquitectura-y-fundamentos">1. Arquitectura y Fundamentos</h2>
         <p>Azure Static Web Apps (ASWA) no es un simple servidor de archivos. Es un servicio globalmente distribuido diseñado para aplicaciones de una sola página (SPAs como React, Angular, Vue), generadores de sitios estáticos (Gatsby, Hugo, Astro) y aplicaciones Blazor. Distribuye los archivos estáticos globalmente desde la red de borde de Azure (CDN), garantizando baja latencia desde cualquier parte del mundo.</p>
@@ -227,16 +235,16 @@ jobs:
       </div>
 
       <!-- Relacionados -->
-      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
-        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="font-mono text-sm text-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
         <ul class="grid gap-3 sm:grid-cols-2">
-          <li><a href="/articulos/github-actions-cache.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
-            <span class="text-xs text-term-amber">[devops]</span>
-            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Caché en GitHub Actions</span>
+          <li><a href="/articulos/github-actions-cache.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[devops]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Caché en GitHub Actions</span>
           </a></li>
-          <li><a href="/articulos/python-pathlib.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
-            <span class="text-xs text-term-amber">[python]</span>
-            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Python pathlib vs os.path</span>
+          <li><a href="/articulos/python-pathlib.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[python]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Python pathlib vs os.path</span>
           </a></li>
         </ul>
       </section>
@@ -247,11 +255,11 @@ jobs:
       <div class="sticky top-20 space-y-8">
 
         <nav aria-label="Contenido del artículo" class="text-sm">
-          <p class="text-term-muted mb-3">$ cat indice.md</p>
-          <ul class="space-y-2 border-l border-term-border pl-4">
-            <li><a href="#1-arquitectura-y-fundamentos" class="text-term-muted hover:text-term-green">1. Arquitectura y Fundamentos</a></li>
-            <li><a href="#2-flujo-ci-cd-con-github-actions-anatomia" class="text-term-muted hover:text-term-green">2. Flujo CI/CD con GitHub Actions (Anatomía del YAML)</a></li>
-            <li><a href="#3-configuracion-avanzada-staticwebapp-conf" class="text-term-muted hover:text-term-green">3. Configuración Avanzada: staticwebapp.config.json</a></li>
+          <p class="font-mono text-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-arquitectura-y-fundamentos" class="text-muted hover:text-accent">1. Arquitectura y Fundamentos</a></li>
+            <li><a href="#2-flujo-ci-cd-con-github-actions-anatomia" class="text-muted hover:text-accent">2. Flujo CI/CD con GitHub Actions (Anatomía del YAML)</a></li>
+            <li><a href="#3-configuracion-avanzada-staticwebapp-conf" class="text-muted hover:text-accent">3. Configuración Avanzada: staticwebapp.config.json</a></li>
           </ul>
         </nav>
 
@@ -272,12 +280,12 @@ jobs:
   </main>
 
   <!-- ===== Footer ===== -->
-  <footer class="border-t border-term-border mt-auto">
-    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
       <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
       <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
-        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
-        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
       </nav>
     </div>
   </footer>

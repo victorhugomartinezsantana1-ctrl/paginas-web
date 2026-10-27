@@ -3,7 +3,10 @@
     {
       "route": "/assets/*",
       "headers": { "Cache-Control": "public, max-age=86400, must-revalidate" }
-    }
+    },
+    { "route": "/.auth/login/google", "statusCode": 404 },
+    { "route": "/.auth/login/facebook", "statusCode": 404 },
+    { "route": "/.auth/login/twitter", "statusCode": 404 }
   ],
   "globalHeaders": {
     "X-Content-Type-Options": "nosniff",
