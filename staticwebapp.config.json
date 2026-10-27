@@ -2,7 +2,7 @@
   "routes": [
     {
       "route": "/assets/*",
-      "headers": { "Cache-Control": "public, max-age=86400, must-revalidate" }
+      "headers": { "Cache-Control": "public, max-age=0, must-revalidate" }
     },
     { "route": "/.auth/login/google", "statusCode": 404 },
     { "route": "/.auth/login/facebook", "statusCode": 404 },
