@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investigación Exhaustiva: Kubernetes bajo el capó — devlog</title>
+  <meta name="description" content="Profundidad técnica en la arquitectura del Control Plane, Algoritmo Raft, CNI con eBPF y seguridad en K8s.">
+  <link rel="canonical" href="https://TU-DOMINIO.com/articulos/kubernetes-arquitectura-interna.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Investigación Exhaustiva: Kubernetes bajo el capó">
+  <meta property="og:description" content="Profundidad técnica en la arquitectura del Control Plane, Algoritmo Raft, CNI con eBPF y seguridad en K8s.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/articulos/kubernetes-arquitectura-interna.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Investigación Exhaustiva: Kubernetes bajo el capó",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://TU-DOMINIO.com/articulos/kubernetes-arquitectura-interna.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[devops]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          Investigación Exhaustiva: Kubernetes bajo el capó
+        </h1>
+        <p class="mt-4 text-muted">Profundidad técnica en la arquitectura del Control Plane, Algoritmo Raft, CNI con eBPF y seguridad en K8s.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 30 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+            
+<h2 id="1-introduccion-a-la-orquestacion-a-gran-es">1. Introducción a la Orquestación a Gran Escala</h2>
+<p>Cuando el paradigma de <a href="/articulos/docker-multi-stage.html">Docker Multi-stage y Distroless</a> nos permite tener imágenes de apenas unos pocos MB, el problema ya no es cómo compilar la aplicación, sino cómo gestionar cientos de contenedores operando simultáneamente. Si un contenedor muere, ¿quién lo reinicia? Si el tráfico se multiplica por diez, ¿cómo se escala horizontalmente? Si un servidor físico (nodo) se quema, ¿cómo se redistribuyen las cargas de trabajo sin pérdida de disponibilidad? Kubernetes (K8s) nace en Google (basado en su sistema interno Borg) para resolver estas interrogantes matemáticas y arquitectónicas mediante un bucle de control declarativo constante.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-anatomia-del-control-plane-el-cerebro">2. Anatomía del Control Plane (El Cerebro)</h2>
+<p>El "Control Plane" no ejecuta tu código de aplicación; toma decisiones globales sobre el clúster (planificación), detecta y responde a eventos del clúster (iniciar nuevos pods) y mantiene el estado deseado.</p>
+<h3>2.1 kube-apiserver</h3>
+<p>Es el componente frontal del panel de control. Todo componente interno o usuario externo (a través de <code>kubectl</code>) interactúa exclusivamente con el API Server. Funciona de manera stateless y escala horizontalmente. Actúa como un proxy de validación: recibe un archivo YAML, verifica la autenticación y autorización (RBAC), valida la sintaxis y luego muta el estado en la base de datos.</p>
+<h3>2.2 etcd: El Algoritmo Raft y la Consistencia Fuerte</h3>
+<p>Es un almacén clave-valor distribuido, consistente y altamente disponible. Kubernetes es <em>stateless</em> en todo su control plane, <strong>excepto</strong> en etcd. Aquí se guarda absolutamente todo: desde los Secrets hasta el estado actual de los Pods. Utiliza el algoritmo de consenso <strong>Raft</strong>, el cual requiere que la mayoría de los nodos (quórum) estén de acuerdo en una actualización antes de considerarla confirmada. Matemáticamente, para tolerar <code>F</code> fallos, necesitas <code>2F + 1</code> nodos de etcd. Por ello, los clústeres de producción siempre despliegan 3, 5 o 7 réplicas de etcd.</p>
+<h3>2.3 kube-scheduler</h3>
+<p>Observa los nuevos Pods creados que aún no tienen un Nodo asignado y selecciona uno para que se ejecuten. Su algoritmo consta de dos fases: <em>Filtering</em> (filtra nodos que no cumplen los requerimientos de hardware, memoria o afinidad) y <em>Scoring</em> (clasifica los nodos restantes para encontrar el más óptimo). Utiliza heurísticas para evitar concentrar todos los pods de un servicio en la misma máquina física, mitigando puntos únicos de fallo (SPOF).</p>
+<h3>2.4 kube-controller-manager</h3>
+<p>Es una colección de bucles de control (control loops) no bloqueantes que vigilan el estado compartido del clúster a través del apiserver y realizan cambios intentando mover el estado actual hacia el estado deseado. Incluye el <em>Node Controller</em> (reacciona cuando un nodo cae), el <em>ReplicaSet Controller</em> (garantiza que siempre haya X cantidad de pods corriendo) y el <em>EndpointSlice Controller</em> (mantiene actualizadas las reglas de red al cambiar las IPs de los pods).</p>
+
+<h2 id="3-componentes-del-nodo-worker">3. Componentes del Nodo (Worker)</h2>
+<p>Los nodos son las máquinas de trabajo puro, donde tu código C++, Python o contenedores Nginx realmente consumen ciclos de CPU y RAM.</p>
+<h3>3.1 kubelet</h3>
+<p>Es un agente de node-level que corre en cada máquina física o virtual. Se asegura de que los contenedores estén corriendo y sanos. El kubelet lee los <em>PodSpecs</em> (descripciones de pods en YAML) proporcionados principalmente por el kube-apiserver y le ordena al <em>Container Runtime</em> que inicie o detenga los contenedores según corresponda. Implementa "Liveness" y "Readiness" probes, reiniciando contenedores si tus aplicaciones devuelven un error HTTP 500 constante.</p>
+<h3>3.2 kube-proxy e IPVS</h3>
+<p>Mantiene las reglas de red en los nodos. Estas reglas permiten la comunicación de red a los Pods desde el interior o el exterior del clúster. Históricamente usaba <code>iptables</code> de Linux, que es lineal (O(n)) al buscar reglas. En clústeres masivos con decenas de miles de servicios, la evaluación de iptables saturaba la CPU. La evolución moderna es usar <strong>IPVS (IP Virtual Server)</strong> o directamente <strong>eBPF (Extended Berkeley Packet Filter)</strong>, que utilizan tablas hash (O(1)), permitiendo un ruteo de red casi instantáneo en el nivel del kernel de Linux. Además, desde Kubernetes 1.33 el modo <strong>nftables</strong> es estable y ofrece otra alternativa más eficiente que iptables.</p>
+
+<h2 id="4-infraestructura-de-red-avanzada-cni-y-eb">4. Infraestructura de Red Avanzada (CNI y eBPF)</h2>
+<p>Kubernetes exige que: todos los pods puedan comunicarse con todos los demás pods sin NAT; todos los nodos puedan comunicarse con todos los pods sin NAT; y la IP que un pod ve de sí mismo sea la misma que los demás ven. Para cumplir estas leyes topológicas, usa CNI (Container Network Interface).</p>
+<p>Soluciones como <strong>Cilium</strong> están revolucionando este espacio. Utilizan programas <strong>eBPF</strong> que se inyectan dinámicamente en el Kernel de Linux para interceptar paquetes de red en el momento preciso en que la tarjeta de red (NIC) los recibe (XDP - eXpress Data Path). Esto permite cifrar el tráfico entre pods con WireGuard, aplicar políticas de firewall en microsegundos y monitorear telemetría sin modificar el código de la aplicación, esquivando completamente la pila TCP/IP tradicional de Linux cuando no es necesaria.</p>
+
+<h2 id="5-patrones-de-diseno-declarativo-manifiest">5. Patrones de Diseño Declarativo (Manifiestos)</h2>
+<p>En lugar de ejecutar <code>docker run</code> (programación imperativa), en Kubernetes declaramos el objetivo en YAML. El control plane se encarga de la divergencia.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>yaml</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microservicio-ia
+  labels:
+    app: backend-python
+spec:
+  replicas: 5 # Escalado horizontal
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1       # Nunca habrá más de 6 pods en actualización
+      maxUnavailable: 0 # Nunca habrá menos de 5 pods disponibles
+  selector:
+    matchLabels:
+      app: backend-python
+  template:
+    metadata:
+      labels:
+        app: backend-python
+    spec:
+      containers:
+      - name: llm-worker
+        image: tu-registry.com/llm-worker:v2.1.0 # Imagen distroless
+        resources:
+          requests:
+            memory: "1024Mi"
+            cpu: "500m" # Medio núcleo garantizado
+          limits:
+            memory: "2048Mi" # Si lo supera, el contenedor se termina (OOMKilled)
+            cpu: "1000m" # Techo de CPU: al superarlo, el contenedor se ralentiza (throttling)
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10</code></pre>
+        </div>
+
+<div class="alert alert-success">
+    <strong>Zero-Downtime Deployments (RollingUpdate):</strong> El manifiesto superior demuestra una técnica vital. Cuando cambias la etiqueta de la imagen de <code>v2.0.0</code> a <code>v2.1.0</code>, Kubernetes no apaga todos tus servidores. Crea un nuevo Pod con la v2.1.0, espera a que pase el <code>readinessProbe</code> confirmando que está listo para recibir tráfico, y solo entonces destruye un Pod viejo de la v2.0.0. Repite esto hasta que todos los Pods son nuevos. Los usuarios finales jamás notan la caída del servicio.
+</div>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="6-persistencia-y-almacenamiento-dinamico-c">6. Persistencia y Almacenamiento Dinámico (CSI)</h2>
+<p>Los contenedores son efímeros. Si un contenedor de base de datos PostgreSQL se reinicia, los datos almacenados en su sistema de archivos interno se pierden para siempre. Kubernetes resuelve esto abstrayendo el almacenamiento físico del software mediante <strong>PersistentVolumes (PV)</strong> y <strong>PersistentVolumeClaims (PVC)</strong> a través del Container Storage Interface (CSI).</p>
+<p>En entornos cloud como Azure (AKS), cuando un desarrollador crea un PVC pidiendo "100 GiB de disco rápido", el CSI driver captura esta petición, interactúa vía API de Azure de forma transparente y provisiona físicamente un <em>Azure Premium SSD</em>, lo adjunta a la máquina virtual del Nodo correspondiente, lo formatea en Ext4, y lo monta en la ruta <code>/var/lib/postgresql/data</code> dentro del contenedor.</p>
+
+<h2 id="7-seguridad-y-aislamiento-multitenant">7. Seguridad y Aislamiento Multitenant</h2>
+<p>La seguridad en K8s sigue el modelo de Defensa en Profundidad (Defense in Depth).</p>
+<ul>
+    <li><strong>RBAC (Role-Based Access Control):</strong> Limita estrictamente qué usuario o ServiceAccount puede realizar verbos (get, list, watch, create, delete) sobre qué recursos (pods, secrets) en qué Namespaces.</li>
+    <li><strong>Network Policies:</strong> Por defecto, un clúster K8s es una red plana donde todo se comunica con todo. Las políticas de red son un firewall interno que aísla los microservicios. Ejemplo: "Solo el Pod 'Frontend' en el Namespace 'Producción' puede conectarse al Pod 'BaseDatos' en el puerto 5432". Para que se apliquen, el CNI debe implementarlas (Cilium y Calico lo hacen).</li>
+    <li><strong>Seccomp y AppArmor:</strong> Limitan las llamadas al sistema (syscalls) que los procesos en C o Python pueden hacer hacia el kernel subyacente, impidiendo escaladas de privilegios incluso si un atacante explota una vulnerabilidad en el contenedor.</li>
+</ul>
+
+<h2 id="8-conclusion-el-ecosistema-cloud-native">8. Conclusión: El Ecosistema Cloud-Native</h2>
+<p>Kubernetes no es solo un orquestador, es un <em>sistema para construir sistemas distribuidos</em>. Con la incorporación de CRDs (Custom Resource Definitions) y el patrón de Operadores (código que emula a un administrador humano interactuando con las APIs de K8s), el ecosistema se ha expandido para gestionar desde bases de datos complejas hasta la automatización de certificados SSL/TLS con Cert-Manager y la implementación de redes de mallas de servicios (Service Mesh) como Istio o Linkerd.</p>
+
+        
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/terraform-infraestructura-codigo.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[azure]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Exhaustiva: Terraform y la automatización Cloud con Azure</span>
+          </a></li>
+          <li><a href="/articulos/neovim-ide-terminal.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[neovim]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Neovim al Descubierto: El IDE Definitivo en tu Terminal</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-introduccion-a-la-orquestacion-a-gran-es" class="text-muted hover:text-accent">1. Introducción a la Orquestación a Gran Escala</a></li>
+            <li><a href="#2-anatomia-del-control-plane-el-cerebro" class="text-muted hover:text-accent">2. Anatomía del Control Plane (El Cerebro)</a></li>
+            <li><a href="#3-componentes-del-nodo-worker" class="text-muted hover:text-accent">3. Componentes del Nodo (Worker)</a></li>
+            <li><a href="#4-infraestructura-de-red-avanzada-cni-y-eb" class="text-muted hover:text-accent">4. Infraestructura de Red Avanzada (CNI y eBPF)</a></li>
+            <li><a href="#5-patrones-de-diseno-declarativo-manifiest" class="text-muted hover:text-accent">5. Patrones de Diseño Declarativo (Manifiestos)</a></li>
+            <li><a href="#6-persistencia-y-almacenamiento-dinamico-c" class="text-muted hover:text-accent">6. Persistencia y Almacenamiento Dinámico (CSI)</a></li>
+            <li><a href="#7-seguridad-y-aislamiento-multitenant" class="text-muted hover:text-accent">7. Seguridad y Aislamiento Multitenant</a></li>
+            <li><a href="#8-conclusion-el-ecosistema-cloud-native" class="text-muted hover:text-accent">8. Conclusión: El Ecosistema Cloud-Native</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>
