@@ -1,0 +1,455 @@
+<p>Si administras un servidor Linux moderno, casi todo lo que arranca, se reinicia, se programa o se registra pasa por systemd. Es el gestor de servicios que se ejecuta como primer proceso del sistema y que decide qué se inicia, en qué orden, con qué restricciones y qué hacer cuando algo falla. Para quien llega desde scripts de inicio escritos a mano o desde <code>cron</code>, tiene fama de complicado y, a veces, de intrusivo. Pero detrás de los comandos hay un modelo regular y bastante pequeño: <em>unidades</em> descritas en archivos de texto con una sintaxis declarativa, dependencias que se expresan con unas pocas directivas y una serie de opciones de aislamiento que permiten encerrar un servicio en un entorno restringido sin tocar su código.</p>
+
+<p>En este artículo recorremos ese modelo con la documentación oficial del proyecto, que se publica como páginas de manual en freedesktop.org. Veremos cómo se escribe una unidad de servicio, qué diferencia hay entre decir "necesito esto" y "arranca después de esto" (la confusión más frecuente de todas), cómo se configuran los reinicios automáticos, cómo sustituir una tarea de <code>cron</code> por un temporizador, cómo consultar el diario con <code>journalctl</code> y cómo endurecer un servicio con las opciones de aislamiento, medidas con <code>systemd-analyze security</code>. Una advertencia de método: el equipo con el que se redactó este texto no ejecuta Linux, así que ninguna de las unidades de ejemplo se ha probado y no mostramos salidas de comandos; los ejemplos siguen la sintaxis documentada y los valores por defecto que citamos proceden de las páginas del manual, que varían entre versiones de systemd. Para entender de dónde salen los mecanismos de aislamiento que veremos al final, te conviene haber leído antes nuestro artículo sobre <a href="/articulos/contenedores-linux-namespaces-cgroups-seccomp.html">contenedores de Linux por dentro</a>: muchas de las directivas de systemd son envoltorios cómodos sobre los mismos namespaces, capacidades y filtros seccomp.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Cada recurso gestionado es una <em>unidad</em> descrita en un archivo; las del administrador van en <code>/etc/systemd/system</code> y tienen prioridad sobre las de la distribución en <code>/usr/lib/systemd/system</code>.</li>
+    <li>Las dependencias de requisito (<code>Wants=</code>, <code>Requires=</code>...) y las de orden (<code>After=</code>, <code>Before=</code>) son independientes: declarar un requisito no implica orden, y viceversa.</li>
+    <li>El valor de <code>Type=</code> determina cuándo systemd considera "iniciado" un servicio; con <code>simple</code>, justo después de lanzar el proceso, aunque este todavía no esté listo.</li>
+    <li><code>Restart=</code> vale <code>no</code> por defecto; con los valores por defecto documentados, un servicio que falla más de 5 veces en 10 segundos deja de reiniciarse.</li>
+    <li>Un temporizador con <code>OnCalendar=</code> y <code>Persistent=true</code> puede recuperar una ejecución perdida mientras la máquina estaba apagada.</li>
+    <li><code>systemd-analyze security</code> puntúa de 0,0 a 10,0 la exposición de un servicio; opciones como <code>ProtectSystem=</code>, <code>PrivateTmp=</code> o <code>NoNewPrivileges=</code> la reducen con muy poco esfuerzo.</li>
+  </ul>
+</div>
+
+<h2>Qué es systemd y qué gestiona</h2>
+
+<p>systemd es un conjunto de componentes entre los que destaca el gestor de servicios y sistema (<code>systemd</code> propiamente dicho, que se ejecuta como proceso de arranque) y sus herramientas: <code>systemctl</code> para controlarlo, <code>journalctl</code> para leer los registros, <code>systemd-analyze</code> para examinar el arranque y la seguridad. Lo que gestiona se organiza en <strong>unidades</strong>. Cada unidad es un recurso con un nombre y un tipo que se deduce de la extensión del archivo: un servicio (<code>.service</code>), un temporizador (<code>.timer</code>) y, entre otros, un objetivo (<code>.target</code>) que agrupa unidades para representar un estado del sistema, un punto de montaje o un socket. En este artículo nos centramos en los servicios y los temporizadores, que son los que un administrador escribe con más frecuencia.</p>
+
+<p>Una idea clave de systemd es que un servicio no es "un proceso que se lanza", sino una unidad con una descripción de cómo arrancarla, cuándo, con qué entorno, qué hacer si falla y cómo detenerla. Esa declaración vive en un archivo, y el gestor se encarga del resto. Que systemd usa los grupos de control del kernel para agrupar y vigilar los procesos de cada servicio es un hecho general sobre su diseño que no procede de las páginas consultadas para este artículo, pero conecta con lo que vimos en el artículo de contenedores: cada servicio vive en su propio grupo, lo que permite contabilizar recursos y terminar todos sus procesos con fiabilidad.</p>
+
+<h2>Dónde viven las unidades y qué prevalece</h2>
+
+<p>Los archivos de unidad pueden estar en varios directorios, y la regla de precedencia es sencilla: según <code>systemd.unit(5)</code>, los archivos que se encuentran en los directorios que aparecen antes en la lista prevalecen sobre los de igual nombre en los directorios posteriores. Los más relevantes en modo sistema son:</p>
+
+<table>
+  <thead>
+    <tr><th>Directorio</th><th>Contenido según el manual</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>/etc/systemd/system</code></td><td>Unidades de sistema creadas por el administrador.</td></tr>
+    <tr><td><code>/run/systemd/system</code></td><td>Unidades de tiempo de ejecución (desaparecen al reiniciar).</td></tr>
+    <tr><td><code>/usr/lib/systemd/system</code></td><td>Unidades de sistema instaladas por el gestor de paquetes de la distribución.</td></tr>
+  </tbody>
+</table>
+
+<p>(La lista completa incluye también <code>/usr/local/lib/systemd/system</code>.) Existe además el modo usuario, con directorios propios como <code>~/.config/systemd/user</code> (o <code>$XDG_CONFIG_HOME/systemd/user</code>), donde cada usuario puede definir sus servicios sin privilegios. La consecuencia práctica es esta: <strong>nunca edites los archivos de <code>/usr/lib</code></strong>. Una actualización del paquete los sobrescribirá. Si necesitas cambiarlos, copia la unidad a <code>/etc/systemd/system</code> (que la sustituye por completo) o, mejor, usa un <em>drop-in</em>.</p>
+
+<h3>Drop-ins: modificar sin copiar</h3>
+
+<p>Un drop-in es un directorio con el nombre de la unidad más el sufijo <code>.d</code> (por ejemplo, <code>foo.service.d/</code>) que se coloca junto a la unidad. Según el manual, los archivos <code>.conf</code> de su interior se fusionan en orden alfanumérico después de analizar el archivo principal, y cada uno debe incluir las cabeceras de sección correspondientes. La precedencia entre directorios sigue la misma lógica: los drop-ins de <code>/etc/</code> prevalecen sobre los de <code>/run/</code>, y estos sobre los de <code>/usr/lib/</code>. Así puedes cambiar una sola directiva, como el reinicio automático, sin reemplazar el archivo entero y conservando las mejoras que el paquete introduzca en futuras versiones. La página consultada no describe la orden <code>systemctl edit</code>, que por conocimiento general crea y abre estos drop-ins por ti; consulta su manual para los detalles.</p>
+
+<p>La configuración del propio gestor tiene una convención análoga: <code>systemd-system.conf(5)</code> documenta que los drop-ins se ordenan por nombre de archivo (lexicográficamente), con independencia del directorio en que estén; para opciones de valor único gana la entrada que se ordena en último lugar, y las opciones de lista se acumulan. Recomienda prefijos de dos dígitos, de 10 a 40 para los de <code>/usr/</code> y de 60 a 90 para los de <code>/etc/</code> y <code>/run/</code>, y explica que, para desactivar un archivo del proveedor, basta enlazar su nombre simbólicamente a <code>/dev/null</code> en <code>/etc/</code>.</p>
+
+<h2>Anatomía de una unidad de servicio</h2>
+
+<p>Una unidad de servicio tiene normalmente tres secciones. <code>[Unit]</code> describe la unidad y sus relaciones con otras; <code>[Service]</code> define cómo se ejecuta; <code>[Install]</code> dice qué ocurre al "habilitarla". Un ejemplo mínimo y realista, no probado en esta preparación, para una aplicación web:</p>
+
+<pre data-lang="ini"><code># /etc/systemd/system/miapi.service  (ejemplo ilustrativo, no probado)
+[Unit]
+Description=API de ejemplo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=miapi
+WorkingDirectory=/opt/miapi
+EnvironmentFile=-/etc/miapi/entorno
+ExecStart=/opt/miapi/bin/servidor --puerto 8080
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+
+<p>Leámosla con las definiciones del manual. <code>EnvironmentFile=</code> lee variables de un archivo de texto con asignaciones separadas por saltos de línea; se ignoran las líneas vacías, las que no contienen <code>=</code> y las que empiezan por <code>;</code> o <code>#</code>; el archivo debe ser UTF-8; y anteponer un guion a la ruta (<code>-/etc/...</code>) hace el archivo opcional, de modo que los errores relacionados con él se ignoran en silencio. Eso es útil para no meter contraseñas en la propia unidad, aunque conviene proteger los permisos de ese archivo.</p>
+
+<h2>El tipo de servicio: cuándo está "iniciado"</h2>
+
+<p>La directiva <code>Type=</code> es una de las más importantes y más pasadas por alto, porque determina <em>cuándo considera systemd que el servicio ya ha arrancado</em>, y de eso dependen las unidades que esperan por él. Los valores, según <code>systemd.service(5)</code>, son:</p>
+
+<ul>
+  <li><strong><code>simple</code></strong> (el valor por defecto cuando solo se define <code>ExecStart=</code>): el gestor considera la unidad iniciada inmediatamente después de bifurcar el proceso principal. Es rápido pero optimista: no sabe si el proceso llegó a funcionar.</li>
+  <li><strong><code>exec</code></strong>: se considera iniciada cuando el binario ya se ha ejecutado, de modo que errores como un binario inexistente o un <code>User=</code> inválido se notifican como fallo del arranque. Es una mejora práctica sobre <code>simple</code>.</li>
+  <li><strong><code>forking</code></strong>: para demonios clásicos que se bifurcan y cuyo proceso padre termina. La unidad se considera iniciada cuando el padre sale. El manual desaconseja su uso.</li>
+  <li><strong><code>oneshot</code></strong>: el servicio se considera activo cuando el proceso principal termina. Sin <code>RemainAfterExit=</code>, nunca aparece como activo. Es el tipo para tareas puntuales (migraciones, copias).</li>
+  <li><strong><code>dbus</code></strong>: iniciado cuando el servicio adquiere un nombre en el bus D-Bus (requiere <code>BusName=</code>).</li>
+  <li><strong><code>notify</code></strong> y <strong><code>notify-reload</code></strong>: iniciado cuando el servicio envía <code>READY=1</code> por <code>sd_notify</code>. La variante con recarga envía además una señal <code>SIGHUP</code> (o la que indique <code>ReloadSignal=</code>) al recargar y espera una notificación de recarga completada.</li>
+  <li><strong><code>idle</code></strong>: la ejecución real se retrasa hasta que se hayan despachado los trabajos activos, con un límite de 5 segundos.</li>
+</ul>
+
+<p>La elección importa cuando otra unidad depende de la tuya. Si un servicio de base de datos usa <code>Type=simple</code>, systemd considerará "iniciada" la base de datos nada más lanzar el proceso, y una aplicación que dependa de ella arrancará quizá antes de que acepte conexiones. Con <code>Type=notify</code> (si el programa lo soporta) la señal de "listo" es exacta. Cuando el programa no soporta ninguno de los mecanismos, el patrón habitual es que la aplicación dependiente reintente la conexión con una espera, en lugar de confiar en el orden.</p>
+
+<h2>Arrancar, detener y recargar</h2>
+
+<p><code>ExecStart=</code> define la orden que arranca el servicio. Según el manual, solo puede haber una, salvo en los de tipo <code>oneshot</code>. Si una orden falla (y no lleva el prefijo <code>-</code>), las demás no se ejecutan y la unidad se marca como fallida. <code>ExecStop=</code> se ejecuta al parar el servicio; si no se define, el proceso se termina con la señal indicada en <code>KillSignal=</code> o <code>RestartKillSignal=</code>. <code>ExecReload=</code> contiene las órdenes que provocan una recarga de la configuración.</p>
+
+<h3>La parada: SIGTERM y después SIGKILL</h3>
+
+<p>El comportamiento por defecto ante una parada es educado y luego firme: el manual explica que, en el ejemplo por defecto, systemd envía <code>SIGTERM</code> a todos los procesos del servicio y, pasado un tiempo de espera, también <code>SIGKILL</code>. Ese tiempo lo fija <code>TimeoutStopSec=</code>, que por defecto toma el valor de <code>DefaultTimeoutStopSec=</code> del gestor: 90 segundos, según <code>systemd-system.conf(5)</code>. Si el servicio no se detiene en ese plazo, se le mata con <code>SIGKILL</code>. La consecuencia práctica es doble. Primero, tu programa debe manejar <code>SIGTERM</code> y terminar limpiamente (cerrar conexiones, vaciar búferes) dentro del plazo. Segundo, un servicio que tarda mucho en parar es, a menudo, un servicio que no atiende esa señal.</p>
+
+<p>El tiempo de arranque, <code>TimeoutStartSec=</code>, toma por defecto el valor de <code>DefaultTimeoutStartSec=</code> (también 90 segundos, según la página de configuración del gestor), salvo en los servicios <code>Type=oneshot</code>, donde por defecto no hay límite. Un servicio que no llega al estado "iniciado" en ese plazo se marca como fallido.</p>
+
+<h2>Reiniciar automáticamente: Restart=</h2>
+
+<p>Una de las grandes ventajas de systemd frente a un script de inicio es la supervisión: si el servicio muere, puede reiniciarlo solo. Pero por defecto no lo hace: <code>Restart=</code> vale <code>no</code>. Los valores, según el manual, son:</p>
+
+<table>
+  <thead>
+    <tr><th>Valor</th><th>Se reinicia cuando...</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>no</code></td><td>Nunca (valor por defecto).</td></tr>
+    <tr><td><code>on-success</code></td><td>El proceso termina con una salida limpia.</td></tr>
+    <tr><td><code>on-failure</code></td><td>Sale con código distinto de cero, muere por una señal "no limpia", se agota un tiempo de espera o vence el watchdog.</td></tr>
+    <tr><td><code>on-abnormal</code></td><td>Muere por una señal, se agota un tiempo de espera o vence el watchdog (no por un código de salida distinto de cero).</td></tr>
+    <tr><td><code>on-abort</code></td><td>Muere por una señal no capturada que no esté entre las de salida limpia.</td></tr>
+    <tr><td><code>on-watchdog</code></td><td>Solo cuando vence el tiempo del watchdog.</td></tr>
+    <tr><td><code>always</code></td><td>Siempre, sea cual sea la forma de terminar.</td></tr>
+  </tbody>
+</table>
+
+<p>Para un servicio de red de larga duración, la elección habitual es <code>on-failure</code>: reinicia ante fallos pero respeta una parada ordenada. Con <code>always</code> el servicio reaparece incluso tras una salida limpia, lo que puede ser indeseable si quieres poder pararlo con una orden interna. Entre reinicios, systemd espera <code>RestartSec=</code>, cuyo valor por defecto es 100 milisegundos, tan breve que un servicio que falla al instante puede entrar en un bucle rápido.</p>
+
+<h3>Protección contra bucles: los límites de arranque</h3>
+
+<p>Para evitar ese bucle, systemd aplica un límite de frecuencia de arranque. Según <code>systemd-system.conf(5)</code>, los valores por defecto son <code>DefaultStartLimitIntervalSec=</code> de 10 segundos y <code>DefaultStartLimitBurst=</code> de 5: si una unidad se inicia más de cinco veces en diez segundos, deja de reiniciarse y queda en estado fallido. Es una red de seguridad sensata. Un error común es creer que un servicio con <code>Restart=always</code> se reiniciará eternamente: si falla de inmediato cada vez, alcanzará el límite en menos de un segundo (con una espera de 100 ms entre reinicios, cinco arranques caben en unos 400 ms más lo que tarde el proceso en fallar). Para un servicio que deba reintentar durante más tiempo hay que aumentar <code>RestartSec=</code>, de modo que los reinicios caigan fuera de la ventana, o ajustar los límites en la propia unidad.</p>
+
+<h3>El watchdog</h3>
+
+<p>Un servicio puede comprometerse a demostrar periódicamente que sigue vivo. Con <code>WatchdogSec=</code> (por defecto 0, que lo desactiva), el servicio debe llamar regularmente a <code>sd_notify</code> con <code>WATCHDOG=1</code>; si se incumple el intervalo, el servicio se marca como fallido y se termina con <code>SIGABRT</code> (o con la señal indicada en <code>WatchdogSignal=</code>), y <code>Restart=</code> puede reiniciarlo. Es la versión de systemd de la idea de vigilancia que vimos en los sistemas embebidos con el artículo sobre <a href="/articulos/freertos-esp32-planificador-prioridades-isr.html">FreeRTOS en el ESP32</a>.</p>
+
+<h2>Dependencias y orden: la confusión más común</h2>
+
+<p>Aquí está el concepto que más errores produce. systemd distingue dos cuestiones que en otros sistemas se mezclan: <strong>qué unidades se necesitan</strong> (dependencias de requisito) y <strong>en qué orden se arrancan</strong> (dependencias de orden). El manual lo dice con claridad: los ajustes de orden son independientes y ortogonales a las dependencias de requisito, y las dependencias de requisito no influyen en el orden en que se inician o se detienen los servicios.</p>
+
+<h3>Directivas de requisito</h3>
+
+<ul>
+  <li><strong><code>Wants=</code></strong>: dependencia de requisito débil. Las unidades listadas se inician junto a la configurante, pero si fallan, la transacción no se invalida. Es la opción recomendable para "me conviene que esto esté".</li>
+  <li><strong><code>Requires=</code></strong>: requisito más fuerte. Si una de las unidades listadas no consigue activarse y existe un orden <code>After=</code> sobre ella, esta unidad no se inicia.</li>
+  <li><strong><code>Requisite=</code></strong>: si las unidades listadas no están ya iniciadas, no se inician y el arranque de esta falla de inmediato. No implica orden.</li>
+  <li><strong><code>BindsTo=</code></strong>: como <code>Requires=</code>, pero además detiene esta unidad cuando una de las listadas se detiene inesperadamente (incluido un fallo).</li>
+  <li><strong><code>PartOf=</code></strong>: similar a <code>Requires=</code> pero limitado a la parada y el reinicio: cuando la unidad listada se detiene o reinicia, esta también. La relación es unidireccional.</li>
+  <li><strong><code>Conflicts=</code></strong>: arrancar esta unidad detiene las listadas y viceversa. No implica orden por sí sola.</li>
+</ul>
+
+<h3>Directivas de orden</h3>
+
+<p><code>Before=</code> y <code>After=</code> establecen solo el orden. Si <code>foo.service</code> declara <code>Before=bar.service</code>, el arranque de <code>bar</code> se retrasa hasta que <code>foo</code> haya terminado de iniciarse. Como el orden y el requisito son independientes, <strong>un <code>Requires=</code> sin <code>After=</code> arranca ambas unidades a la vez</strong>, y un <code>After=</code> sin requisito solo ordena las unidades que casualmente se estén iniciando, sin hacer que la otra arranque. Lo habitual es combinarlos:</p>
+
+<pre data-lang="ini"><code># Ejemplo ilustrativo: "necesito la base de datos y quiero arrancar después de ella"
+[Unit]
+Requires=postgresql.service
+After=postgresql.service
+
+# Variante más tolerante: la quiero si está, pero no fallo sin ella
+# Wants=postgresql.service
+# After=postgresql.service</code></pre>
+
+<div class="alert">
+  <strong>El error clásico.</strong> Escribir <code>After=network.target</code> y creer que garantiza que hay conectividad. Eso es una afirmación general que no procede de las páginas consultadas, así que compruébala en el manual de los objetivos de red de tu versión (<code>network-online.target</code> existe precisamente para el caso de "necesito red de verdad"). Lo que sí establecen las fuentes es la regla de fondo: el orden no implica requisito ni el requisito implica orden.
+</div>
+
+<h2>Instalar y habilitar: [Install] y plantillas</h2>
+
+<p>La sección <code>[Install]</code> no la interpreta systemd durante la ejecución: la usan <code>systemctl enable</code> y <code>disable</code>. Cuando habilitas una unidad con <code>WantedBy=multi-user.target</code>, se crea un enlace simbólico en el directorio <code>multi-user.target.wants/</code> que añade la dependencia correspondiente: según el manual, <code>WantedBy=</code>, <code>RequiredBy=</code> y <code>UpheldBy=</code> crean enlaces en los directorios <code>.wants/</code>, <code>.requires/</code> y <code>.upholds/</code>. <code>Also=</code> permite instalar o retirar unidades adicionales a la vez. De ahí una distinción útil: <em>habilitar</em> una unidad (que arranque en el próximo arranque del sistema) es distinto de <em>iniciarla</em> (que se ejecute ahora), y un servicio puede estar iniciado y no habilitado, o viceversa.</p>
+
+<h3>Plantillas e instancias</h3>
+
+<p>Cuando necesitas varias copias de un mismo servicio con un parámetro distinto (un trabajador por cola, un servicio por puerto), systemd ofrece <em>plantillas</em>. Una plantilla tiene un único <code>@</code> al final de su nombre (<code>getty@.service</code>, el ejemplo del manual) y las instancias se nombran insertando un identificador entre el <code>@</code> y el sufijo (<code>getty@tty3.service</code>). Dentro del archivo, <code>%i</code> es el nombre de la instancia. Si no se encuentra el archivo literal de una instancia, se busca la plantilla; y los drop-ins se leen primero de <code>foo@bar.service.d/</code> y después de <code>foo@.service.d/</code>, lo que permite personalizar una instancia concreta sin tocar las demás.</p>
+
+<pre data-lang="ini"><code># /etc/systemd/system/trabajador@.service  (ejemplo ilustrativo, no probado)
+[Unit]
+Description=Trabajador de la cola %i
+
+[Service]
+Type=exec
+ExecStart=/opt/app/bin/trabajador --cola %i
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
+# Uso: systemctl enable --now trabajador@correo.service trabajador@informes.service</code></pre>
+
+<h2>Temporizadores: el sustituto de cron</h2>
+
+<p>Un temporizador (<code>.timer</code>) es una unidad que activa a otra en un momento dado. Según <code>systemd.timer(5)</code>, por defecto activa el servicio con el mismo nombre (sin el sufijo): <code>foo.timer</code> activa <code>foo.service</code>; la directiva <code>Unit=</code> permite cambiarlo. Para el tiempo hay dos familias:</p>
+
+<ul>
+  <li><strong>De reloj</strong> (<em>realtime</em>): <code>OnCalendar=</code> define temporizadores con expresiones de calendario.</li>
+  <li><strong>Monótonos</strong>: <code>OnActiveSec=</code>, <code>OnBootSec=</code>, <code>OnStartupSec=</code>, <code>OnUnitActiveSec=</code> y <code>OnUnitInactiveSec=</code> miden el tiempo transcurrido desde distintos puntos de partida y son "independientes de la hora del reloj y de las zonas horarias".</li>
+</ul>
+
+<h3>Los parámetros que importan</h3>
+
+<ul>
+  <li><strong><code>Persistent=</code></strong> (por defecto <code>false</code>): si está activo, la hora del último disparo se guarda en disco, de modo que una ejecución perdida (la máquina estaba apagada) se lanza al activarse el temporizador. Solo tiene efecto con <code>OnCalendar=</code>. Es una ventaja concreta sobre <code>cron</code> para los portátiles y las máquinas que se apagan.</li>
+  <li><strong><code>AccuracySec=</code></strong> (por defecto 1 minuto): el momento de disparo se sitúa dentro de una ventana que empieza a la hora configurada y dura este tiempo, lo que permite agrupar activaciones y ahorrar energía. Si necesitas exactitud al segundo, redúcelo.</li>
+  <li><strong><code>RandomizedDelaySec=</code></strong> (por defecto 0): añade un retraso aleatorio entre 0 y el valor indicado. Sirve para repartir en el tiempo las ejecuciones de muchas máquinas que comparten la misma hora de programación, y es lo contrario de <code>AccuracySec=</code>.</li>
+  <li><strong><code>WakeSystem=</code></strong> (por defecto <code>false</code>): si es verdadero, un temporizador que vence reactiva el sistema de la suspensión, si el hardware lo permite.</li>
+</ul>
+
+<pre data-lang="ini"><code># /etc/systemd/system/respaldo.timer  (ejemplo ilustrativo, no probado)
+[Unit]
+Description=Respaldo diario
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target
+
+# Se activa respaldo.service (mismo nombre). Se habilita el temporizador, no el servicio:
+#   systemctl enable --now respaldo.timer</code></pre>
+
+<p>Las expresiones de calendario pueden verificarse antes de usarlas con <code>systemd-analyze calendar</code>, que, según su manual, analiza y normaliza los eventos de tiempo repetitivos y calcula cuándo se producirán a continuación (por defecto muestra solo el siguiente; con <code>--iterations=</code> muestra más). Es la forma segura de comprobar que <code>*-*-* 03:00:00</code> significa lo que crees. La página del manual de los temporizadores no compara explícitamente con <code>cron</code>, de modo que las ventajas que atribuimos (recuperación de ejecuciones perdidas, retraso aleatorio, registros en el diario y reutilización de todas las opciones de aislamiento del servicio) son una valoración nuestra a partir de las funciones documentadas.</p>
+
+<h2>El diario: journald y journalctl</h2>
+
+<p>Por defecto, y como dato general que no procede de las páginas consultadas, la salida estándar y de error de los servicios de systemd termina en el diario (<em>journal</em>), un almacén de registros estructurados. La página de <code>journalctl(1)</code> precisa cómo es ese almacén: las entradas se guardan como registros formados por campos con nombre, no como líneas de texto, y los filtros funcionan comparando esos campos (la lista de campos estándar está en <code>systemd.journal-fields(7)</code>). Las opciones documentadas que más se usan son:</p>
+
+<ul>
+  <li><code>-u</code> / <code>--unit=</code>: mensajes de una unidad (o de un patrón de unidades).</li>
+  <li><code>-b</code> / <code>--boot</code>: mensajes de un arranque concreto, por identificador o por desplazamiento relativo.</li>
+  <li><code>-f</code> / <code>--follow</code>: muestra las últimas entradas y sigue mostrando las nuevas.</li>
+  <li><code>-n</code> / <code>--lines=</code>: limita el número de eventos recientes mostrados.</li>
+  <li><code>-p</code> / <code>--priority=</code>: filtra por nivel de prioridad o rango (de <code>emerg</code> a <code>debug</code>).</li>
+  <li><code>--since=</code> y <code>--until=</code>: límites de tiempo.</li>
+  <li><code>-o</code> / <code>--output=</code>: formato de salida; <code>short</code> es el predeterminado, <code>verbose</code> muestra todos los campos, <code>json</code> emite objetos JSON y <code>cat</code> imprime solo el mensaje.</li>
+  <li><code>-k</code> / <code>--dmesg</code>: solo mensajes del kernel. <code>-r</code> / <code>--reverse</code>: primero los más recientes. <code>-x</code> / <code>--catalog</code>: añade textos explicativos del catálogo de mensajes.</li>
+  <li><code>--disk-usage</code>: espacio que ocupan los archivos del diario. <code>--vacuum-size=</code> y <code>--vacuum-time=</code>: eliminan archivos archivados antiguos hasta bajar de un tamaño o más allá de una antigüedad.</li>
+</ul>
+
+<pre data-lang="bash"><code># Últimas 100 líneas de un servicio y seguimiento en vivo
+journalctl -u miapi.service -n 100 -f
+
+# Solo errores o peores del arranque actual
+journalctl -b -p err
+
+# Lo ocurrido en la última hora, en JSON, para procesarlo con otras herramientas
+journalctl -u miapi.service --since "1 hour ago" -o json
+
+# Cuánto ocupa el diario y cómo reducirlo a 500 MB
+journalctl --disk-usage
+sudo journalctl --vacuum-size=500M</code></pre>
+
+<p>Una buena práctica de diseño: haz que tu aplicación escriba en la salida estándar (sin gestionar archivos de registro ni rotación) y deja que el diario se ocupe. Con ello obtienes marcas de tiempo, prioridad, asociación a la unidad y filtrado sin esfuerzo, y rotación y límites de tamaño controlados centralmente.</p>
+
+<h2>Endurecer un servicio: aislamiento con unas pocas líneas</h2>
+
+<p>Esta es, probablemente, la característica de systemd más infrautilizada. En <code>systemd.exec(5)</code> hay decenas de directivas que restringen lo que un servicio puede ver y hacer, y que se activan con una sola línea. Son, en la práctica, una interfaz sencilla a los mecanismos del kernel que describimos en el artículo sobre contenedores: namespaces de montajes, capacidades y filtros seccomp. Estas son las más útiles, con la semántica que documenta el manual:</p>
+
+<h3>Identidad y privilegios</h3>
+
+<ul>
+  <li><strong><code>User=</code></strong>: el usuario con el que se ejecutan los procesos; por defecto, <code>root</code> en los servicios de sistema. No ejecutar como root es el primer paso.</li>
+  <li><strong><code>DynamicUser=</code></strong>: asigna un par usuario/grupo temporal al iniciar la unidad y lo libera al detenerse; por defecto está desactivado. Implica <code>RemoveIPC=</code>, <code>NoNewPrivileges=</code>, <code>RestrictSUIDSGID=</code>, <code>ProtectSystem=strict</code> y <code>ProtectHome=read-only</code>, así que con una sola línea obtienes un paquete de endurecimiento.</li>
+  <li><strong><code>NoNewPrivileges=</code></strong>: garantiza que el proceso y sus hijos no puedan ganar privilegios nuevos mediante <code>execve()</code>. Por defecto, falso.</li>
+  <li><strong><code>CapabilityBoundingSet=</code></strong> y <strong><code>AmbientCapabilities=</code></strong>: controlan el conjunto límite y el conjunto ambiente de capacidades; una lista precedida de <code>~</code> invierte la selección. Si no se define, el conjunto límite no se modifica.</li>
+  <li><strong><code>RestrictSUIDSGID=</code></strong>: prohíbe fijar los bits SUID o SGID en archivos o directorios.</li>
+</ul>
+
+<h3>Sistema de archivos</h3>
+
+<ul>
+  <li><strong><code>ProtectSystem=</code></strong>: con <code>true</code>, monta de solo lectura <code>/usr/</code> y los directorios del cargador de arranque (<code>/boot</code>, <code>/efi</code>); con <code>full</code>, además <code>/etc/</code>; con <code>strict</code>, toda la jerarquía de archivos en solo lectura, salvo los subárboles de los sistemas de archivos de la API (<code>/dev/</code>, <code>/proc/</code>, <code>/sys/</code>). Por defecto está desactivado.</li>
+  <li><strong><code>ProtectHome=</code></strong>: con <code>true</code>, <code>/home/</code>, <code>/root</code> y <code>/run/user</code> quedan inaccesibles y vacíos; <code>read-only</code> los deja de solo lectura; <code>tmpfs</code> monta sistemas temporales de solo lectura sobre ellos.</li>
+  <li><strong><code>PrivateTmp=</code></strong>: los directorios <code>/tmp/</code> y <code>/var/tmp/</code> del servicio no se comparten con procesos externos (por defecto, falso; el valor <code>disconnected</code> usa un tmpfs completamente nuevo).</li>
+  <li><strong><code>PrivateDevices=</code></strong>: crea un nuevo <code>/dev/</code> que solo contiene pseudodispositivos de la API, sin dispositivos físicos, montado de solo lectura y <code>noexec</code>; instala un filtro que bloquea el grupo de llamadas <code>@raw-io</code> y elimina <code>CAP_MKNOD</code> y <code>CAP_SYS_RAWIO</code>. Puede romper programas que usen <code>mmap(2)</code> sobre <code>/dev/zero</code> para memoria ejecutable.</li>
+  <li><strong><code>ReadWritePaths=</code></strong> y <strong><code>ReadOnlyPaths=</code></strong>: abren excepciones. Con <code>ProtectSystem=strict</code>, el servicio solo podrá escribir donde indiques con <code>ReadWritePaths=</code>. El manual advierte de que estas restricciones pueden ser deshechas por procesos privilegiados, y recomienda combinarlas con <code>CapabilityBoundingSet=~CAP_SYS_ADMIN</code> o <code>SystemCallFilter=~@mount</code>.</li>
+</ul>
+
+<h3>Kernel, red y llamadas al sistema</h3>
+
+<ul>
+  <li><strong><code>ProtectKernelTunables=</code></strong>: las variables del kernel accesibles por <code>/proc/sys/</code>, <code>/sys/</code> y <code>/proc/sysrq-trigger</code> pasan a solo lectura, y <code>/proc/kallsyms</code> y <code>/proc/kcore</code> dejan de ser accesibles.</li>
+  <li><strong><code>ProtectKernelModules=</code></strong>: se deniega la carga explícita de módulos del kernel; se elimina <code>CAP_SYS_MODULE</code>.</li>
+  <li><strong><code>ProtectControlGroups=</code></strong>: las jerarquías de cgroups bajo <code>/sys/fs/cgroup/</code> quedan de solo lectura para la unidad (valores adicionales <code>private</code> y <code>strict</code>).</li>
+  <li><strong><code>ProtectClock=</code></strong>: se deniegan las escrituras en el reloj de hardware o del sistema; se elimina <code>CAP_SYS_TIME</code>.</li>
+  <li><strong><code>RestrictAddressFamilies=</code></strong>: lista de familias de direcciones permitidas (o <code>none</code>); con prefijo <code>~</code> es una lista de denegación. Por defecto no hay restricciones. Un servicio que solo habla por TCP puede limitarse a <code>AF_INET AF_INET6</code> (y <code>AF_UNIX</code> si usa sockets locales).</li>
+  <li><strong><code>RestrictNamespaces=</code></strong>: impide crear o cambiar de namespaces (<code>cgroup</code>, <code>ipc</code>, <code>net</code>, <code>mnt</code>, <code>pid</code>, <code>user</code>, <code>uts</code>, <code>time</code>); por defecto no hay restricción.</li>
+  <li><strong><code>LockPersonality=</code></strong>: bloquea la llamada <code>personality(2)</code>.</li>
+  <li><strong><code>MemoryDenyWriteExecute=</code></strong>: prohíbe los mapeos de memoria simultáneamente escribibles y ejecutables. Es incompatible con motores JIT y con pilas ejecutables, por lo que no sirve para runtimes que compilan al vuelo.</li>
+  <li><strong><code>SystemCallFilter=</code></strong>: lista de llamadas al sistema o grupos permitidos (lista blanca); si el primer carácter es <code>~</code>, se invierte y solo se deniegan las listadas. Algunas llamadas esenciales (<code>execve</code>, <code>exit</code>, <code>exit_group</code>, etc.) se permiten implícitamente. La acción por defecto es terminar con <code>SIGSYS</code>, modificable con <code>SystemCallErrorNumber=</code>. El grupo <code>@system-service</code> se describe como un conjunto razonable de llamadas usadas por servicios comunes, que excluye las de propósito especial, entre ellas los grupos <code>@clock</code>, <code>@mount</code>, <code>@swap</code> y <code>@reboot</code>. <code>SystemCallArchitectures=native</code> está recomendado para desactivar las ABI no nativas.</li>
+</ul>
+
+<p>Un perfil de partida razonable para un servicio de red típico que se ejecuta sin privilegios, escrito con las directivas anteriores, sería el siguiente. Es un ejemplo ilustrativo, no probado: cada servicio real necesitará ajustes (en particular <code>ReadWritePaths=</code>) y conviene introducir las restricciones de una en una, comprobando el servicio tras cada una:</p>
+
+<pre data-lang="ini"><code># Fragmento de la sección [Service] (ilustrativo, no probado)
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/miapi
+StateDirectory=miapi</code></pre>
+
+<p>Dos de esas líneas merecen un comentario. <code>CapabilityBoundingSet=</code> vacío elimina todas las capacidades del conjunto límite, apropiado para un servicio que no necesita ninguna (si necesita enlazar un puerto bajo, hay que conceder explícitamente <code>CAP_NET_BIND_SERVICE</code>, como vimos en el artículo de contenedores). Y <code>StateDirectory=</code> es una directiva de systemd que crea y gestiona un directorio de estado bajo <code>/var/lib/</code> para el servicio; es de conocimiento general, no una de las que hemos verificado en las páginas leídas, y su relación con <code>ReadWritePaths=</code> debe comprobarse en la documentación de tu versión.</p>
+
+<h3>Medir la exposición: systemd-analyze security</h3>
+
+<p>No hace falta adivinar cuánto has mejorado. Según el manual de <code>systemd-analyze</code>, el subcomando <code>security</code> analiza los ajustes de seguridad y aislamiento de una o varias unidades de servicio. Sin argumentos, inspecciona todos los servicios de larga duración cargados y muestra una tabla concisa. A cada ajuste se le asigna un valor numérico de exposición, y la herramienta los combina en una puntuación global en una escala de 0,0 a 10,0, en la que <strong>una puntuación mayor significa menos aislamiento</strong>. El manual advierte de que una exposición alta indica muy poco aislamiento aplicado, pero que una puntuación alta no prueba que el servicio sea vulnerable: solo sugiere que le sentarían bien ajustes más estrictos. La utilidad es doble: da una lista priorizada de directivas pendientes y permite comparar antes y después de cada cambio.</p>
+
+<h2>Un caso completo: de una línea de cron a una tarea robusta</h2>
+
+<p>Veamos cómo se combinan las piezas en un ejemplo cotidiano: un respaldo nocturno que hoy se ejecuta con una línea de <code>cron</code> que lanza un script a las 3:00. Lo migramos a una pareja servicio más temporizador, usando solo directivas que hemos descrito con la documentación. Los archivos son ilustrativos y no se han probado.</p>
+
+<h3>1. El servicio, de tipo oneshot</h3>
+
+<p>Una tarea puntual que se ejecuta y termina es el caso de <code>Type=oneshot</code>: la unidad se considera activa cuando el proceso principal termina, y sin <code>RemainAfterExit=</code> nunca aparece como activa, lo cual es lo esperable para algo que no queda en ejecución. Como el tiempo de arranque no se limita por defecto en los servicios <code>oneshot</code>, un respaldo que dure horas no será interrumpido por el plazo de 90 segundos de los demás servicios.</p>
+
+<pre data-lang="ini"><code># /etc/systemd/system/respaldo.service  (ilustrativo, no probado)
+[Unit]
+Description=Respaldo de los datos de la aplicación
+
+[Service]
+Type=oneshot
+User=respaldo
+ExecStart=/opt/respaldo/bin/respaldar.sh
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/backups/miapi</code></pre>
+
+<h3>2. El temporizador</h3>
+
+<p>El temporizador del apartado anterior (<code>OnCalendar=*-*-* 03:00:00</code>, <code>Persistent=true</code> y <code>RandomizedDelaySec=15min</code>) activa por nombre el servicio. Antes de habilitarlo, dos comprobaciones baratas, ambas documentadas en el manual de <code>systemd-analyze</code>: <code>systemd-analyze verify</code> sobre los dos archivos detecta directivas mal escritas o un <code>ExecStart=</code> inexistente, y <code>systemd-analyze calendar "*-*-* 03:00:00"</code> confirma cuándo ocurrirá la siguiente ejecución. Después se habilita el <em>temporizador</em> (no el servicio) con <code>systemctl enable --now respaldo.timer</code>.</p>
+
+<h3>3. Qué se gana frente a la línea de cron</h3>
+
+<p>La comparación siguiente es una valoración nuestra, construida a partir de las funciones que documentan las páginas consultadas, y no una afirmación de ellas, ya que ninguna compara con <code>cron</code>:</p>
+
+<table>
+  <thead>
+    <tr><th>Necesidad</th><th>Con cron (conocimiento general)</th><th>Con systemd (documentado)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Ejecutar a las 3:00 cada día</td><td>Una línea con cinco campos de tiempo.</td><td><code>OnCalendar=*-*-* 03:00:00</code>, verificable con <code>systemd-analyze calendar</code>.</td></tr>
+    <tr><td>La máquina estaba apagada a las 3:00</td><td>La ejecución se pierde salvo herramientas adicionales.</td><td><code>Persistent=true</code> la lanza al activarse el temporizador.</td></tr>
+    <tr><td>Repartir muchas máquinas en el tiempo</td><td>Hay que escribir esperas aleatorias en el propio script.</td><td><code>RandomizedDelaySec=</code>.</td></tr>
+    <tr><td>Ver la salida y los errores</td><td>Correo local o redirecciones a archivos.</td><td>Todo en el diario: <code>journalctl -u respaldo.service</code>.</td></tr>
+    <tr><td>Limitar lo que puede hacer el script</td><td>Se ejecuta con los permisos del usuario.</td><td>Las mismas directivas de aislamiento que cualquier servicio, medibles con <code>systemd-analyze security</code>.</td></tr>
+    <tr><td>Evitar que dos copias se solapen</td><td>Requiere bloqueos manuales.</td><td>Una unidad de servicio no se inicia a sí misma mientras ya está activa (comportamiento general de systemd, no verificado en las páginas leídas).</td></tr>
+  </tbody>
+</table>
+
+<h3>4. Elegir la política de reinicio según el tipo de servicio</h3>
+
+<p>La tarea anterior no necesita <code>Restart=</code>: al terminar, no debe volver a lanzarse hasta el próximo temporizador. Pero conviene tener una regla mental para el resto de servicios, derivada de la tabla de valores que hemos visto. Un servicio de red de larga duración suele usar <code>on-failure</code>, porque reinicia ante fallos pero respeta una parada ordenada que haga el administrador. Un servicio que debe estar siempre presente y cuya salida limpia también sería un error (porque, por diseño, no debería terminar) puede usar <code>always</code>, siendo consciente de que será imposible pararlo con una orden interna sin que reaparezca. Un servicio que tiene un watchdog suele combinarlo con <code>on-watchdog</code> o con <code>on-failure</code>. Y una tarea puntual debe quedarse con el valor por defecto, <code>no</code>. En todos los casos conviene aumentar <code>RestartSec=</code> por encima de los 100 ms por defecto cuando el fallo suele deberse a una dependencia externa que tarda en recuperarse, para no consumir el límite de arranque de cinco en diez segundos con intentos inútiles.</p>
+
+<h2>Diagnóstico: ¿por qué no arranca mi servicio?</h2>
+
+<p>Un método ordenado ahorra mucho tiempo. Los comandos son estándar; salvo los documentados arriba, los demás son de conocimiento general sobre <code>systemctl</code> y se indican como tales:</p>
+
+<ol>
+  <li><strong>Estado y motivo del fallo.</strong> <code>systemctl status miapi.service</code> muestra si está activa, el último código de salida y las últimas líneas del diario (conocimiento general).</li>
+  <li><strong>El diario completo.</strong> <code>journalctl -u miapi.service -b</code> para ver todo lo ocurrido en el arranque actual, y <code>-x</code> si quieres los textos explicativos del catálogo.</li>
+  <li><strong>Revisa el archivo.</strong> <code>systemd-analyze verify /etc/systemd/system/miapi.service</code>: según el manual, carga los archivos de unidad y avisa de errores, como secciones o directivas desconocidas, dependencias obligatorias ausentes, páginas de manual ausentes o <code>ExecStart=</code> inexistente o no ejecutable.</li>
+  <li><strong>Aplica los cambios.</strong> Tras editar archivos de unidad hay que pedir a systemd que los relea (<code>systemctl daemon-reload</code>, dato general) antes de reiniciar el servicio.</li>
+  <li><strong>Comprueba el tipo.</strong> Si una unidad depende de otra y arranca demasiado pronto, revisa el <code>Type=</code> de la primera y el orden con <code>After=</code>.</li>
+  <li><strong>Mide el arranque.</strong> <code>systemd-analyze blame</code> lista las unidades por tiempo de inicialización (excluye las <code>Type=simple</code>, porque no hay tiempo de inicialización que medir) y <code>critical-chain</code> muestra el árbol de la cadena crítica, con el instante de activación tras una arroba y la duración tras un signo más.</li>
+  <li><strong>Revisa los límites.</strong> Si un servicio "no se reinicia", comprueba si ha alcanzado el límite de arranques (5 en 10 segundos por defecto).</li>
+  <li><strong>Si falla solo con las restricciones de aislamiento,</strong> desactívalas una a una: un archivo no accesible por <code>ProtectSystem=strict</code> o <code>PrivateDevices=</code> es la causa más frecuente.</li>
+</ol>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>"Si pongo Requires=, arranca después"</h3>
+
+<p>No: requisito y orden son independientes. Sin <code>After=</code>, ambas unidades pueden arrancar en paralelo. Casi siempre querrás las dos directivas juntas.</p>
+
+<h3>"Type=simple significa que el servicio está listo"</h3>
+
+<p>Significa que el proceso se ha lanzado. Un programa que tarda segundos en abrir su puerto seguirá marcado como iniciado antes de estar listo. Si es posible, usa <code>Type=notify</code>; si no, <code>exec</code> al menos detecta errores de ejecución.</p>
+
+<h3>"Restart=always lo mantiene vivo para siempre"</h3>
+
+<p>Los límites de arranque (5 en 10 segundos por defecto) detienen los reinicios de un servicio que falla enseguida. Hay que combinar el reinicio con una espera razonable y, sobre todo, arreglar la causa del fallo.</p>
+
+<h3>"Editar el archivo de /usr/lib es lo más rápido"</h3>
+
+<p>Es lo más frágil: un paquete lo sobrescribirá. Los archivos en <code>/etc/systemd/system</code> o los drop-ins prevalecen y sobreviven a las actualizaciones.</p>
+
+<h3>"Los temporizadores se activan en el segundo exacto"</h3>
+
+<p>Por defecto tienen una precisión de un minuto (<code>AccuracySec=</code>), y puedes añadir un retraso aleatorio con <code>RandomizedDelaySec=</code>. Para exactitud, reduce la precisión.</p>
+
+<h3>"Un servicio sin root ya está seguro"</h3>
+
+<p>Es un buen comienzo, pero un proceso sin privilegios sigue pudiendo leer casi todo el sistema de archivos, usar casi todas las llamadas al sistema y abrir cualquier tipo de socket. Las directivas de aislamiento reducen esa superficie, y <code>systemd-analyze security</code> permite verificarlo.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿En qué se diferencia systemd de cron?</h3>
+
+<p>Un temporizador de systemd activa una unidad con todas sus capacidades (aislamiento, registro en el diario, límites de recursos) y puede recuperar ejecuciones perdidas con <code>Persistent=</code>. <code>cron</code> es más simple y se conoce mejor. La documentación consultada no los compara explícitamente, así que se trata de una valoración nuestra de las funciones documentadas.</p>
+
+<h3>¿Cómo veo qué unidades hay y cuáles han fallado?</h3>
+
+<p>Con <code>systemctl list-units --failed</code> (dato general) se listan las fallidas, y <code>systemctl status</code> detalla cada una. El diario conserva el historial de lo ocurrido.</p>
+
+<h3>¿Puedo ejecutar servicios sin privilegios de administrador?</h3>
+
+<p>Sí: el modo usuario de systemd carga unidades desde <code>~/.config/systemd/user</code> y las ejecuta bajo la sesión del usuario, sin necesidad de root para instalarlas.</p>
+
+<h3>¿Qué hace exactamente DynamicUser=?</h3>
+
+<p>Crea un usuario y un grupo temporales al iniciar la unidad y los libera al detenerla, e implica varias medidas de endurecimiento adicionales (<code>NoNewPrivileges</code>, <code>ProtectSystem=strict</code>, <code>ProtectHome=read-only</code>, entre otras). Como el usuario no persiste, los datos que quieras conservar deben guardarse en directorios de estado gestionados por systemd.</p>
+
+<h3>¿Cómo evito que el diario ocupe demasiado disco?</h3>
+
+<p>Con <code>journalctl --disk-usage</code> ves lo que ocupa, y <code>--vacuum-size=</code> o <code>--vacuum-time=</code> eliminan los archivos archivados más antiguos hasta alcanzar un tamaño o una antigüedad límite.</p>
+
+<h3>¿Qué diferencia hay entre enable y start?</h3>
+
+<p><code>start</code> inicia la unidad ahora; <code>enable</code> crea los enlaces de la sección <code>[Install]</code> para que se inicie en arranques futuros. Con <code>--now</code> se hacen las dos cosas a la vez.</p>
+
+<h3>¿Por qué <code>systemd-analyze blame</code> no muestra mi servicio?</h3>
+
+<p>Porque el manual indica que excluye los servicios <code>Type=simple</code>, ya que systemd los considera iniciados al instante y no hay un tiempo de inicialización que medir.</p>
+
+<h3>¿Se pueden usar estas opciones de aislamiento en contenedores?</h3>
+
+<p>Algunas dependen de que el kernel y el entorno ofrezcan los mecanismos subyacentes (por ejemplo, namespaces de montajes). Dentro de un contenedor sin los privilegios necesarios, ciertas directivas pueden no aplicarse o fallar; consulta la documentación de tu entorno.</p>
+
+<h2>Conclusión</h2>
+
+<p>systemd es más pequeño de lo que parece cuando se conocen sus piezas: unidades declaradas en archivos de texto, un conjunto de reglas de precedencia para saber cuál manda, una separación nítida entre lo que una unidad necesita y el orden en que arranca, políticas de reinicio con límites razonables y un diario estructurado que centraliza los registros. Los errores más frecuentes, como confundir requisito con orden, fiarse del <code>Type=simple</code> o editar los archivos de la distribución, se evitan conociendo esas reglas.</p>
+
+<p>Lo que lo convierte en una herramienta de seguridad práctica es la colección de directivas de aislamiento. Con unas pocas líneas se limitan el sistema de archivos visible, los dispositivos, los módulos del kernel, las familias de sockets y las llamadas al sistema, es decir, los mismos mecanismos que sostienen a un contenedor, pero aplicados a un servicio ordinario sin cambiar su código. Y <code>systemd-analyze security</code> convierte esa mejora en un número que se puede seguir en el tiempo. Un servicio que antes partía con acceso casi total al sistema puede acabar encerrado en un entorno mínimo con una hora de trabajo y sin tocar su programa.</p>
+
+<p>El siguiente paso lógico es el que la siguiente pieza de esta serie aborda: cuando los servicios están gestionados y aislados, hay que saber qué hacen. Métricas, registros y trazas, y cómo se combinan en un sistema de observabilidad, son el tema del próximo artículo.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>systemd. «systemd.service(5)». freedesktop.org. <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html</a> (consultado el 27-10-2026).</li>
+  <li>systemd. «systemd.unit(5)». <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html</a> (consultado el 27-10-2026; se leyeron 100.000 de 107.832 caracteres).</li>
+  <li>systemd. «systemd.exec(5)». <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html</a> (consultado el 27-10-2026; se leyeron los primeros 200.000 de 244.377 caracteres).</li>
+  <li>systemd. «systemd.timer(5)». <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html</a> (consultado el 27-10-2026).</li>
+  <li>systemd. «journalctl(1)». <a href="https://www.freedesktop.org/software/systemd/man/latest/journalctl.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/journalctl.html</a> (consultado el 27-10-2026).</li>
+  <li>systemd. «systemd-system.conf(5)». <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd-system.conf.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/systemd-system.conf.html</a> (consultado el 27-10-2026).</li>
+  <li>systemd. «systemd-analyze(1)». <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd-analyze.html" rel="noopener">https://www.freedesktop.org/software/systemd/man/latest/systemd-analyze.html</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>

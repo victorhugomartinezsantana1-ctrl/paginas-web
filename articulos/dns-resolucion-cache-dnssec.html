@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DNS de extremo a extremo: resolución, caché, DNSSEC y fallos habituales — devlog</title>
+  <meta name="description" content="Cómo se resuelve un nombre: zonas, delegación, recursión, TTL y caché negativa, DNSSEC, DNS sobre TCP y HTTPS, y cómo diagnosticar fallos con dig y resolv.conf.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/dns-resolucion-cache-dnssec.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="DNS de extremo a extremo: resolución, caché, DNSSEC y fallos habituales">
+  <meta property="og:description" content="Cómo se resuelve un nombre: zonas, delegación, recursión, TTL y caché negativa, DNSSEC, DNS sobre TCP y HTTPS, y cómo diagnosticar fallos con dig y resolv.conf.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/dns-resolucion-cache-dnssec.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "DNS de extremo a extremo: resolución, caché, DNSSEC y fallos habituales",
+    "description": "Cómo se resuelve un nombre: zonas, delegación, recursión, TTL y caché negativa, DNSSEC, DNS sobre TCP y HTTPS, y cómo diagnosticar fallos con dig y resolv.conf.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 5712,
+    "keywords": "cómo funciona dns, resolución recursiva, TTL, caché negativa, DNSSEC, dig",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/dns-resolucion-cache-dnssec.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[redes]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          DNS de extremo a extremo: resolución, caché, DNSSEC y fallos habituales
+        </h1>
+        <p class="mt-4 text-muted">Cómo se resuelve un nombre: zonas, delegación, recursión, TTL y caché negativa, DNSSEC, DNS sobre TCP y HTTPS, y cómo diagnosticar fallos con dig y resolv.conf.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 29 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-que-es-dns-y-que-problema-resuelve" class="text-accent hover:underline">Qué es DNS (y qué problema resuelve)</a></li>
+          <li><a href="#2-el-arbol-las-zonas-y-la-delegacion" class="text-accent hover:underline">El árbol, las zonas y la delegación</a></li>
+          <li><a href="#3-la-resolucion-paso-a-paso" class="text-accent hover:underline">La resolución, paso a paso</a></li>
+          <li><a href="#4-el-ttl-cuanto-vive-una-respuesta" class="text-accent hover:underline">El TTL: cuánto vive una respuesta</a></li>
+          <li><a href="#5-la-cache-negativa-cuando-no-existe-tambi" class="text-accent hover:underline">La caché negativa: cuando "no existe" también se recuerda</a></li>
+          <li><a href="#6-los-codigos-de-respuesta-leer-el-rcode" class="text-accent hover:underline">Los códigos de respuesta: leer el RCODE</a></li>
+          <li><a href="#7-udp-tcp-y-los-mensajes-grandes" class="text-accent hover:underline">UDP, TCP y los mensajes grandes</a></li>
+          <li><a href="#8-dns-sobre-https" class="text-accent hover:underline">DNS sobre HTTPS</a></li>
+          <li><a href="#9-dnssec-autenticar-los-datos" class="text-accent hover:underline">DNSSEC: autenticar los datos</a></li>
+          <li><a href="#10-el-resolutor-del-sistema-resolv-conf" class="text-accent hover:underline">El resolutor del sistema: resolv.conf</a></li>
+          <li><a href="#11-diagnostico-con-dig" class="text-accent hover:underline">Diagnóstico con dig</a></li>
+          <li><a href="#12-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#13-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#14-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>Antes de que tu navegador abra una conexión TCP, antes de que comience el apretón de manos de TLS, ocurre algo que casi nadie ve: el navegador tiene que averiguar a qué dirección IP corresponde el nombre que has escrito. Esa tarea la resuelve el sistema de nombres de dominio (DNS), una base de datos distribuida y jerárquica que existe, con cambios, desde 1987. Cuando funciona es invisible. Cuando falla, produce algunos de los problemas más desconcertantes de la informática: un sitio que "se cae" solo para algunos usuarios, un cambio de servidor que tarda horas en notarse, una aplicación que tarda cinco segundos en arrancar sin motivo aparente, un registro recién creado que "no existe" durante una hora.</p>
+
+<p>Casi todos esos misterios tienen explicación en un puñado de reglas que fijan las RFC: cómo se delegan las zonas, cuánto tiempo puede guardarse una respuesta, qué se cachea cuando la respuesta es negativa, cómo se firma la información con DNSSEC y por qué un mensaje de DNS puede viajar por UDP, por TCP o por HTTPS. En este artículo las recorremos con las especificaciones originales y con la documentación de las herramientas habituales (<code>dig</code> y <code>resolv.conf</code>), y cerramos con un método de diagnóstico. Una advertencia de método: en el equipo de redacción no hemos ejecutado consultas DNS para este texto, así que no mostramos salidas de comandos; los comandos son instrucciones y los cálculos que aparecen los hemos hecho a mano a partir de lo documentado. Si trabajas con certificados, el artículo anterior sobre <a href="/articulos/tls-13-https-certificados-hsts.html">HTTPS y TLS 1.3</a> explica por qué DNS es la primera pieza de la cadena (la validación de dominio de los certificados suele apoyarse en él), y si montas un dominio propio en un servicio como el que describimos en <a href="/articulos/azure-static-web-apps.html">Azure Static Web Apps</a>, aquí encontrarás por qué ciertos registros no se pueden crear donde se esperaría.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>DNS tiene tres componentes según la RFC 1034: el espacio de nombres con sus registros, los servidores de nombres que los guardan y los resolutores que los buscan en nombre de los clientes.</li>
+    <li>La información se organiza en zonas; una zona delega parte de sus nombres a otra mediante registros NS, y la resolución sigue esa cadena de delegaciones desde la raíz.</li>
+    <li>El TTL de cada registro indica cuánto tiempo puede guardarse en caché. Las respuestas negativas (NXDOMAIN y NODATA) también se cachean, durante un tiempo que fija el registro SOA de la zona.</li>
+    <li>Un mensaje por UDP está limitado a 512 octetos en el DNS original; EDNS(0) lo amplía y TCP es obligatorio en cualquier implementación general (RFC 7766).</li>
+    <li>DNSSEC garantiza el origen y la integridad de los datos, pero no su confidencialidad ni la disponibilidad del servicio.</li>
+    <li>En Linux, <code>resolv.conf</code> tiene valores por defecto con consecuencias prácticas: 5 segundos de espera por consulta, 2 intentos y <code>ndots:1</code>; en Kubernetes el valor típico es <code>ndots:5</code>, que multiplica consultas.</li>
+  </ul>
+</div>
+
+<h2 id="1-que-es-dns-y-que-problema-resuelve">Qué es DNS (y qué problema resuelve)</h2>
+
+<p>Las redes IP se orientan por direcciones numéricas, pero las personas recuerdan nombres. DNS es la traducción entre unos y otros, y mucho más: además de asociar nombres con direcciones, publica a qué servidores se debe enviar el correo de un dominio, qué servidores son los responsables de él o qué textos de verificación ha publicado su titular. La RFC 1034, publicada en noviembre de 1987 por Paul Mockapetris, definió los conceptos y obsoletó las RFC 882, 883 y 973. Según ella, el sistema tiene tres componentes principales:</p>
+
+<ul>
+  <li><strong>El espacio de nombres de dominio y los registros de recursos</strong> (<em>resource records</em>, RR): la base de datos conceptual, organizada como un árbol.</li>
+  <li><strong>Los servidores de nombres</strong>: mantienen la información sobre la estructura del árbol y sobre los datos de ciertas partes del mismo. Se dice que un servidor es <em>autoridad</em> para esas partes.</li>
+  <li><strong>Los resolutores</strong>: extraen la información de los servidores de nombres en respuesta a las peticiones de los clientes.</li>
+</ul>
+
+<p>La RFC señala que servidor y resolutor pueden estar acoplados en una misma implementación, y es lo que ocurre en la práctica con los "servidores DNS recursivos" que ofrecen los proveedores de acceso o servicios públicos: reciben la pregunta de un cliente, la resuelven recorriendo el árbol y guardan el resultado en caché.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-el-arbol-las-zonas-y-la-delegacion">El árbol, las zonas y la delegación</h2>
+
+<p>Un nombre como <code>www.ejemplo.org</code> se lee de derecha a izquierda: <code>org</code> es un dominio de primer nivel, <code>ejemplo</code> es un subdominio de <code>org</code> y <code>www</code> es un nombre dentro de <code>ejemplo.org</code>. Cada tramo separado por puntos es una <em>etiqueta</em>. La RFC 1035 impone límites: una etiqueta puede tener como máximo 63 octetos y un nombre completo, 255 (contando los octetos de longitud).</p>
+
+<p>El árbol no está en un único servidor. Se reparte en <strong>zonas</strong>: cortes en el espacio de nombres que dividen la base de datos. La RFC 1034 define que una zona es autoritativa para todos los nombres de su región conectada, y que los datos autoritativos de una zona son todos los registros asociados a los nodos desde la cima de la zona hasta las hojas o hasta los cortes. En esos cortes aparecen los registros <strong>NS</strong>, que nombran los servidores de la subzona: así funciona la <em>delegación</em>. La zona <code>org</code> no sabe nada de los registros de <code>ejemplo.org</code>; solo sabe qué servidores NS son los responsables y delega la pregunta a ellos.</p>
+
+<h3>Los tipos de registro más habituales</h3>
+
+<p>La RFC 1035 define el formato de un registro (nombre, tipo, clase, TTL, longitud de los datos y datos) y los tipos que se usan con más frecuencia:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Tipo</th><th>Código</th><th>Qué contiene</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>A</code></td><td>1</td><td>Una dirección IPv4 de un host.</td></tr>
+    <tr><td><code>NS</code></td><td>2</td><td>Un servidor de nombres autoritativo para la zona (o delegación de una subzona).</td></tr>
+    <tr><td><code>CNAME</code></td><td>5</td><td>El nombre canónico de un alias.</td></tr>
+    <tr><td><code>SOA</code></td><td>6</td><td>Marca el inicio de una zona de autoridad y lleva sus parámetros.</td></tr>
+    <tr><td><code>PTR</code></td><td>12</td><td>Un puntero a un nombre de dominio (resolución inversa).</td></tr>
+    <tr><td><code>MX</code></td><td>15</td><td>Servidor de correo, con una preferencia de 16 bits: gana el valor menor.</td></tr>
+    <tr><td><code>TXT</code></td><td>16</td><td>Cadenas de texto (verificaciones de dominio, políticas de correo...).</td></tr>
+  </tbody>
+</table></div>
+
+<p>Las direcciones IPv6 se publican con registros <code>AAAA</code>, un tipo posterior a la RFC 1035 que no figura en su lista original y que damos aquí como conocimiento general. Los campos del <strong>SOA</strong>, que veremos que importan para la caché negativa, son: <code>MNAME</code> (servidor primario de la zona), <code>RNAME</code> (el buzón del responsable), <code>SERIAL</code> (número de versión de la zona), <code>REFRESH</code> (cada cuánto deben refrescarse las copias secundarias), <code>RETRY</code> (cuánto esperar para reintentar un refresco fallido), <code>EXPIRE</code> (hasta cuándo puede una copia secundaria seguir siendo autoritativa sin refrescar) y <code>MINIMUM</code>, cuyo significado explicaremos más abajo.</p>
+
+<h3>La regla del CNAME y por qué importa para tu dominio</h3>
+
+<p>La RFC 1034 (sección 3.6.2) establece una regla simple con consecuencias grandes: si un nodo tiene un registro CNAME, no debe haber en él ningún otro dato. Un CNAME dice "este nombre es un alias de aquel otro", por lo que cualquier otro registro en el mismo nombre sería contradictorio. Ahora bien, el nombre en la cima de una zona (el "ápice", como <code>ejemplo.org</code> a secas) siempre tiene al menos los registros SOA y NS. De ello se deduce, aunque la RFC no lo enuncie así, que <strong>no se puede poner un CNAME en el ápice de una zona</strong>. Es la razón por la que, para apuntar un dominio raíz a un servicio que te da un nombre de host (como el <code>algo.azurestaticapps.net</code> de un alojamiento estático), los proveedores de DNS ofrecen registros especiales no estándar (a menudo llamados ALIAS o ANAME, un dato general que no procede de las RFC), o el servicio te pide validar la propiedad con un registro TXT, y apuntar el subdominio <code>www</code> con un CNAME normal.</p>
+
+<h2 id="3-la-resolucion-paso-a-paso">La resolución, paso a paso</h2>
+
+<p>Veamos qué ocurre cuando una aplicación pide la dirección de <code>www.ejemplo.org</code>. Intervienen varias piezas, y es útil distinguirlas:</p>
+
+<ul>
+  <li>El <strong>resolutor de apoyo</strong> (<em>stub resolver</em>), una pequeña biblioteca del sistema operativo que reenvía la pregunta a un servidor recursivo configurado. En Linux, ese servidor se indica en <code>/etc/resolv.conf</code>.</li>
+  <li>El <strong>servidor recursivo</strong>, que hace el trabajo pesado y guarda las respuestas en caché.</li>
+  <li>Los <strong>servidores autoritativos</strong>, que guardan realmente los datos de cada zona: los de la raíz, los del dominio de primer nivel y los del propio dominio.</li>
+</ul>
+
+<h3>Recursivo frente a iterativo</h3>
+
+<p>La RFC 1034 distingue dos modos de consulta. En el modo <strong>iterativo</strong>, el servidor que recibe la pregunta no la resuelve del todo: "refiere al cliente a otro servidor y le deja perseguir la consulta"; la RFC dice que este enfoque es el preferido para el estilo de acceso por datagramas. En el modo <strong>recursivo</strong>, el primer servidor persigue la consulta por el cliente, preguntando a otros servidores. Todos los servidores deben soportar consultas no recursivas; la recursión es opcional (sección 4.3.1).</p>
+
+<p>En la práctica el resolutor de apoyo hace una consulta recursiva a su servidor configurado, y este, si no tiene la respuesta en caché, la resuelve iterativamente: pregunta a un servidor raíz, que le remite a los servidores del dominio de primer nivel; pregunta a estos, que le remiten a los del dominio; y pregunta a esos, que responden con el dato. La estrategia general que describe la RFC es buscar primero los registros NS que ya se tengan, empezando por el nombre buscado y subiendo por el árbol, y si no se encuentra nada, empezar por una lista de servidores de arranque (<em>safety belt</em>), formada por servidores raíz y servidores del dominio local del equipo.</p>
+
+<h3>La caché</h3>
+
+<p>La caché es lo que hace viable el sistema. La RFC dice que, si un dato está en la caché, se asume que es "suficientemente bueno para el uso normal". Si el servidor recursivo ya conoce los NS de <code>ejemplo.org</code> por una consulta anterior, se salta la raíz y el dominio de primer nivel; si conoce la propia respuesta y no ha caducado, responde de inmediato. Por eso la mayoría de las resoluciones cotidianas tardan milisegundos y las pocas que recorren la jerarquía completa tardan decenas o cientos.</p>
+
+<h2 id="4-el-ttl-cuanto-vive-una-respuesta">El TTL: cuánto vive una respuesta</h2>
+
+<p>Cada registro lleva un <strong>TTL</strong> (<em>time to live</em>), un entero de 32 bits que, según la RFC 1035, especifica el intervalo de tiempo, en segundos, durante el que el registro puede guardarse en caché. Un TTL de cero significa que el registro solo vale para la transacción en curso y no debe cachearse. La RFC 1034 lo expresa así: el TTL describe cuánto tiempo puede guardarse un registro antes de descartarlo. (Un detalle curioso: la propia RFC 1035 describe el TTL como entero con signo en una sección y sin signo en otra, una inconsistencia conocida del texto.)</p>
+
+<p>De ahí se derivan consejos operativos de gran valor práctico:</p>
+
+<ul>
+  <li><strong>Un cambio no es instantáneo.</strong> Cuando cambias un registro, los resolutores que tengan la versión antigua en caché seguirán sirviéndola hasta que su TTL caduque. Si el TTL es de un día, la migración tardará hasta un día en notarse en todos los sitios.</li>
+  <li><strong>Baja el TTL antes de migrar.</strong> Una práctica habitual, que no proviene de las RFC citadas pero se deduce directamente de su definición de TTL, es reducir el TTL (por ejemplo, a unos pocos minutos) con suficiente antelación, hacer el cambio y volver a subirlo después. La antelación debe ser, como mínimo, el TTL anterior.</li>
+  <li><strong>El TTL es un compromiso.</strong> Un TTL bajo permite cambios y conmutaciones rápidas pero genera más consultas y más latencia; uno alto reduce la carga y acelera las respuestas a costa de flexibilidad.</li>
+</ul>
+
+<p>Un efecto frecuente al esperar que "se propague" un cambio es atribuirlo a una supuesta propagación a través de Internet. No existe tal cosa como una propagación activa: es la caducidad de cachés independientes, cada una con su propio reloj, lo que produce la sensación de que unos usuarios ven el cambio antes que otros.</p>
+
+<h2 id="5-la-cache-negativa-cuando-no-existe-tambi">La caché negativa: cuando "no existe" también se recuerda</h2>
+
+<p>No solo se guardan las respuestas positivas. La RFC 2308 (marzo de 1998, que actualiza las RFC 1034 y 1035) especifica el comportamiento de la <strong>caché negativa</strong>, que se aplica a dos tipos de respuesta:</p>
+
+<ul>
+  <li><strong>NXDOMAIN</strong> (<em>name error</em>): el nombre consultado no existe. Se indica con el código de error "Name Error" en el campo RCODE.</li>
+  <li><strong>NODATA</strong>: el nombre existe, pero no tiene registros del tipo pedido. Se manifiesta como una respuesta con RCODE NOERROR y sin datos relevantes en la sección de respuesta; como no hay un código específico, hay que deducirla del contenido.</li>
+</ul>
+
+<p>¿Cuánto se recuerda? La RFC establece que el TTL de la respuesta negativa se toma del <strong>mínimo</strong> entre el campo <code>MINIMUM</code> del registro SOA y el propio TTL del SOA, que el servidor autoritativo incluye en la sección de autoridad de la respuesta. Ese es el nuevo significado que la RFC 2308 da al campo <code>MINIMUM</code> del SOA: ya no es el TTL por defecto de los registros de la zona, sino el TTL de las respuestas negativas. Cuando el TTL llega a cero, la respuesta negativa en caché no debe volver a usarse. Además, la RFC aconseja que los resolutores limiten el tiempo máximo de la caché negativa, señala que valores de una a tres horas han funcionado bien y que los que superan un día han resultado problemáticos.</p>
+
+<div class="alert">
+  <strong>El síntoma típico.</strong> Creas un registro nuevo (por ejemplo, un TXT de verificación o un subdominio) justo después de que alguien lo haya consultado y haya recibido NXDOMAIN o NODATA. Hasta que caduque la respuesta negativa, los servidores recursivos que la guardaron seguirán respondiendo "no existe", aunque el registro ya esté publicado en el servidor autoritativo. Si el <code>MINIMUM</code> de tu SOA es de una hora, la espera puede ser de hasta una hora. Consultar directamente al servidor autoritativo (con <code>dig @servidor nombre</code>) permite distinguir "no está publicado" de "está publicado pero hay una caché negativa por medio".
+</div>
+
+<h2 id="6-los-codigos-de-respuesta-leer-el-rcode">Los códigos de respuesta: leer el RCODE</h2>
+
+<p>La cabecera de un mensaje DNS (RFC 1035, sección 4.1.1) lleva un identificador de 16 bits que empareja preguntas y respuestas, un bit que indica si es consulta o respuesta (<code>QR</code>), un código de operación, y varios bits de estado: <code>AA</code> (respuesta autoritativa), <code>TC</code> (mensaje truncado), <code>RD</code> (recursión deseada, que el cliente pone en la consulta y se copia en la respuesta) y <code>RA</code> (recursión disponible). Y un código de respuesta, <code>RCODE</code>, cuyos valores originales son:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>RCODE</th><th>Nombre</th><th>Significado</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>0</td><td>Sin error</td><td>La consulta se procesó correctamente (puede no haber datos: NODATA).</td></tr>
+    <tr><td>1</td><td>Error de formato</td><td>El servidor no pudo interpretar la consulta.</td></tr>
+    <tr><td>2</td><td>Fallo del servidor (SERVFAIL)</td><td>El servidor no pudo procesar la consulta por un problema propio.</td></tr>
+    <tr><td>3</td><td>Error de nombre (NXDOMAIN)</td><td>El nombre no existe (solo significativo en un servidor autoritativo).</td></tr>
+    <tr><td>4</td><td>No implementado</td><td>El servidor no soporta ese tipo de consulta.</td></tr>
+    <tr><td>5</td><td>Rechazado (REFUSED)</td><td>El servidor se niega por razones de política.</td></tr>
+  </tbody>
+</table></div>
+
+<p>Saber distinguirlos acelera el diagnóstico. <code>NXDOMAIN</code> significa que el nombre no existe; <code>NOERROR</code> sin datos, que existe pero no para ese tipo (típicamente se pidió un <code>AAAA</code> a un host que solo tiene <code>A</code>); <code>SERVFAIL</code> apunta a un fallo del lado del servidor recursivo o autoritativo (un servidor autoritativo caído, una firma DNSSEC inválida...); y <code>REFUSED</code>, a una política: por ejemplo, un servidor que no ofrece recursión a tu red.</p>
+
+<h2 id="7-udp-tcp-y-los-mensajes-grandes">UDP, TCP y los mensajes grandes</h2>
+
+<p>El DNS original usa principalmente UDP, que es ligero y rápido. La RFC 1035 limita los mensajes por UDP a 512 octetos (sin contar cabeceras IP y UDP): los mensajes más largos se truncan y se activa el bit <code>TC</code>. Cuando se usa TCP, el servidor escucha en el mismo puerto (53) y cada mensaje va precedido de un campo de longitud de dos bytes.</p>
+
+<p>Con el tiempo, 512 octetos se quedaron cortos, sobre todo con IPv6 y DNSSEC, que añaden registros y firmas. Dos RFC resolvieron el problema:</p>
+
+<ul>
+  <li><strong>EDNS(0)</strong> (RFC 6891, abril de 2013, STD 75) define un mecanismo de extensión: un pseudo-registro <code>OPT</code> (tipo 41) que permite anunciar, entre otras cosas, una capacidad de respuesta mayor. El tamaño de carga útil UDP que acepta el solicitante se lleva en el campo CLASS del registro OPT, y los valores inferiores a 512 se tratan como 512. La RFC califica 4096 octetos como "un buen compromiso" y "un punto de partida" (no como un límite), y menciona que elegir entre 1280 y 1410 bytes para IP sobre Ethernet sería razonable (por el contexto, una cifra que busca evitar la fragmentación de los paquetes, aunque no hemos comprobado el motivo exacto que da la RFC). El bit <code>DO</code> (<em>DNSSEC OK</em>), que indica que el cliente entiende DNSSEC, está en las banderas del campo TTL del OPT y se define por referencia a la RFC 3225.</li>
+  <li><strong>DNS sobre TCP</strong> (RFC 7766, marzo de 2016) eleva TCP de "opcional" a obligatorio: "todas las implementaciones DNS de propósito general deben soportar tanto UDP como TCP". Los motivos que da son prácticos: el truncamiento en el límite de 512 bytes es hoy habitual y las respuestas firmadas con DNSSEC superan rutinariamente los 1500 bytes de una trama Ethernet típica. Los servidores deben responder por el mismo transporte con el que llegó la consulta, deben esperar consultas encadenadas (<em>pipelined</em>) y deberían procesarlas de forma concurrente. Tanto clientes como servidores deberían soportar la reutilización de conexiones, con tiempos de inactividad "del orden de segundos".</li>
+</ul>
+
+<p>Para ti, como administrador, la consecuencia es concreta: <strong>un cortafuegos que bloquee el puerto 53 por TCP rompe cosas</strong>, aunque la mayoría de las consultas sigan funcionando por UDP. Fallarán precisamente las respuestas grandes (registros de correo con muchas políticas, respuestas DNSSEC), un síntoma intermitente y difícil de atribuir. Tanto <code>dig +tcp</code> como la opción <code>use-vc</code> de <code>resolv.conf</code> (que fuerza TCP) sirven para comprobar ese camino.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="8-dns-sobre-https">DNS sobre HTTPS</h2>
+
+<p>El DNS tradicional viaja en claro, de modo que cualquier observador de la red ve los nombres que consultas. La RFC 8484 (octubre de 2018, estándar) define DoH: <em>DNS Queries over HTTPS</em>, un protocolo para enviar consultas y recibir respuestas de DNS sobre HTTPS, de modo que cada pareja consulta-respuesta se corresponde con un intercambio HTTP. Los detalles que fija son:</p>
+
+<ul>
+  <li>El contenido es un único mensaje DNS en su formato binario, con el tipo de medio <code>application/dns-message</code> y un tamaño máximo de 65.535 bytes.</li>
+  <li>Dos métodos HTTP: <code>GET</code>, con la consulta codificada en base64url (sin relleno) en una variable llamada <code>dns</code>, y <code>POST</code>, con la consulta como cuerpo sin codificar. Los servidores DoH deben implementar los dos.</li>
+  <li>HTTP/2 es la versión mínima recomendada.</li>
+  <li>El almacenamiento en caché de HTTP se integra con el TTL de DNS: los servidores deberían asignar una vigencia HTTP explícita, que debe ser menor o igual que el menor TTL de la sección de respuesta, y los clientes deben descontar el valor de la cabecera <code>Age</code>.</li>
+</ul>
+
+<p>DoH cifra la consulta entre el cliente y el servidor que la resuelve, pero no la hace anónima: el servidor DoH sigue viendo todo lo que preguntas, así que lo que se gana o se pierde es una cuestión de a quién se confía esa información. La RFC 7858 (DNS sobre TLS) ofrece una variante similar sobre un puerto propio; no la hemos consultado para este artículo y la mencionamos solo como referencia.</p>
+
+<h2 id="9-dnssec-autenticar-los-datos">DNSSEC: autenticar los datos</h2>
+
+<p>DNS se diseñó cuando la confianza entre los participantes era mucho mayor, y por sí solo no prueba que una respuesta sea legítima: un atacante que pueda inyectar respuestas falsas puede redirigir a los usuarios a un servidor propio. DNSSEC (RFC 4033, marzo de 2005) añade a DNS, según su resumen, <strong>autenticación del origen de los datos e integridad</strong>, mediante firmas digitales sobre los conjuntos de registros (<em>RRset</em>).</p>
+
+<h3>Lo que DNSSEC no hace</h3>
+
+<p>Es tan importante saber lo que no ofrece. La RFC es explícita: DNSSEC <strong>no proporciona confidencialidad</strong>, no está diseñado para el control de acceso ni para distinguir entre solicitantes, y <strong>no ofrece protección contra ataques de denegación de servicio</strong> (la sección 12 añade que incluso introduce una nueva clase de riesgo de denegación por coste criptográfico). Tampoco protege las transferencias de zona ni las actualizaciones dinámicas, que requieren otros mecanismos como TSIG o SIG(0).</p>
+
+<h3>Los registros y la cadena de confianza</h3>
+
+<p>DNSSEC introduce nuevos tipos de registro:</p>
+
+<ul>
+  <li><code>RRSIG</code>: contiene la firma de un conjunto de registros.</li>
+  <li><code>DNSKEY</code>: contiene las claves públicas con las que verificar las firmas.</li>
+  <li><code>DS</code> (<em>delegation signer</em>): se publica en la zona <em>padre</em>, en el punto de delegación, e identifica las claves de la zona hija. Es el eslabón que une las zonas.</li>
+  <li><code>NSEC</code>: autentica las respuestas negativas, demostrando que un nombre o un tipo no existe.</li>
+</ul>
+
+<p>La validación sigue una <strong>cadena de confianza</strong>. Un resolutor parte de un <em>ancla de confianza</em> (una clave DNSKEY o el hash DS de una clave, configurada de antemano) y verifica cada eslabón: la clave de la zona raíz firma el DS de un dominio de primer nivel, cuya clave firma el DS del dominio, cuya clave firma, por fin, los datos pedidos. La RFC resume la forma típica como DNSKEY → [DS → DNSKEY]* → RRset. Las zonas suelen usar dos tipos de clave con papeles distintos: la <em>clave de firma de claves</em> (KSK), que firma otras claves y puede tener una vigencia más larga porque sirve de punto de entrada estable, y la <em>clave de firma de zona</em> (ZSK), que firma los datos y puede rotarse con más frecuencia. La asignación de esos papeles es una decisión operativa: la validación no los distingue.</p>
+
+<h3>Estados de validación</h3>
+
+<p>Un resolutor que valida clasifica cada respuesta en uno de cuatro estados, definidos en la sección 5 de la RFC:</p>
+
+<ul>
+  <li><strong>Secure</strong>: hay ancla de confianza y cadena válida, y todas las firmas se verifican.</li>
+  <li><strong>Insecure</strong>: la cadena llega a una delegación con prueba firmada de que no hay registro DS, de modo que el subárbol es demostrablemente no firmado.</li>
+  <li><strong>Bogus</strong>: una delegación segura indica que los datos deberían estar firmados, pero la validación falla (firmas ausentes o caducadas, por ejemplo).</li>
+  <li><strong>Indeterminate</strong>: no hay ancla de confianza que cubra esa parte del árbol; es el estado por defecto.</li>
+</ul>
+
+<p>Un servidor recursivo seguro señala que los datos validaron con el bit <code>AD</code>. Un cliente puede fiarse de ese bit si confía en su servidor recursivo; si quiere validar por su cuenta, usa el bit <code>CD</code> (comprobación desactivada). Que un resolutor que valida devuelva <code>SERVFAIL</code> ante datos "bogus" es el comportamiento habitual en la práctica, pero es un dato general que no procede de las páginas consultadas, y tiene una consecuencia operativa importante: <strong>una firma caducada o un DS desactualizado hace que tu dominio deje de resolverse para quienes validan</strong>, aunque siga resolviéndose para quienes no. Al cambiar de proveedor de DNS en un dominio con DNSSEC, la actualización del registro DS en el registrador es un paso crítico.</p>
+
+<h2 id="10-el-resolutor-del-sistema-resolv-conf">El resolutor del sistema: resolv.conf</h2>
+
+<p>En Linux, el resolutor de apoyo lee <code>/etc/resolv.conf</code>, cuya página del manual documenta parámetros con valores por defecto que explican muchos retrasos:</p>
+
+<ul>
+  <li><strong><code>nameserver</code></strong>: puede haber hasta tres servidores (<code>MAXNS</code>), uno por línea. Se consultan en el orden en que aparecen. Si una consulta agota su tiempo, se prueba el siguiente; tras probarlos todos, el ciclo se repite hasta agotar los reintentos. Sin ninguno, se usa el servidor de la máquina local.</li>
+  <li><strong><code>options timeout:n</code></strong>: segundos de espera por consulta; por defecto 5 y como máximo 30.</li>
+  <li><strong><code>options attempts:n</code></strong>: número de reintentos; por defecto 2 y como máximo 5.</li>
+  <li><strong><code>options rotate</code></strong>: reparte la carga entre servidores de forma rotatoria, en lugar de usar siempre el primero.</li>
+  <li><strong><code>options edns0</code></strong> y <strong><code>use-vc</code></strong>: habilitan las extensiones EDNS y fuerzan el uso de TCP, respectivamente.</li>
+</ul>
+
+<h3>Por qué una aplicación tarda 5 segundos</h3>
+
+<p>Un caso clásico: el primer servidor DNS de la lista no responde (caído, bloqueado por un cortafuegos o inalcanzable tras un cambio de red). El resolutor espera los 5 segundos de <code>timeout</code> y solo entonces prueba el segundo. Para el usuario, el síntoma es una aplicación que tarda 5 segundos más de lo esperado en cada resolución que no esté en caché, o 10 si se repite el ciclo, y que luego funciona con normalidad. El cálculo es sencillo: con tres servidores y los valores por defecto, la peor situación (todos mudos) podría tardar tres servidores × 5 s × 2 intentos = 30 segundos antes de fallar, aunque la propia página advierte de que el <code>timeout</code> puede no ser el tiempo total de una llamada a la API. La solución es corregir la lista de servidores y bajar el <code>timeout</code> solo si se entiende la consecuencia: valores demasiado bajos generan fallos espurios con servidores lentos.</p>
+
+<h3>Dominios de búsqueda y ndots</h3>
+
+<p>Otra fuente de comportamientos sorprendentes son los <strong>dominios de búsqueda</strong>. La directiva <code>search</code> define una lista de sufijos que se añaden a los nombres "cortos". Por defecto la lista tiene una sola entrada: el dominio local, tomado como todo lo que sigue al primer punto del nombre de la máquina. La opción <code>ndots:n</code> decide cuándo se prueban esos sufijos: según la página, su valor por defecto es 1, y un nombre con al menos <em>n</em> puntos se prueba primero como nombre absoluto antes de añadirle los sufijos; uno con menos puntos recorre primero la lista de búsqueda. (En glibc 2.25 y anteriores, la lista estaba limitada a seis dominios y 256 caracteres; desde la 2.26 no hay límite.)</p>
+
+<h3>El caso de Kubernetes: ndots:5</h3>
+
+<p>En un pod de Kubernetes, el kubelet configura este archivo. La documentación muestra su contenido típico, con un servidor de nombres interno y una lista de búsqueda que contiene el espacio de nombres del pod y los dominios del clúster, además de <code>options ndots:5</code>. La razón es que los nombres internos de los Services tienen la forma <code>mi-servicio.mi-espacio.svc.cluster.local</code> y se quiere poder escribir solo <code>mi-servicio</code>. Pero esto tiene un coste, que la página de Kubernetes no explica; lo que sigue es el comportamiento general del resolutor descrito arriba, aplicado a este caso. Con <code>ndots:5</code>, un nombre externo como <code>api.ejemplo.org</code> (con dos puntos, menos de cinco) <em>no</em> se prueba primero como absoluto: se prueba antes con cada sufijo (<code>api.ejemplo.org.mi-espacio.svc.cluster.local</code>, luego con <code>svc.cluster.local</code> y con <code>cluster.local</code>), y solo al final como el nombre real. Si además el resolutor pide registros <code>A</code> y <code>AAAA</code>, una sola resolución de un nombre externo puede acabar en hasta ocho consultas, la mayoría de las cuales terminan en NXDOMAIN. En un servicio que hace muchas llamadas a APIs externas, ese multiplicador carga al servidor DNS del clúster y añade latencia.</p>
+
+<p>La mitigación más sencilla, que es una propiedad general de los nombres DNS, es escribir los nombres externos como absolutos, con un punto final (<code>api.ejemplo.org.</code>): así se salta la lista de búsqueda. Otra es ajustar <code>ndots</code> en la configuración de DNS del pod; los detalles de <code>dnsPolicy</code> y <code>dnsConfig</code> están en la documentación de Kubernetes, cuya parte final no hemos leído para este artículo. Si quieres ver cómo encajan estas piezas en el clúster, lo explicamos en <a href="/articulos/kubernetes-arquitectura-interna.html">Kubernetes bajo el capó</a>.</p>
+
+<h2 id="11-diagnostico-con-dig">Diagnóstico con dig</h2>
+
+<p><code>dig</code> (<em>domain information groper</em>) es la herramienta de referencia. Según la documentación de BIND, es "una herramienta flexible para interrogar servidores de nombres". Su sintaxis básica es <code>dig @servidor nombre tipo</code>: si no se indica tipo, pide un <code>A</code>; si no se indica servidor, usa los de <code>/etc/resolv.conf</code>. Las opciones más útiles, documentadas en esa página, son estas:</p>
+
+<ul>
+  <li><code>+short</code>: respuesta resumida, una línea por dato.</li>
+  <li><code>+noall +answer</code>: muestra solo la sección de respuesta.</li>
+  <li><code>+trace</code>: sigue el camino de delegación desde los servidores raíz, haciendo consultas iterativas y mostrando la respuesta de cada servidor.</li>
+  <li><code>+norecurse</code>: apaga el bit RD; útil para ver qué tiene en caché un servidor recursivo sin que resuelva.</li>
+  <li><code>+dnssec</code>: pide los registros DNSSEC y activa el bit DO.</li>
+  <li><code>+tcp</code>: usa TCP en lugar de UDP.</li>
+  <li><code>+multiline</code>: imprime los registros largos, como el SOA, en varias líneas comentadas.</li>
+  <li><code>-x</code>: resolución inversa simplificada (construye el nombre <code>in-addr.arpa</code> o <code>ip6.arpa</code> y consulta el PTR).</li>
+  <li><code>+stats</code>: estadísticas como el tiempo de consulta y el tamaño de la respuesta.</li>
+</ul>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Consulta normal con el resolutor del sistema
+dig www.ejemplo.org
+
+# Solo la respuesta, sin ruido
+dig +noall +answer www.ejemplo.org A
+
+# Preguntar a un servidor concreto (por ejemplo, el autoritativo de la zona)
+dig @ns1.ejemplo.org www.ejemplo.org A +norecurse
+
+# Seguir la delegación desde la raíz
+dig +trace www.ejemplo.org
+
+# El SOA, para ver el MINIMUM (TTL negativo) y la serie
+dig +multiline ejemplo.org SOA
+
+# Comprobar el camino TCP (por si un cortafuegos lo bloquea)
+dig +tcp www.ejemplo.org
+
+# Registros DNSSEC y estado de validación (mira el bit "ad" en la cabecera)
+dig +dnssec www.ejemplo.org
+
+# Resolución inversa de una dirección
+dig -x 192.0.2.10</code></pre>
+        </div>
+
+<p>Una nota de honestidad con las fuentes: la parte de la documentación de <code>dig</code> que describe el formato de salida (las secciones de cabecera, pregunta, respuesta, autoridad y adicional) no pudimos leerla, de modo que no la detallamos aquí. Sí podemos decir, por la propia RFC 1035, qué significan los campos de la cabecera que verás: los bits <code>qr</code>, <code>aa</code>, <code>tc</code>, <code>rd</code> y <code>ra</code> y el código de respuesta.</p>
+
+<h3>Un método para localizar el problema</h3>
+
+<ol>
+  <li><strong>Comprueba qué ve el cliente.</strong> Pregunta con el resolutor del sistema (<code>dig nombre</code>) y fíjate en el código de respuesta y en el tiempo de consulta.</li>
+  <li><strong>Pregunta al servidor autoritativo.</strong> Obtén los NS con <code>dig ejemplo.org NS</code> y consulta a uno directamente con <code>+norecurse</code>. Si el autoritativo responde bien y el recursivo no, el problema está en la caché o en el recursivo; si el autoritativo falla, el problema es de la zona.</li>
+  <li><strong>Recorre la delegación.</strong> Con <code>+trace</code> comprueba que cada nivel remite al siguiente correctamente. Un registro NS desactualizado en el registrador o un servidor lento en la cadena son causas frecuentes.</li>
+  <li><strong>Compara servidores recursivos.</strong> Si distintos resolutores devuelven datos diferentes, hay cachés con versiones distintas, y el TTL te dice cuánto durará la divergencia.</li>
+  <li><strong>Prueba TCP.</strong> Si UDP funciona y TCP no, hay un filtro en medio.</li>
+  <li><strong>Con DNSSEC, valida.</strong> Compara una consulta con y sin validación; si solo falla con ella, mira firmas caducadas y el DS en el registrador.</li>
+  <li><strong>Revisa la configuración local.</strong> <code>/etc/resolv.conf</code>: orden de servidores, <code>timeout</code>, <code>search</code> y <code>ndots</code>.</li>
+</ol>
+
+<p>Desde un programa, el comportamiento del resolutor del sistema se puede observar con unas pocas líneas de la biblioteca estándar de Python. El siguiente ejemplo, no ejecutado en la preparación de este artículo, mide cuánto tarda una resolución y qué direcciones devuelve, de modo que puedas detectar los retrasos de cinco segundos descritos arriba:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>import socket
+import time
+
+def resolver(nombre, puerto=443):
+    t0 = time.perf_counter()
+    try:
+        infos = socket.getaddrinfo(nombre, puerto, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        dt = (time.perf_counter() - t0) * 1000
+        print(f"{nombre}: fallo ({e}) en {dt:.0f} ms")
+        return
+    dt = (time.perf_counter() - t0) * 1000
+    direcciones = sorted({i[4][0] for i in infos})
+    print(f"{nombre}: {direcciones} en {dt:.0f} ms")
+
+for n in ["www.ejemplo.org", "api.ejemplo.org", "api.ejemplo.org."]:
+    resolver(n)</code></pre>
+        </div>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="12-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>"El DNS se propaga por Internet"</h3>
+
+<p>No hay propagación activa: hay cachés independientes que caducan cada una a su hora. Por eso distintos usuarios ven el cambio en momentos distintos, y por eso bajar el TTL antes del cambio es lo que de verdad acorta la espera.</p>
+
+<h3>"Si el registro está bien en mi panel, está bien en todas partes"</h3>
+
+<p>El panel del proveedor muestra lo que se publicó en el servidor autoritativo. Lo que ve el mundo depende de las cachés, de la delegación correcta en el registrador y, si usas DNSSEC, de que el registro DS coincida con las claves de la zona.</p>
+
+<h3>"Un CNAME en el dominio raíz es posible"</h3>
+
+<p>La regla del CNAME (nada más en el mismo nombre) lo impide, porque el ápice de la zona siempre tiene SOA y NS. Para apuntar un dominio raíz a un nombre de host hay que usar los mecanismos propios de tu proveedor o servicio.</p>
+
+<h3>"DNSSEC cifra las consultas"</h3>
+
+<p>No: autentica los datos, pero la RFC dice expresamente que no proporciona confidencialidad. Para cifrar las consultas hacen falta DoH u otros transportes cifrados.</p>
+
+<h3>"Un servidor DNS solo necesita UDP"</h3>
+
+<p>La RFC 7766 exige que toda implementación de propósito general soporte también TCP. Un cortafuegos que bloquee el puerto 53 por TCP produce fallos intermitentes con las respuestas grandes.</p>
+
+<h3>"Si el nombre no resuelve ahora, resolverá en cuanto lo cree"</h3>
+
+<p>Solo si nadie guardó antes una respuesta negativa. Los NXDOMAIN y NODATA también se cachean, hasta el tiempo que fije el SOA de la zona (el menor entre su <code>MINIMUM</code> y su TTL). Crear el registro justo después de una consulta fallida puede obligarte a esperar.</p>
+
+<h3>"Más servidores en resolv.conf, más fiabilidad"</h3>
+
+<p>Solo hay sitio para tres, se consultan en orden y cada servidor mudo cuesta el <code>timeout</code>. Un primer servidor defectuoso retrasa todas las resoluciones. Es mejor una lista corta y sana.</p>
+
+<h2 id="13-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Qué diferencia hay entre un servidor autoritativo y uno recursivo?</h3>
+
+<p>El autoritativo guarda los datos de una zona y responde con autoridad sobre ellos (bit <code>AA</code>). El recursivo no guarda zonas propias: resuelve preguntas en nombre de clientes consultando a otros servidores y guarda en caché las respuestas. Un mismo software puede hacer ambas cosas, pero conviene separar los papeles por seguridad.</p>
+
+<h3>¿Cuántos servidores raíz hay?</h3>
+
+<p>No lo hemos verificado en las fuentes consultadas, por lo que no damos una cifra. Lo documentado en la RFC 1034 es el mecanismo: un resolutor arranca con una lista de servidores conocidos (en la práctica, las raíces) y desde ahí sigue las delegaciones.</p>
+
+<h3>¿Por qué <code>dig</code> y el navegador a veces dan respuestas distintas?</h3>
+
+<p>Porque pueden usar resolutores distintos: el navegador puede tener su propio resolutor (incluso con DoH) y <code>dig</code> usa por defecto los servidores de <code>/etc/resolv.conf</code>. También pueden diferir por cachés con TTL distintos y por los dominios de búsqueda del sistema.</p>
+
+<h3>¿Qué TTL debo poner?</h3>
+
+<p>No hay una cifra universal. Para registros que no cambian, TTL largos (horas) reducen la carga y la latencia. Para los que puedes necesitar cambiar o conmutar con rapidez, TTL cortos (minutos) a cambio de más consultas. La clave es planificar los cambios: bajar el TTL con antelación suficiente.</p>
+
+<h3>¿Cómo sé si un dominio tiene DNSSEC activo?</h3>
+
+<p>Consultando su registro <code>DS</code> en la zona padre y los <code>DNSKEY</code> en la zona (<code>dig ejemplo.org DS</code>, <code>dig ejemplo.org DNSKEY +dnssec</code>), y observando si un resolutor que valida devuelve el bit <code>ad</code> en la respuesta.</p>
+
+<h3>¿Por qué mi dominio deja de resolver tras cambiar de proveedor de DNS?</h3>
+
+<p>Un motivo frecuente en dominios con DNSSEC es que el registro DS del registrador sigue apuntando a las claves del proveedor anterior: los resolutores que validan consideran los datos "bogus" y devuelven error. Otro es que los NS del registrador no se hayan actualizado, y los resolutores sigan preguntando a los servidores antiguos.</p>
+
+<h3>¿Hace falta DoH si ya uso HTTPS?</h3>
+
+<p>Son cosas distintas. HTTPS protege la conexión con el sitio web; DoH protege la consulta de DNS que la precede. Sin DoH (u otro DNS cifrado), un observador de la red puede ver los nombres que consultas aunque no vea el contenido de las páginas.</p>
+
+<h2 id="14-conclusion">Conclusión</h2>
+
+<p>DNS es una pieza antigua que ha envejecido sorprendentemente bien gracias a un diseño sencillo: una jerarquía de zonas con delegaciones, registros que se cachean según un TTL explícito y un protocolo de mensajes pequeño que se ha ido extendiendo con EDNS, TCP obligatorio, DNSSEC y, más recientemente, transportes cifrados como DoH. Casi todos sus comportamientos "misteriosos" se explican con tres ideas: <strong>todo se cachea</strong> (incluso lo que no existe), <strong>cada caché tiene su propio reloj</strong> y <strong>la configuración local del resolutor</strong> (orden de servidores, tiempos de espera y dominios de búsqueda) <strong>tiene efectos directos en la latencia</strong>.</p>
+
+<p>El método de diagnóstico con <code>dig</code> (preguntar al cliente, al autoritativo, recorrer la delegación, comparar resolutores, probar TCP y validar DNSSEC) permite localizar el origen de casi cualquier fallo en pocos minutos. Y las decisiones de diseño que más ahorran problemas son pequeñas y baratas: bajar el TTL antes de migrar, no dejar servidores muertos en <code>resolv.conf</code>, no bloquear TCP en el puerto 53, escribir los nombres externos como absolutos en entornos con <code>ndots</code> alto y mantener actualizado el registro DS cuando se cambia de proveedor.</p>
+
+<p>El siguiente paso lógico es el de la operación: cuando un servicio ya resuelve, conecta y cifra, hay que saber qué está pasando dentro de él. De métricas, registros y trazas hablamos en otro artículo de esta serie.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Mockapetris, P. «RFC 1034: Domain Names – Concepts and Facilities». IETF, noviembre de 1987. <a href="https://www.rfc-editor.org/rfc/rfc1034.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc1034.html</a> (consultado el 27-10-2026; se leyeron 100.000 de 128.880 caracteres).</li>
+  <li>Mockapetris, P. «RFC 1035: Domain Names – Implementation and Specification». IETF. <a href="https://www.rfc-editor.org/rfc/rfc1035.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc1035.html</a> (consultado el 27-10-2026; se leyeron 100.000 de 125.646 caracteres).</li>
+  <li>Andrews, M. «RFC 2308: Negative Caching of DNS Queries (DNS NCACHE)». IETF, marzo de 1998. <a href="https://www.rfc-editor.org/rfc/rfc2308.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc2308.html</a> (consultado el 27-10-2026).</li>
+  <li>Arends, R. et al. «RFC 4033: DNS Security Introduction and Requirements». IETF, marzo de 2005. <a href="https://www.rfc-editor.org/rfc/rfc4033.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc4033.html</a> (consultado el 27-10-2026).</li>
+  <li>Damas, J., Graff, M. y Vixie, P. «RFC 6891: Extension Mechanisms for DNS (EDNS(0))». IETF, abril de 2013 (STD 75). <a href="https://www.rfc-editor.org/rfc/rfc6891.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc6891.html</a> (consultado el 27-10-2026).</li>
+  <li>Dickinson, J. et al. «RFC 7766: DNS Transport over TCP – Implementation Requirements». IETF, marzo de 2016. <a href="https://www.rfc-editor.org/rfc/rfc7766.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc7766.html</a> (consultado el 27-10-2026).</li>
+  <li>Hoffman, P. y McManus, P. «RFC 8484: DNS Queries over HTTPS (DoH)». IETF, octubre de 2018. <a href="https://www.rfc-editor.org/rfc/rfc8484.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc8484.html</a> (consultado el 27-10-2026).</li>
+  <li>Linux man-pages. «resolv.conf(5)». <a href="https://man7.org/linux/man-pages/man5/resolv.conf.5.html" rel="noopener">https://man7.org/linux/man-pages/man5/resolv.conf.5.html</a> (consultado el 27-10-2026).</li>
+  <li>Kubernetes. «DNS for Services and Pods». <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/" rel="noopener">https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/</a> (consultado el 27-10-2026; se leyeron 100.000 de 109.726 caracteres).</li>
+  <li>Internet Systems Consortium. «dig – DNS lookup utility». Documentación de BIND 9. <a href="https://bind9.readthedocs.io/en/latest/manpages.html" rel="noopener">https://bind9.readthedocs.io/en/latest/manpages.html</a> (consultado el 27-10-2026; se leyeron 100.000 de 388.160 caracteres).</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/tcp-en-la-practica-handshake-congestion-diagnostico.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[redes]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">TCP en la práctica: handshake, control de congestión y diagnóstico con ss y tcpdump</span>
+          </a></li>
+          <li><a href="/articulos/tls-13-https-certificados-hsts.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[seguridad]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">HTTPS y TLS 1.3: del handshake a los certificados y HSTS</span>
+          </a></li>
+          <li><a href="/articulos/azure-static-web-apps.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[azure]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Azure Static Web Apps</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-que-es-dns-y-que-problema-resuelve" class="text-muted hover:text-accent">Qué es DNS (y qué problema resuelve)</a></li>
+            <li><a href="#2-el-arbol-las-zonas-y-la-delegacion" class="text-muted hover:text-accent">El árbol, las zonas y la delegación</a></li>
+            <li><a href="#3-la-resolucion-paso-a-paso" class="text-muted hover:text-accent">La resolución, paso a paso</a></li>
+            <li><a href="#4-el-ttl-cuanto-vive-una-respuesta" class="text-muted hover:text-accent">El TTL: cuánto vive una respuesta</a></li>
+            <li><a href="#5-la-cache-negativa-cuando-no-existe-tambi" class="text-muted hover:text-accent">La caché negativa: cuando "no existe" también se recuerda</a></li>
+            <li><a href="#6-los-codigos-de-respuesta-leer-el-rcode" class="text-muted hover:text-accent">Los códigos de respuesta: leer el RCODE</a></li>
+            <li><a href="#7-udp-tcp-y-los-mensajes-grandes" class="text-muted hover:text-accent">UDP, TCP y los mensajes grandes</a></li>
+            <li><a href="#8-dns-sobre-https" class="text-muted hover:text-accent">DNS sobre HTTPS</a></li>
+            <li><a href="#9-dnssec-autenticar-los-datos" class="text-muted hover:text-accent">DNSSEC: autenticar los datos</a></li>
+            <li><a href="#10-el-resolutor-del-sistema-resolv-conf" class="text-muted hover:text-accent">El resolutor del sistema: resolv.conf</a></li>
+            <li><a href="#11-diagnostico-con-dig" class="text-muted hover:text-accent">Diagnóstico con dig</a></li>
+            <li><a href="#12-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#13-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#14-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

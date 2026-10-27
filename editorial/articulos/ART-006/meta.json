@@ -1,0 +1,12 @@
+{
+  "id": "ART-006",
+  "slug": "tcp-en-la-practica-handshake-congestion-diagnostico",
+  "titulo": "TCP en la práctica: handshake, control de congestión y diagnóstico con ss y tcpdump",
+  "etiqueta": "redes",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo funciona TCP según las RFC 9293, 5681, 6298 y 9438: handshake, retransmisiones, ventanas, congestión, ajustes del kernel de Linux y diagnóstico con ss y tcpdump.",
+  "palabra_clave": "cómo funciona tcp",
+  "secundarias": ["three-way handshake", "control de congestión", "CUBIC", "TIME_WAIT", "ss y tcpdump"],
+  "relacionados": ["contenedores-linux-namespaces-cgroups-seccomp", "kubernetes-arquitectura-interna", "postgresql-mvcc-vacuum-planificador"],
+  "barra": "cielo"
+}

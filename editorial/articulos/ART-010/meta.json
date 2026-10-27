@@ -1,0 +1,12 @@
+{
+  "id": "ART-010",
+  "slug": "observabilidad-metricas-logs-trazas-opentelemetry",
+  "titulo": "Observabilidad: métricas, logs y trazas con Prometheus y OpenTelemetry",
+  "etiqueta": "devops",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo instrumentar un sistema: modelo de datos de Prometheus, tipos de métrica, PromQL, trazas con OpenTelemetry y W3C Trace Context, logs correlacionados, SLO y alertas.",
+  "palabra_clave": "observabilidad prometheus opentelemetry",
+  "secundarias": ["métricas", "trazas distribuidas", "SLO", "histogramas", "alertas"],
+  "relacionados": ["kubernetes-arquitectura-interna", "systemd-unidades-dependencias-journald-temporizadores", "dns-resolucion-cache-dnssec"],
+  "barra": "indigo"
+}

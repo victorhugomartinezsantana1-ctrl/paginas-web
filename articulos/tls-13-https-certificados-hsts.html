@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTTPS y TLS 1.3: del handshake a los certificados y HSTS — devlog</title>
+  <meta name="description" content="Qué ocurre al abrir una página HTTPS: handshake de TLS 1.3, claves, 0-RTT, certificados y su vida útil, HSTS y una configuración recomendada, con comandos para comprobarla.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/tls-13-https-certificados-hsts.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="HTTPS y TLS 1.3: del handshake a los certificados y HSTS">
+  <meta property="og:description" content="Qué ocurre al abrir una página HTTPS: handshake de TLS 1.3, claves, 0-RTT, certificados y su vida útil, HSTS y una configuración recomendada, con comandos para comprobarla.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/tls-13-https-certificados-hsts.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "HTTPS y TLS 1.3: del handshake a los certificados y HSTS",
+    "description": "Qué ocurre al abrir una página HTTPS: handshake de TLS 1.3, claves, 0-RTT, certificados y su vida útil, HSTS y una configuración recomendada, con comandos para comprobarla.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 5356,
+    "keywords": "cómo funciona tls 1.3, handshake TLS 1.3, HSTS, certificados, forward secrecy, 0-RTT",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/tls-13-https-certificados-hsts.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[seguridad]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          HTTPS y TLS 1.3: del handshake a los certificados y HSTS
+        </h1>
+        <p class="mt-4 text-muted">Qué ocurre al abrir una página HTTPS: handshake de TLS 1.3, claves, 0-RTT, certificados y su vida útil, HSTS y una configuración recomendada, con comandos para comprobarla.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 27 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-que-garantiza-tls-y-que-no" class="text-accent hover:underline">Qué garantiza TLS y qué no</a></li>
+          <li><a href="#2-que-cambio-con-tls-1-3" class="text-accent hover:underline">Qué cambió con TLS 1.3</a></li>
+          <li><a href="#3-el-handshake-paso-a-paso" class="text-accent hover:underline">El handshake paso a paso</a></li>
+          <li><a href="#4-intercambio-de-claves-y-secreto-perfecto" class="text-accent hover:underline">Intercambio de claves y secreto perfecto hacia adelante</a></li>
+          <li><a href="#5-suites-de-cifrado-en-tls-1-3" class="text-accent hover:underline">Suites de cifrado en TLS 1.3</a></li>
+          <li><a href="#6-autenticacion-certificados-y-cadenas-de" class="text-accent hover:underline">Autenticación: certificados y cadenas de confianza</a></li>
+          <li><a href="#7-reanudacion-de-sesion-y-0-rtt" class="text-accent hover:underline">Reanudación de sesión y 0-RTT</a></li>
+          <li><a href="#8-proteccion-contra-la-degradacion" class="text-accent hover:underline">Protección contra la degradación</a></li>
+          <li><a href="#9-hsts-obligar-al-navegador-a-usar-https" class="text-accent hover:underline">HSTS: obligar al navegador a usar HTTPS</a></li>
+          <li><a href="#10-una-configuracion-recomendada" class="text-accent hover:underline">Una configuración recomendada</a></li>
+          <li><a href="#11-comprobar-un-servidor-desde-la-linea-de" class="text-accent hover:underline">Comprobar un servidor desde la línea de comandos</a></li>
+          <li><a href="#12-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#13-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#14-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>El candado del navegador es, para casi todo el mundo, la señal de que "la conexión es segura". Pero ¿qué significa exactamente? Detrás de ese icono hay un protocolo, TLS (<em>Transport Layer Security</em>), que en una fracción de segundo acuerda unas claves de cifrado con un servidor al que acabas de conocer, comprueba que ese servidor es quien dice ser y protege cada byte posterior de ser leído o modificado por quien esté en medio. Es una de las piezas de ingeniería más exitosas de Internet, y también una de las peor entendidas: se confunde con el certificado, con el cifrado, con la privacidad de lo que visitas y con la seguridad de la propia aplicación, que son cosas distintas.</p>
+
+<p>La versión actual del protocolo es TLS 1.3, definido en la RFC 8446 (agosto de 2018). Simplificó y endureció el diseño de TLS 1.2: eliminó algoritmos heredados, cifró casi todo el apretón de manos y redujo el número de viajes de ida y vuelta necesarios para empezar a enviar datos. En este artículo explicamos cómo funciona, mensaje a mensaje, qué garantiza y qué no, cómo se gestionan los certificados (con los cambios recientes en su duración máxima), qué hace la cabecera HSTS y cómo configurar y comprobar un servidor. Nos apoyamos en las RFC del IETF, en las guías de configuración del proyecto TLSRef (heredera de las recomendaciones de Mozilla), en la documentación de Let's Encrypt y en el acta de votación del CA/Browser Forum. Una advertencia de método: no hemos ejecutado ningún comando contra servidores reales para este texto, de modo que los comandos que verás son instrucciones, no capturas de salida; y donde una cifra procede solo de fuentes secundarias, lo decimos. Para entender el coste de cada viaje de ida y vuelta que mencionaremos, te conviene haber leído antes nuestro artículo sobre <a href="/articulos/tcp-en-la-practica-handshake-congestion-diagnostico.html">TCP en la práctica</a>, porque TLS se apoya en una conexión TCP ya establecida.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>TLS proporciona tres propiedades: confidencialidad (cifrado), integridad (nadie modifica los datos sin que se note) y autenticación del servidor (y, opcionalmente, del cliente) mediante certificados.</li>
+    <li>TLS 1.3 elimina el intercambio de claves sin secreto perfecto hacia adelante: según la RFC 8446, todos los mecanismos de intercambio de claves basados en clave pública proporcionan <em>forward secrecy</em>, y todos los mensajes posteriores al ServerHello van cifrados.</li>
+    <li>Un handshake completo cuesta un viaje de ida y vuelta (RTT) antes de que el cliente pueda enviar datos de aplicación, que se suman al RTT del acuerdo de TCP; el modo 0-RTT lo evita para conexiones reanudadas, pero a costa de perder el secreto perfecto en esos datos y de permitir su repetición.</li>
+    <li>La suite obligatoria es <code>TLS_AES_128_GCM_SHA256</code>; las recomendadas son <code>TLS_AES_256_GCM_SHA384</code> y <code>TLS_CHACHA20_POLY1305_SHA256</code>.</li>
+    <li>Los certificados públicos tendrán una vida máxima cada vez más corta (hasta 47 días en 2029 según la votación SC-081v3 del CA/Browser Forum); la renovación automática deja de ser opcional.</li>
+    <li>HSTS obliga a los navegadores a usar siempre HTTPS con un sitio, pero no protege la primera visita y un mal uso de <code>includeSubDomains</code> puede romper subdominios.</li>
+  </ul>
+</div>
+
+<h2 id="1-que-garantiza-tls-y-que-no">Qué garantiza TLS y qué no</h2>
+
+<p>Conviene empezar por el alcance. TLS es un protocolo de transporte seguro: se coloca entre la aplicación (por ejemplo, HTTP) y el transporte (TCP) y ofrece tres propiedades a los datos que viajan por la conexión:</p>
+
+<ul>
+  <li><strong>Confidencialidad.</strong> Los datos se cifran con claves que solo conocen los dos extremos, de modo que un observador de la red ve bytes ininteligibles.</li>
+  <li><strong>Integridad.</strong> Cada registro lleva un mecanismo de autenticación que permite detectar cualquier modificación. Un atacante en medio puede interrumpir la conexión, pero no cambiar el contenido sin que se note.</li>
+  <li><strong>Autenticación.</strong> El cliente comprueba la identidad del servidor mediante un certificado emitido por una autoridad en la que confía. Sin esta propiedad, el cifrado serviría de poco: cifrarías perfectamente la comunicación con un impostor.</li>
+</ul>
+
+<p>Y hay cosas que TLS <em>no</em> hace, y que se confunden a menudo con sus garantías:</p>
+
+<ul>
+  <li><strong>No oculta todo lo que visitas.</strong> Un observador de la red sigue viendo con qué dirección IP te conectas. Además, el primer mensaje del apretón de manos (<code>ClientHello</code>) viaja en claro, según la RFC 8446, y la propia RFC incluye <code>server_name</code> entre las extensiones obligatorias. De ahí se deduce que el nombre del servidor puede ser visible para quien observe la red, salvo que se usen mecanismos adicionales que este artículo no cubre.</li>
+  <li><strong>No dice que el sitio sea "bueno".</strong> Un certificado válido demuestra que hablas con el titular del dominio, no que ese titular sea honesto ni que su aplicación esté libre de vulnerabilidades.</li>
+  <li><strong>No protege los datos en reposo ni en el servidor.</strong> Cifra el tránsito. Lo que el servidor haga con los datos después es otra historia.</li>
+  <li><strong>No evita los ataques a la aplicación.</strong> Una inyección SQL llega cifrada y se ejecuta igual.</li>
+</ul>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-que-cambio-con-tls-1-3">Qué cambió con TLS 1.3</h2>
+
+<p>La RFC 8446 obsoleta las RFC 5246 (TLS 1.2), 5077 y 6961, y actualiza las RFC 5705 y 6066. Su sección 1.2 enumera las diferencias principales con TLS 1.2, que son una buena guía de por qué se considera un salto de seguridad y no solo una actualización:</p>
+
+<ul>
+  <li><strong>Algoritmos heredados eliminados.</strong> La lista de algoritmos simétricos se podó de todo lo que se considera obsoleto.</li>
+  <li><strong>Sin RSA ni Diffie-Hellman estáticos.</strong> Las suites de intercambio de claves con RSA estático y con Diffie-Hellman estático se eliminaron. Con ellas, un atacante que registrase el tráfico y robase después la clave privada del servidor podía descifrar todo el tráfico pasado. La RFC afirma que ahora todos los mecanismos de intercambio de claves de clave pública proporcionan secreto perfecto hacia adelante (<em>forward secrecy</em>).</li>
+  <li><strong>El handshake va cifrado.</strong> Todos los mensajes posteriores al ServerHello se cifran, de modo que, por ejemplo, el certificado del servidor ya no viaja en claro.</li>
+  <li><strong>Máquina de estados simplificada.</strong> Se eliminaron mensajes superfluos como <code>ChangeCipherSpec</code> (que se conserva solo cuando hace falta por compatibilidad con intermediarios de red).</li>
+  <li><strong>Modo 0-RTT.</strong> Se añadió un modo que permite enviar datos en el primer vuelo de una conexión reanudada, "a costa de ciertas propiedades de seguridad", en palabras de la RFC.</li>
+  <li><strong>HKDF.</strong> La derivación de claves se basa en la función de extracción y expansión HKDF, basada en HMAC.</li>
+</ul>
+
+<p>La consecuencia práctica es doble. Por un lado, es más difícil configurar TLS 1.3 de forma insegura, porque se quitaron las opciones peligrosas. Por otro, la compatibilidad con clientes antiguos exige mantener TLS 1.2 durante un tiempo, que es lo que reflejan los perfiles de configuración que veremos al final.</p>
+
+<h2 id="3-el-handshake-paso-a-paso">El handshake paso a paso</h2>
+
+<p>El <em>handshake</em> (apretón de manos) es la fase inicial en la que cliente y servidor se ponen de acuerdo en los parámetros y las claves. La sección 2 de la RFC 8446 lo describe con un diagrama de mensajes. Lo resumimos, con las propiedades de cada uno:</p>
+
+<ol>
+  <li><strong>ClientHello (cliente → servidor, en claro).</strong> El cliente propone: las versiones y suites que soporta, una "parte de clave" (<em>key share</em>) de un intercambio Diffie-Hellman de curva elíptica en uno o varios grupos, los algoritmos de firma que acepta y, si tiene una sesión anterior, una extensión de clave precompartida.</li>
+  <li><strong>ServerHello (servidor → cliente, en claro).</strong> El servidor elige suite y grupo, y devuelve su propia parte de clave. En este punto ambos extremos pueden calcular un secreto compartido, y a partir de aquí todo va cifrado.</li>
+  <li><strong>EncryptedExtensions.</strong> Extensiones que no afectan a la derivación de claves, ya cifradas.</li>
+  <li><strong>CertificateRequest (opcional).</strong> Solo si el servidor quiere autenticar también al cliente (TLS mutuo).</li>
+  <li><strong>Certificate.</strong> La cadena de certificados del servidor, ya cifrada.</li>
+  <li><strong>CertificateVerify.</strong> Una firma, hecha con la clave privada del certificado, sobre un resumen de todo el handshake hasta ese punto. Demuestra que el servidor posee la clave privada y que nadie ha manipulado los mensajes anteriores.</li>
+  <li><strong>Finished (servidor).</strong> Un código de autenticación (MAC) sobre todo el handshake.</li>
+  <li><strong>Certificate y CertificateVerify del cliente (opcionales) y Finished (cliente).</strong> El cliente cierra el handshake con su propio MAC.</li>
+</ol>
+
+<p>La RFC establece una regla clave: no se pueden enviar datos de aplicación antes del mensaje <code>Finished</code>, salvo el caso especial de los datos tempranos del modo 0-RTT (sección 2.3). Fíjate también en cómo está construido: la <em>autenticación</em> (certificado, firma) y la <em>confirmación de integridad</em> (<code>Finished</code>) se aplican a todo el intercambio, lo que impide que un atacante en medio altere negociaciones sin ser detectado, un punto que retomaremos al hablar de degradación.</p>
+
+<h3>Cuánto cuesta en tiempo</h3>
+
+<p>La RFC no enuncia un número de viajes de ida y vuelta, pero se deduce de su diagrama: el cliente envía el <code>ClientHello</code>, el servidor responde con toda su ráfaga de mensajes y, al recibirla, el cliente ya puede enviar su <code>Finished</code> junto con los primeros datos de aplicación. Es decir, <strong>un RTT</strong> de handshake antes de que el cliente pueda enviar su primera petición. Si lo sumamos al RTT del acuerdo de TCP (véase el artículo sobre <a href="/articulos/tcp-en-la-practica-handshake-congestion-diagnostico.html">TCP</a>), una primera petición HTTPS necesita aproximadamente dos RTT de preparación, más uno para la petición y la respuesta. Con 100 ms de RTT, son unos 200 ms de espera antes de poder enviar la petición y unos 300 ms hasta tener la primera respuesta (cifras ideales, sin pérdidas y sin contar el tiempo de proceso del servidor). Este cálculo explica por qué reutilizar conexiones y reanudar sesiones importa tanto en latencias altas.</p>
+
+<h2 id="4-intercambio-de-claves-y-secreto-perfecto">Intercambio de claves y secreto perfecto hacia adelante</h2>
+
+<p>La parte más elegante de TLS 1.3 es cómo se obtienen las claves. En lugar de que el cliente cifre un secreto con la clave pública del servidor (el esquema de RSA estático, eliminado), ambos extremos generan un par de claves efímero en cada conexión e intercambian las partes públicas (<code>key_share</code>). Con un intercambio Diffie-Hellman de curva elíptica, cada uno combina su clave privada efímera con la parte pública del otro y obtienen el mismo secreto compartido, que nunca viaja por la red.</p>
+
+<p>La propiedad resultante se llama <strong>secreto perfecto hacia adelante</strong> (<em>forward secrecy</em>): como las claves privadas efímeras se descartan al terminar la conexión, un atacante que haya grabado el tráfico y consiga más adelante la clave privada del certificado del servidor no puede descifrar las conexiones pasadas, porque esa clave solo se usa para <em>firmar</em> (autenticar), no para proteger el secreto. La RFC lo expresa en su apéndice de propiedades de seguridad: si se usan claves (EC)DHE nuevas en cada conexión, las claves de salida tienen secreto perfecto hacia adelante.</p>
+
+<h3>El calendario de claves</h3>
+
+<p>Del secreto compartido se derivan varias claves con HKDF siguiendo un calendario (<em>key schedule</em>) descrito en la sección 7.1. Sin entrar en toda la mecánica, el esquema tiene tres etapas encadenadas: un <em>Early Secret</em>, que se calcula a partir de la clave precompartida (PSK) cuando existe; un <em>Handshake Secret</em>, que se calcula a partir del secreto (EC)DHE; y un <em>Master Secret</em>, derivado a continuación. De cada etapa salen, mediante llamadas de derivación etiquetadas, las claves de tráfico y los secretos de exportación. Cuando no hay un secreto disponible (por ejemplo, no hay PSK), se usa una cadena de ceros, de modo que la estructura es siempre la misma. Esa uniformidad es deliberada: simplifica el análisis formal del protocolo.</p>
+
+<div class="alert">
+  <strong>Una excepción que conviene conocer.</strong> La RFC advierte de que la propiedad de secreto perfecto no se cumple cuando se usa el modo de clave precompartida <code>psk_ke</code> (que usa solo la PSK sin intercambio efímero). Por el diseño del protocolo, el modo alternativo que combina la PSK con un intercambio (EC)DHE sí conserva esa propiedad; que las implementaciones suelan preferirlo es un dato general que no hemos contrastado en las fuentes citadas.
+</div>
+
+<h2 id="5-suites-de-cifrado-en-tls-1-3">Suites de cifrado en TLS 1.3</h2>
+
+<p>En TLS 1.2, una suite de cifrado era un cóctel de cuatro algoritmos (intercambio de claves, autenticación, cifrado y MAC), con cientos de combinaciones, muchas inseguras. En TLS 1.3 el intercambio de claves y la autenticación se negocian por separado mediante extensiones, y la suite solo define la pareja de algoritmos para proteger los datos: un algoritmo de cifrado autenticado (<em>AEAD</em>) y la función hash que usa HKDF. La RFC define cinco, con nombres de la forma <code>TLS_AEAD_HASH</code>:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Suite</th><th>Código</th><th>Estado en la RFC</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>TLS_AES_128_GCM_SHA256</code></td><td>0x1301</td><td>Obligatoria de implementar (MUST)</td></tr>
+    <tr><td><code>TLS_AES_256_GCM_SHA384</code></td><td>0x1302</td><td>Recomendada (SHOULD)</td></tr>
+    <tr><td><code>TLS_CHACHA20_POLY1305_SHA256</code></td><td>0x1303</td><td>Recomendada (SHOULD)</td></tr>
+    <tr><td><code>TLS_AES_128_CCM_SHA256</code></td><td>0x1304</td><td>Definida</td></tr>
+    <tr><td><code>TLS_AES_128_CCM_8_SHA256</code></td><td>0x1305</td><td>Definida</td></tr>
+  </tbody>
+</table></div>
+
+<p>La RFC aclara que las suites de TLS 1.3 no pueden usarse con TLS 1.2 ni viceversa. Las tres primeras son las que figuran en los perfiles de configuración recomendados; las dos últimas, basadas en CCM, se asocian por lo general a entornos con recursos limitados (dato general, no extraído de la RFC). En la práctica, las diferencias entre AES-GCM y ChaCha20-Poly1305 son de rendimiento según el hardware (AES-GCM suele ser más rápido en procesadores con aceleración dedicada; ChaCha20 destaca en dispositivos sin ella), una afirmación general que no procede de las fuentes de este artículo.</p>
+
+<h3>Extensiones obligatorias</h3>
+
+<p>La sección 9.2 lista las extensiones que toda implementación debe soportar: <code>supported_versions</code>, <code>cookie</code>, <code>signature_algorithms</code>, <code>signature_algorithms_cert</code>, <code>supported_groups</code>, <code>key_share</code> y <code>server_name</code>; y, para la clave precompartida, <code>pre_shared_key</code> y <code>psk_key_exchange_modes</code>. Merece mención <code>server_name</code> (SNI): permite que un mismo servidor con una única dirección IP aloje muchos sitios y presente el certificado correcto para cada uno, y es la razón por la que el nombre del sitio aparece en el <code>ClientHello</code>.</p>
+
+<h2 id="6-autenticacion-certificados-y-cadenas-de">Autenticación: certificados y cadenas de confianza</h2>
+
+<p>El certificado es lo que conecta la criptografía con la identidad. Un certificado X.509 asocia una clave pública con uno o varios nombres de dominio y está firmado por una <em>autoridad de certificación</em> (CA). El cliente confía en un conjunto de autoridades raíz que vienen preinstaladas en su sistema o su navegador, y valida la cadena: el certificado del servidor lo firma una CA intermedia, esa intermedia está firmada por otra o por una raíz de confianza. Además comprueba que el nombre al que se conecta aparece en el certificado, que la fecha actual está dentro de su validez y que no ha sido revocado. Todo este párrafo describe el funcionamiento general de la infraestructura de clave pública y no se extrae de las fuentes citadas, que se centran en el protocolo.</p>
+
+<p>Es importante entender qué demuestra el handshake: con el mensaje <code>CertificateVerify</code>, el servidor prueba que posee la clave privada correspondiente al certificado, firmando un resumen del handshake. Eso evita que alguien reutilice un certificado público ajeno: puede copiarlo, pero no firmar con él.</p>
+
+<h3>La vida de los certificados se acorta</h3>
+
+<p>Un cambio de fondo está en marcha y afecta a cualquiera que gestione certificados. Durante años, los certificados públicos podían valer más de un año. Let's Encrypt, la autoridad gratuita y automática más extendida, emite por defecto certificados de 90 días, según su documentación, y ofrece certificados de seis días de forma opcional. Su recomendación es renovar los de 90 días cada 60 días y los de seis días cada tres. Aclara además que no es posible ajustar esas duraciones y que no hay excepciones, y que los certificados comodín (<code>*.ejemplo.org</code>) deben validarse con el desafío DNS-01.</p>
+
+<p>En abril de 2025 el CA/Browser Forum, el organismo en el que se reúnen las autoridades de certificación y los fabricantes de navegadores, aprobó la propuesta SC-081v3, presentada por Clint Wilson (Apple). Según el acta de votación, la validez máxima de los certificados públicos de TLS bajará de 398 a 47 días, y los periodos de reutilización de los datos de validación bajarán también (de 398 a 10 días para los datos de validación de los nombres alternativos del certificado, SAN). Las reducciones empiezan en marzo de 2026 y terminan en marzo de 2029. El resultado de la votación fue de 25 votos a favor, ninguno en contra y 5 abstenciones entre las autoridades emisoras, y de 4 a favor (Apple, Google, Microsoft y Mozilla) y ninguno en contra entre los consumidores de certificados.</p>
+
+<div class="alert">
+  <strong>Qué sabemos con certeza y qué no.</strong> El acta del CA/Browser Forum fija el punto de partida (398 días), el de llegada (47 días) y el periodo (marzo de 2026 a marzo de 2029), pero no enumera los pasos intermedios, que están en un documento de cambios enlazado y que no hemos leído. Varias fuentes secundarias (blogs de proveedores de certificados, con discrepancias menores en otros detalles) coinciden en un calendario de tres etapas: 200 días desde el 15 de marzo de 2026, 100 días desde el 15 de marzo de 2027 y 47 días desde el 15 de marzo de 2029. Trata esas fechas intermedias como probables, no como verificadas en la fuente primaria, y contrástalas con el texto oficial antes de planificar un cumplimiento normativo. La FAQ de Let's Encrypt que consultamos no menciona ningún cambio a 45 días.
+</div>
+
+<p>Las consecuencias operativas son claras: con certificados que valen semanas, <strong>la renovación manual deja de ser viable</strong>. Hay que automatizarla con un cliente ACME (el protocolo de emisión automática que usa Let's Encrypt, un dato general que no procede de las fuentes citadas), vigilar los fallos de renovación con alertas y probar el proceso de extremo a extremo. Un certificado caducado no es un fallo suave: los navegadores muestran una pantalla de error que el usuario no debería poder saltarse, como veremos con HSTS.</p>
+
+<h2 id="7-reanudacion-de-sesion-y-0-rtt">Reanudación de sesión y 0-RTT</h2>
+
+<p>Repetir el handshake completo en cada conexión es caro, así que TLS 1.3 ofrece la <em>reanudación</em> mediante claves precompartidas: tras un handshake completo, el servidor puede entregar al cliente un <em>ticket</em> de sesión. En una conexión posterior, el cliente presenta ese ticket (la PSK) y el handshake se abrevia. La RFC pone un límite de seguridad a su duración: los servidores no deben usar un valor mayor que 604.800 segundos (7 días) y los clientes no deben almacenar tickets más tiempo que eso, con independencia de lo que indique el servidor.</p>
+
+<h3>0-RTT: velocidad a cambio de seguridad</h3>
+
+<p>El modo 0-RTT (<em>early data</em>) va un paso más allá: el cliente puede enviar datos de aplicación en su primer mensaje, junto con el <code>ClientHello</code>, sin esperar a completar el handshake. Es una ganancia de latencia real (un RTT menos), pero la RFC es explícita sobre sus costes:</p>
+
+<ul>
+  <li><strong>Sin secreto perfecto.</strong> Los datos tempranos están cifrados únicamente con claves derivadas de la PSK, de modo que no tienen secreto perfecto hacia adelante.</li>
+  <li><strong>Sin garantía contra repeticiones entre conexiones.</strong> La RFC dice que no hay garantías de no repetición entre conexiones. Un atacante que capture el primer vuelo puede reenviarlo, y el servidor podría procesar la misma petición dos veces.</li>
+</ul>
+
+<p>Para mitigarlo, la sección 8 describe tres mecanismos que los servidores pueden combinar: <strong>tickets de un solo uso</strong> (el servidor lleva la cuenta de los tickets emitidos y borra cada uno al usarlo; difícil de coordinar entre muchos servidores), <strong>registro del ClientHello</strong> (se guarda un valor único del mensaje y se rechazan los duplicados dentro de una ventana de tiempo) y <strong>comprobaciones de frescura</strong> (se compara la hora esperada de llegada con el reloj del servidor, con ventanas del orden de diez segundos para clientes de Internet). La propia RFC advierte de que las comprobaciones de frescura por sí solas no impiden las repeticiones, y exige como mínimo que cada instancia de servidor acepte un mismo handshake 0-RTT como máximo una vez.</p>
+
+<p>La regla de aplicación es tajante: los clientes <strong>no deben</strong> enviar en datos tempranos mensajes que no sea seguro repetir, y los protocolos de aplicación no deben usar 0-RTT sin un perfil que defina su uso. Traducido: un <code>GET</code> de una imagen es seguro de repetir; un <code>POST</code> que realiza un pago, no. Si activas 0-RTT en un servidor, asegúrate de que tu aplicación, o el proxy inverso que tengas delante, solo acepta datos tempranos para peticiones idempotentes.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="8-proteccion-contra-la-degradacion">Protección contra la degradación</h2>
+
+<p>Un ataque de degradación (<em>downgrade</em>) intenta engañar a las dos partes para que negocien una versión o suite más débil de la que ambas soportan. TLS 1.3 se defiende de dos maneras. La primera es estructural: el mensaje <code>Finished</code> (y, cuando existe, la firma de <code>CertificateVerify</code>) cubre todo el handshake, de modo que cualquier alteración de la negociación se detecta. La segunda es un mecanismo específico, descrito en la sección 4.1.3: si un servidor TLS 1.3 negocia TLS 1.2, debe sobrescribir los últimos ocho bytes del campo aleatorio del <code>ServerHello</code> con el valor hexadecimal <code>44 4F 57 4E 47 52 44 01</code>; si negocia TLS 1.1 o inferior, con <code>44 4F 57 4E 47 52 44 00</code>. Esos bytes, leídos como ASCII, forman la palabra "DOWNGRD", aunque la RFC no usa esa etiqueta. Un cliente TLS 1.3 debe comprobar que los últimos ocho bytes no coinciden con ninguno de los dos valores y, si coinciden, abortar con el error <code>illegal_parameter</code>. La RFC califica el mecanismo de "protección limitada" contra la degradación, y desaconseja explícitamente reintentar conexiones con versiones anteriores para esquivar servidores defectuosos, porque eso abre la puerta a esos ataques.</p>
+
+<h2 id="9-hsts-obligar-al-navegador-a-usar-https">HSTS: obligar al navegador a usar HTTPS</h2>
+
+<p>TLS protege las conexiones HTTPS, pero ¿quién garantiza que el usuario use HTTPS? Si alguien escribe <code>ejemplo.org</code> en el navegador, este puede probar primero con HTTP y esperar una redirección a HTTPS, y esa primera petición en claro es vulnerable: un atacante en la red puede interceptarla y mantener al usuario en HTTP. HSTS (<em>HTTP Strict Transport Security</em>), definido en la RFC 6797 (noviembre de 2012), cierra esa brecha.</p>
+
+<h3>Cómo funciona</h3>
+
+<p>El servidor envía en sus respuestas HTTPS la cabecera <code>Strict-Transport-Security</code>. A partir de ese momento, el navegador recuerda que ese sitio solo debe usarse con HTTPS durante un tiempo. Sus directivas, según la RFC, son:</p>
+
+<ul>
+  <li><strong><code>max-age</code></strong> (obligatoria): el número de segundos, desde la recepción de la cabecera, durante los que el navegador trata el sitio como un host HSTS.</li>
+  <li><strong><code>includeSubDomains</code></strong> (opcional, sin valor): extiende la política al dominio y a todos sus subdominios.</li>
+</ul>
+
+<p>El ejemplo de la propia RFC es <code>Strict-Transport-Security: max-age=15768000 ; includeSubDomains</code>, unos seis meses. Las guías de configuración de TLSRef recomiendan <code>max-age=63072000</code> (dos años). La RFC no define una directiva <code>preload</code>: su sección 12.3 describe la lista de HSTS precargada como un mecanismo de los fabricantes de navegadores, no como una directiva de la cabecera.</p>
+
+<h3>Qué hace el navegador</h3>
+
+<ul>
+  <li><strong>Solo acepta la cabecera por un canal seguro.</strong> Si llega por HTTP, el navegador debe ignorarla (sección 8.1). Tampoco la procesa si hay errores o avisos en el transporte seguro.</li>
+  <li><strong>Convierte los enlaces inseguros.</strong> Para los hosts HSTS conocidos, el navegador sustituye el esquema <code>http</code> por <code>https</code> antes de hacer la petición (secciones 2.2 y 8.3), de modo que la petición insegura ni siquiera sale.</li>
+  <li><strong>Trata los errores de TLS como fatales.</strong> Ante cualquier error de la conexión segura, sea aviso o error fatal, el navegador debe terminar la conexión (sección 8.4), y la RFC recomienda (en una sección no normativa) que el usuario no tenga forma de saltarse el aviso.</li>
+</ul>
+
+<h3>Sus límites</h3>
+
+<p>La RFC reconoce una debilidad estructural: la <strong>primera visita no está protegida</strong>. HSTS funciona por confianza en el primer uso (<em>trust on first use</em>): el navegador debe haber recibido la cabecera por HTTPS al menos una vez. Si la primera interacción del usuario con un sitio es por HTTP, es vulnerable a ataques; la sección 14.6 lo llama la vulnerabilidad de arranque. Para mitigarlo, los navegadores incluyen una lista precargada de sitios, de la que tratamos solo lo que dice la RFC: que existe como mecanismo de los fabricantes.</p>
+
+<div class="alert alert-danger">
+  <strong>Con <code>includeSubDomains</code>, cuidado.</strong> La política se extiende a todos los subdominios, incluidos los que quizá no tengan un certificado válido o que sirvan contenido solo por HTTP (un servidor interno, una pasarela antigua). Tras activarla, esos subdominios dejan de ser accesibles desde navegadores que hayan visto la cabecera, y un <code>max-age</code> largo hace el efecto difícil de revertir. Una práctica prudente, que no procede de las fuentes citadas, es empezar con un <code>max-age</code> corto, comprobar que todo funciona y aumentarlo gradualmente.
+</div>
+
+<h2 id="10-una-configuracion-recomendada">Una configuración recomendada</h2>
+
+<p>La guía de configuración del lado del servidor que mantiene el proyecto TLSRef (que recoge el testigo de las recomendaciones de Mozilla; la página wiki de Mozilla indica que su contenido se trasladó) define dos perfiles. En su historial, la versión 6.0 eliminó el perfil antiguo (<em>Old</em>). La página no muestra fecha de publicación.</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Aspecto</th><th>Modern</th><th>Intermediate (recomendado para la mayoría)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Versiones</td><td>Solo TLS 1.3</td><td>TLS 1.2 y TLS 1.3 (1.2 es el mínimo, según la guía, que cita la RFC 7525)</td></tr>
+    <tr><td>Suites TLS 1.3</td><td><code>TLS_AES_128_GCM_SHA256</code>, <code>TLS_AES_256_GCM_SHA384</code>, <code>TLS_CHACHA20_POLY1305_SHA256</code></td><td>Las mismas tres</td></tr>
+    <tr><td>Suites TLS 1.2</td><td>Ninguna</td><td><code>ECDHE-ECDSA-AES128-GCM-SHA256</code>, <code>ECDHE-RSA-AES128-GCM-SHA256</code>, <code>ECDHE-ECDSA-AES256-GCM-SHA384</code>, <code>ECDHE-RSA-AES256-GCM-SHA384</code>, <code>ECDHE-ECDSA-CHACHA20-POLY1305</code>, <code>ECDHE-RSA-CHACHA20-POLY1305</code></td></tr>
+    <tr><td>Certificado</td><td>ECDSA (P-256)</td><td>ECDSA (P-256) recomendado, o RSA de 2048 bits</td></tr>
+    <tr><td>Vida del certificado</td><td>90 días</td><td>90 días recomendados, hasta 366</td></tr>
+    <tr><td>Parámetros DH</td><td>—</td><td>2048 bits (<code>ffdhe2048</code>)</td></tr>
+    <tr><td>Preferencia de suite</td><td>El cliente elige</td><td>El cliente elige</td></tr>
+  </tbody>
+</table></div>
+
+<p>Los dos perfiles comparten las curvas <code>X25519MLKEM768</code>, <code>X25519</code>, <code>prime256v1</code> y <code>secp384r1</code>, y la cabecera HSTS <code>max-age=63072000</code>. La primera curva de la lista es un intercambio híbrido que combina X25519 con un algoritmo poscuántico (ML-KEM); su motivación y detalles no se han tratado en las fuentes de este artículo. La guía no habla de grapado OCSP ni de las directivas <code>includeSubDomains</code> y <code>preload</code>, por lo que no las damos por recomendadas aquí.</p>
+
+<p>Un ejemplo ilustrativo para un servidor nginx, que traduce el perfil Intermediate (sintaxis de nginx de conocimiento general, no probada en este artículo):</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>nginx</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Ejemplo ilustrativo (no probado): perfil Intermediate en nginx
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers off;   # el cliente elige, como indica la guía
+
+add_header Strict-Transport-Security "max-age=63072000" always;</code></pre>
+        </div>
+
+<p>Si alojas tu sitio en una plataforma gestionada (como el propio Azure Static Web Apps que usa este sitio), lo habitual es que la plataforma gestione el certificado y la configuración de TLS por ti; es un dato general sobre ese tipo de servicios, y conviene comprobar en su documentación qué versiones y suites acepta y cómo se configuran las cabeceras.</p>
+
+<h2 id="11-comprobar-un-servidor-desde-la-linea-de">Comprobar un servidor desde la línea de comandos</h2>
+
+<p>No hace falta una herramienta externa para inspeccionar TLS. Estos comandos son de uso común; no los hemos ejecutado para este artículo, por lo que no mostramos sus salidas:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Ver la versión de TLS negociada, la suite y la cadena de certificados
+openssl s_client -connect ejemplo.org:443 -servername ejemplo.org -tls1_3
+
+# Forzar TLS 1.2 para comprobar que sigue soportado (si debe estarlo)
+openssl s_client -connect ejemplo.org:443 -servername ejemplo.org -tls1_2
+
+# Fechas de validez, sujeto y emisor del certificado
+echo | openssl s_client -connect ejemplo.org:443 -servername ejemplo.org 2&gt;/dev/null \
+  | openssl x509 -noout -dates -subject -issuer
+
+# Cabecera HSTS y resto de cabeceras (modo detallado de curl para ver TLS)
+curl -sI https://ejemplo.org | grep -i strict-transport-security
+curl -vI https://ejemplo.org 2&gt;&amp;1 | grep -iE "SSL connection|TLS|subject|expire"</code></pre>
+        </div>
+
+<p>Para vigilar la caducidad de forma automática, un programa corto con la biblioteca estándar de Python verifica el certificado igual que lo haría un cliente (<code>ssl.create_default_context()</code> valida la cadena y el nombre del servidor) y muestra la versión de TLS y la fecha de caducidad. Es un ejemplo ilustrativo no ejecutado aquí:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>import socket
+import ssl
+import time
+
+def comprobar(host, puerto=443):
+    ctx = ssl.create_default_context()          # valida cadena y nombre del host
+    with socket.create_connection((host, puerto), timeout=10) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as tls:
+            cert = tls.getpeercert()
+            caduca = ssl.cert_time_to_seconds(cert["notAfter"])
+            dias = int((caduca - time.time()) // 86400)
+            print(f"{host}: {tls.version()} {tls.cipher()[0]} - caduca en {dias} días")
+
+comprobar("ejemplo.org")</code></pre>
+        </div>
+
+<p>Con certificados de 47 o de 90 días, una comprobación así, ejecutada a diario desde un planificador y con aviso cuando queden menos de 15 o 20 días, es una red de seguridad barata para el caso en que la renovación automática falle sin que nadie lo note.</p>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="12-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>"HTTPS significa que el sitio es de fiar"</h3>
+
+<p>Significa que la conexión está cifrada y que el servidor es el titular del dominio. Los sitios fraudulentos también pueden tener certificados válidos. El candado informa del canal, no de las intenciones de quien está al otro lado.</p>
+
+<h3>"Basta con redirigir de HTTP a HTTPS"</h3>
+
+<p>La redirección protege a quien llega a la versión HTTPS, pero la petición inicial en HTTP sigue siendo interceptable. HSTS reduce esa ventana tras la primera visita. Y ni siquiera HSTS protege la primera, como reconoce la propia RFC.</p>
+
+<h3>"Desactivar la verificación del certificado es un atajo inofensivo"</h3>
+
+<p>Es una de las prácticas más peligrosas en el código de los clientes (por ejemplo, <code>verify=False</code> en bibliotecas HTTP). Sin verificación, el cifrado protege frente a un espía pasivo pero no frente a un atacante activo, que puede presentar su propio certificado y hacerse pasar por el servidor. Si un entorno de pruebas usa certificados propios, lo correcto es instalar su autoridad en el almacén de confianza, no desactivar la validación.</p>
+
+<h3>"Mantener TLS 1.0 y 1.1 por compatibilidad no hace daño"</h3>
+
+<p>Las guías actuales de configuración fijan TLS 1.2 como el mínimo aceptable en su perfil más permisivo. Mantener versiones anteriores amplía la superficie de ataque a cambio de dar servicio a clientes que, en general, son de hace más de una década.</p>
+
+<h3>"Con 0-RTT todo va más rápido, así que lo activo"</h3>
+
+<p>Gana un RTT en las conexiones reanudadas, pero los datos tempranos son repetibles. Solo es apropiado para peticiones idempotentes, y exige que toda la cadena (proxy, aplicación) lo tenga en cuenta.</p>
+
+<h3>"Un certificado de un año es más cómodo que uno de 90 días"</h3>
+
+<p>Cómodo hasta que caduca sin que nadie se acuerde. La tendencia del sector, confirmada por el acta del CA/Browser Forum, va hacia certificados cada vez más cortos precisamente para forzar la automatización, que reduce los errores humanos y limita el daño de una clave comprometida.</p>
+
+<h3>"El certificado se renueva solo, no necesito vigilarlo"</h3>
+
+<p>La renovación automática falla por motivos mundanos: un cambio de DNS, un puerto cerrado, una cuota agotada, un cambio en la configuración del servidor web. Vigilar la fecha de caducidad es la comprobación más rentable de toda la infraestructura de TLS.</p>
+
+<h2 id="13-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Cuál es la diferencia entre SSL y TLS?</h3>
+
+<p>SSL (<em>Secure Sockets Layer</em>) es el nombre del protocolo original, que dio lugar a TLS. Las versiones de SSL están obsoletas desde hace tiempo y no deben usarse. Se sigue hablando de "certificados SSL" por costumbre, pero lo que se usa hoy es TLS.</p>
+
+<h3>¿Qué es SNI?</h3>
+
+<p>Es la extensión <code>server_name</code>, en la que el cliente indica en el <code>ClientHello</code> a qué nombre de dominio quiere conectarse. Permite que un mismo servidor con una sola IP presente el certificado adecuado para cada sitio. La RFC 8446 la incluye entre las extensiones obligatorias.</p>
+
+<h3>¿Por qué TLS 1.3 es más rápido?</h3>
+
+<p>Principalmente porque su handshake completo necesita un solo RTT, y porque admite reanudación y, opcionalmente, 0-RTT. No es más rápido en el cifrado de datos (las suites son similares), sino en el tiempo hasta enviar el primer byte útil.</p>
+
+<h3>¿Qué diferencia hay entre certificado, clave pública y clave privada?</h3>
+
+<p>La clave pública y la privada son un par matemático. El certificado es un documento firmado por una autoridad que asocia la clave pública con un nombre de dominio. La clave privada nunca se comparte: se usa para firmar el <code>CertificateVerify</code> y demostrar que se posee. Si se filtra, hay que revocar el certificado y emitir uno nuevo con otro par de claves.</p>
+
+<h3>¿Puedo usar un certificado autofirmado en producción?</h3>
+
+<p>Funciona técnicamente, pero los clientes no lo reconocerán como confiable salvo que se instale manualmente. En servicios de cara al público no es viable; en redes internas, lo habitual es una autoridad privada propia cuyo certificado raíz se distribuye a los clientes.</p>
+
+<h3>¿Cada cuánto debo renovar un certificado de 90 días?</h3>
+
+<p>Let's Encrypt recomienda renovarlos cada 60 días, lo que deja 30 días de margen si algo falla. Para certificados de seis días, la recomendación es renovar cada tres.</p>
+
+<h3>¿HSTS y la redirección de HTTP a HTTPS se excluyen?</h3>
+
+<p>No, se complementan. La redirección sigue siendo necesaria para quien llega por primera vez por HTTP (y para clientes que no implementan HSTS); HSTS evita la petición insegura en visitas posteriores.</p>
+
+<h3>¿Qué ocurre si el certificado caduca con HSTS activo?</h3>
+
+<p>Los navegadores tratan el error como fatal y, según la RFC 6797, no deberían ofrecer al usuario una forma de continuar. El sitio quedaría inaccesible desde los navegadores que ya conocen la política hasta que se instale un certificado válido. Es un buen motivo adicional para vigilar la caducidad.</p>
+
+<h2 id="14-conclusion">Conclusión</h2>
+
+<p>TLS 1.3 es un protocolo más pequeño y más estricto que sus antecesores: un handshake de un solo viaje de ida y vuelta, claves efímeras que dan secreto perfecto hacia adelante, un conjunto reducido de suites de cifrado autenticado, cifrado casi total del apretón de manos y mecanismos explícitos contra la degradación. Su único modo con compromisos de seguridad, el 0-RTT, está claramente señalado como tal por el propio estándar, que exige que solo se use para datos seguros de repetir.</p>
+
+<p>Alrededor del protocolo, la operación diaria gira en torno a los certificados, y ahí el panorama cambia deprisa: duraciones máximas que bajan hasta 47 días, automatización obligatoria y vigilancia de caducidades. HSTS añade la última pieza para que el navegador no use nunca HTTP con tu sitio, con la salvedad de la primera visita y los cuidados con los subdominios. Con una configuración basada en un perfil conocido (TLS 1.3 y, si hace falta, TLS 1.2 con suites AEAD), una comprobación periódica desde la línea de comandos y una renovación automatizada, la seguridad del canal queda en buenas manos con muy poco esfuerzo de mantenimiento.</p>
+
+<p>El siguiente paso lógico es fijarse en lo que ocurre antes de que se abra una sola conexión: la resolución de nombres. DNS decide a qué dirección se conecta el cliente, y los ataques o fallos en esa fase son otra clase de problema que TLS no resuelve del todo. Es el tema del próximo artículo.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Rescorla, E. «RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3». IETF, agosto de 2018. <a href="https://www.rfc-editor.org/rfc/rfc8446.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc8446.html</a> (consultado el 27-10-2026; se leyeron los rangos 0–150.000 y 200.000–372.676 de 372.676 caracteres).</li>
+  <li>Hodges, J., Jackson, C. y Barth, A. «RFC 6797: HTTP Strict Transport Security (HSTS)». IETF, noviembre de 2012. <a href="https://www.rfc-editor.org/rfc/rfc6797.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc6797.html</a> (consultado el 27-10-2026; se leyeron 100.000 de 115.923 caracteres).</li>
+  <li>TLSRef. «Server-Side TLS». <a href="https://docs.tlsref.org/server-side-tls.html" rel="noopener">https://docs.tlsref.org/server-side-tls.html</a> (consultado el 27-10-2026; versión 6.0 según su historial).</li>
+  <li>Mozilla Wiki. «Security/Server Side TLS» (página de traslado de contenidos). <a href="https://wiki.mozilla.org/Security/Server_Side_TLS" rel="noopener">https://wiki.mozilla.org/Security/Server_Side_TLS</a> (consultado el 27-10-2026).</li>
+  <li>Let's Encrypt. «Frequently Asked Questions (FAQ)». <a href="https://letsencrypt.org/docs/faq/" rel="noopener">https://letsencrypt.org/docs/faq/</a> (consultado el 27-10-2026).</li>
+  <li>CA/Browser Forum. «Ballot SC-081v3: Introduce Schedule of Reducing Validity and Data Reuse Periods», 11-04-2025. <a href="https://cabforum.org/2025/04/11/ballot-sc081v3-introduce-schedule-of-reducing-validity-and-data-reuse-periods/" rel="noopener">https://cabforum.org/2025/04/11/ballot-sc081v3-introduce-schedule-of-reducing-validity-and-data-reuse-periods/</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/tcp-en-la-practica-handshake-congestion-diagnostico.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[redes]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">TCP en la práctica: handshake, control de congestión y diagnóstico con ss y tcpdump</span>
+          </a></li>
+          <li><a href="/articulos/azure-static-web-apps.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[azure]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Profunda: Azure Static Web Apps</span>
+          </a></li>
+          <li><a href="/articulos/github-actions-seguridad-permisos-oidc-cadena-suministro.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[seguridad]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Seguridad en GitHub Actions: permisos mínimos, OIDC y cadena de suministro</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-que-garantiza-tls-y-que-no" class="text-muted hover:text-accent">Qué garantiza TLS y qué no</a></li>
+            <li><a href="#2-que-cambio-con-tls-1-3" class="text-muted hover:text-accent">Qué cambió con TLS 1.3</a></li>
+            <li><a href="#3-el-handshake-paso-a-paso" class="text-muted hover:text-accent">El handshake paso a paso</a></li>
+            <li><a href="#4-intercambio-de-claves-y-secreto-perfecto" class="text-muted hover:text-accent">Intercambio de claves y secreto perfecto hacia adelante</a></li>
+            <li><a href="#5-suites-de-cifrado-en-tls-1-3" class="text-muted hover:text-accent">Suites de cifrado en TLS 1.3</a></li>
+            <li><a href="#6-autenticacion-certificados-y-cadenas-de" class="text-muted hover:text-accent">Autenticación: certificados y cadenas de confianza</a></li>
+            <li><a href="#7-reanudacion-de-sesion-y-0-rtt" class="text-muted hover:text-accent">Reanudación de sesión y 0-RTT</a></li>
+            <li><a href="#8-proteccion-contra-la-degradacion" class="text-muted hover:text-accent">Protección contra la degradación</a></li>
+            <li><a href="#9-hsts-obligar-al-navegador-a-usar-https" class="text-muted hover:text-accent">HSTS: obligar al navegador a usar HTTPS</a></li>
+            <li><a href="#10-una-configuracion-recomendada" class="text-muted hover:text-accent">Una configuración recomendada</a></li>
+            <li><a href="#11-comprobar-un-servidor-desde-la-linea-de" class="text-muted hover:text-accent">Comprobar un servidor desde la línea de comandos</a></li>
+            <li><a href="#12-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#13-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#14-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

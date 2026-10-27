@@ -1,0 +1,22 @@
+{
+  "id": "ART-009",
+  "slug": "systemd-unidades-dependencias-journald-temporizadores",
+  "titulo": "systemd: unidades, dependencias, journald y temporizadores",
+  "etiqueta": "linux",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo escribir y diagnosticar servicios con systemd: dependencias frente a orden, reinicios, temporizadores, journalctl y aislamiento medido con systemd-analyze security.",
+  "palabra_clave": "systemd unidades servicio",
+  "secundarias": [
+    "unit files",
+    "systemd timers",
+    "journalctl",
+    "hardening",
+    "dependencias"
+  ],
+  "relacionados": [
+    "contenedores-linux-namespaces-cgroups-seccomp",
+    "linux-grep-sed-awk",
+    "freertos-esp32-planificador-prioridades-isr"
+  ],
+  "barra": "naranja"
+}

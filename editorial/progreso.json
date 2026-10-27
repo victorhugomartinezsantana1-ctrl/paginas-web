@@ -2,28 +2,43 @@
   "actualizado": "2026-10-27",
   "objetivo_total": 30,
   "minimo_aceptable": 20,
-  "ultimo_lote_procesado": 0,
-  "ultimo_articulo_completado": null,
+  "ultimo_lote_procesado": 1,
+  "ultimo_articulo_completado": "ART-005",
   "investigados": [
     "ART-001",
     "ART-002",
     "ART-003",
     "ART-004",
-    "ART-005"
+    "ART-005",
+    "ART-006",
+    "ART-007",
+    "ART-008",
+    "ART-009",
+    "ART-010"
   ],
   "redactados": [
     "ART-001",
     "ART-002",
     "ART-003",
     "ART-004",
-    "ART-005"
+    "ART-005",
+    "ART-006",
+    "ART-007",
+    "ART-008",
+    "ART-009",
+    "ART-010"
   ],
   "html_creados": [
     "ART-001",
     "ART-002",
     "ART-003",
     "ART-004",
-    "ART-005"
+    "ART-005",
+    "ART-006",
+    "ART-007",
+    "ART-008",
+    "ART-009",
+    "ART-010"
   ],
   "auditoria_superada": [
     "ART-001",
@@ -32,14 +47,21 @@
     "ART-004",
     "ART-005"
   ],
-  "desplegados": [],
-  "url_verificadas": [],
-  "pendientes": [
+  "desplegados": [
     "ART-001",
     "ART-002",
     "ART-003",
     "ART-004",
-    "ART-005",
+    "ART-005"
+  ],
+  "url_verificadas": [
+    "ART-001",
+    "ART-002",
+    "ART-003",
+    "ART-004",
+    "ART-005"
+  ],
+  "pendientes": [
     "ART-006",
     "ART-007",
     "ART-008",
@@ -67,8 +89,8 @@
     "ART-030"
   ],
   "errores_activos": [],
-  "proxima_accion": "Verificar el despliegue del lote 1 y arrancar el lote 2 (ART-006..ART-010)",
-  "estado_ultimo_despliegue": "Último despliegue de producción: commit c1cfef6 (correcciones de caché). Sin despliegue editorial todavía.",
+  "proxima_accion": "Commit, push y verificacion publica",
+  "estado_ultimo_despliegue": "commit e333064: workflow Azure Static Web Apps CI/CD completed success; 5 URL verificadas en la web pública",
   "fase_completada": [
     "A reconocimiento",
     "B arquitectura de despliegue",

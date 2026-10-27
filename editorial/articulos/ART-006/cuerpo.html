@@ -1,0 +1,406 @@
+<p>Casi todo lo que haces en una red pasa por TCP: abrir una página web, consultar una base de datos, copiar archivos con SSH, enviar un correo. Es un protocolo tan familiar que se tiende a tratarlo como una tubería mágica en la que se escriben bytes por un extremo y salen idénticos por el otro. Esa abstracción funciona durante años... hasta que una consulta tarda dos segundos sin motivo aparente, una conexión se queda colgada tras un cambio de red, un servidor acumula miles de conexiones en un estado con un nombre raro o una transferencia que debería tardar un segundo tarda diez porque el enlace "va lento".</p>
+
+<p>Detrás de la tubería hay un conjunto de mecanismos bien definidos que se pueden razonar con números: un acuerdo inicial en tres pasos, temporizadores de retransmisión con fórmulas explícitas, una ventana que limita cuánto se puede enviar sin confirmación y un algoritmo de control de congestión que decide la velocidad según lo que observa. En este artículo los recorremos uno a uno con las especificaciones oficiales (las RFC del IETF) y con la documentación de las herramientas de Linux, y terminamos con un método de diagnóstico práctico basado en <code>ss</code> y <code>tcpdump</code>. Una advertencia de método: en el equipo de redacción de este texto no hay capturas de red reales, así que no mostramos salidas de comandos; describimos qué buscar y por qué, y los cálculos numéricos que aparecen (valores de RTO, ventanas, caídas de congestión) los hemos hecho a mano con las fórmulas de las RFC para que puedas repetirlos. Si te interesa cómo la red se relaciona con los contenedores y los clústeres, en el artículo sobre <a href="/articulos/contenedores-linux-namespaces-cgroups-seccomp.html">contenedores de Linux por dentro</a> explicamos el aislamiento de red (<em>network namespaces</em>) y en el de <a href="/articulos/kubernetes-arquitectura-interna.html">Kubernetes bajo el capó</a>, cómo se conectan los pods.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>TCP ofrece un flujo de bytes fiable y ordenado entre dos extremos; no conserva los límites de los mensajes y no garantiza tiempos.</li>
+    <li>La especificación vigente es la RFC 9293 (agosto de 2022), que obsoleta la RFC 793 y otras seis; el control de congestión se describe en la RFC 5681 y el cálculo del temporizador de retransmisión en la RFC 6298.</li>
+    <li>El RTO inicial es de 1 segundo, el mínimo recomendado también, y se duplica con cada retransmisión consecutiva.</li>
+    <li>El control de congestión limita la ventana de envío (<code>cwnd</code>): crece rápido en el arranque lento y casi linealmente después, y se reduce al detectar pérdidas. CUBIC, estandarizado en la RFC 9438, usa un factor de reducción de 0,7.</li>
+    <li>El rendimiento de una conexión está acotado por la ventana dividida por el RTT: con una ventana de 64 KB y 100 ms de RTT, el máximo teórico es de unos 5,2 Mbit/s, sea cual sea el ancho de banda del enlace.</li>
+    <li>Para diagnosticar, <code>ss -i</code> muestra el estado interno de cada conexión (rto, rtt, cwnd, ssthresh, mss) y <code>tcpdump</code> permite ver los segmentos reales, con las banderas SYN, ACK, FIN, RST y PSH.</li>
+  </ul>
+</div>
+
+<h2>Qué ofrece TCP y qué no</h2>
+
+<p>TCP (<em>Transmission Control Protocol</em>) resuelve un problema concreto: la red subyacente (IP) solo entrega paquetes sueltos, que pueden perderse, duplicarse, llegar desordenados o con retraso. TCP construye encima un servicio mucho más cómodo: un <strong>flujo de bytes bidireccional, fiable y ordenado</strong> entre dos procesos. "Fiable" significa que, mientras la conexión siga viva, los bytes que entrega a la aplicación receptora son exactamente los que la emisora escribió y en el mismo orden.</p>
+
+<p>Es útil ser exactos sobre los límites de esa promesa, porque de ellos nacen errores de diseño muy comunes:</p>
+
+<ul>
+  <li><strong>No hay mensajes, solo bytes.</strong> Si una aplicación escribe dos bloques de 100 bytes, el receptor puede recibir uno de 200, uno de 50 y otro de 150, o cualquier otra partición. Delimitar los mensajes (con una longitud previa, un separador o un formato) es responsabilidad del protocolo de aplicación.</li>
+  <li><strong>No hay garantía de tiempo.</strong> TCP promete entrega, no latencia. Para recuperar una pérdida retransmite, y eso tarda.</li>
+  <li><strong>La entrega no implica que la aplicación lo haya procesado.</strong> Un <em>ack</em> de TCP significa que el sistema operativo del otro extremo recibió los bytes, no que el programa los haya leído, ni mucho menos que los haya tratado correctamente.</li>
+  <li><strong>Si la conexión se rompe, no sabes qué llegó.</strong> Si un extremo escribe y después la conexión se cae, no hay forma de saber desde TCP cuántos bytes llegaron a procesarse. Las aplicaciones que necesitan certeza (pagos, transacciones) añaden sus propias confirmaciones.</li>
+</ul>
+
+<p>La especificación actual es la RFC 9293, publicada en agosto de 2022 como estándar de Internet (STD 7). Reúne y sustituye a la RFC 793 original de 1981 y a varias actualizaciones posteriores: según su cabecera, obsoleta las RFC 793, 879, 2873, 6093, 6429, 6528 y 6691, y actualiza las RFC 1011, 1122 y 5961. Es decir, cuando alguien cita "la RFC 793" para explicar TCP, está citando un documento ya sustituido (aunque la descripción básica de la máquina de estados siga vigente).</p>
+
+<h2>La cabecera: lo que lleva cada segmento</h2>
+
+<p>Los datos de TCP viajan en <em>segmentos</em>. Cada uno empieza con una cabecera cuyos campos, según la RFC 9293, son estos, por orden:</p>
+
+<ul>
+  <li>Puerto de origen y puerto de destino (16 bits cada uno). Junto a las direcciones IP identifican la conexión.</li>
+  <li>Número de secuencia (32 bits): la posición, dentro del flujo de bytes, del primer byte de datos de este segmento.</li>
+  <li>Número de confirmación (32 bits): el siguiente byte que el emisor espera recibir del otro extremo.</li>
+  <li>Desplazamiento de datos (4 bits): la longitud de la cabecera en palabras de 32 bits. Como el campo tiene 4 bits, el máximo es 15, por lo que la cabecera puede medir como mucho 60 bytes (15 × 4, una derivación nuestra, no una cita).</li>
+  <li>Bits reservados y banderas de control: CWR, ECE, URG, ACK, PSH, RST, SYN y FIN (1 bit cada una).</li>
+  <li>Ventana (16 bits): cuántos bytes más está dispuesto a recibir quien envía este segmento.</li>
+  <li>Suma de verificación (16 bits) y puntero urgente (16 bits), seguidos de las opciones y los datos.</li>
+</ul>
+
+<p>Las banderas son el vocabulario del protocolo. <code>SYN</code> abre una conexión y sincroniza números de secuencia; <code>ACK</code> indica que el campo de confirmación es válido (casi todos los segmentos posteriores al primero lo llevan); <code>FIN</code> anuncia que ese extremo no enviará más datos; <code>RST</code> aborta la conexión de forma brusca; y <code>PSH</code> sugiere entregar los datos a la aplicación sin esperar a llenar un búfer. Esas letras son las mismas que ves en la salida de <code>tcpdump</code>, como veremos al final.</p>
+
+<h2>Abrir una conexión: el acuerdo en tres pasos</h2>
+
+<p>Antes de intercambiar datos, los dos extremos deben ponerse de acuerdo en los números de secuencia iniciales y en los parámetros de la conexión. La RFC 9293 describe el procedimiento de apertura en tres pasos (<em>three-way handshake</em>, 3WHS). Un extremo en estado de escucha (<code>LISTEN</code>) espera; el otro inicia:</p>
+
+<ol>
+  <li><strong>SYN.</strong> El cliente envía un segmento con la bandera SYN y su número de secuencia inicial, y pasa al estado <code>SYN-SENT</code>.</li>
+  <li><strong>SYN-ACK.</strong> El servidor responde con un segmento con SYN y ACK: acepta el número del cliente y propone el suyo. Pasa a <code>SYN-RECEIVED</code>.</li>
+  <li><strong>ACK.</strong> El cliente confirma el número del servidor y pasa a <code>ESTABLISHED</code>; cuando el servidor recibe ese ACK, también.</li>
+</ol>
+
+<p>La especificación explica el nombre con una observación sencilla: como el segundo y el tercer paso podrían combinarse en un único mensaje, esto se llama el acuerdo en tres pasos. Una consecuencia práctica inmediata: <strong>abrir una conexión cuesta un viaje de ida y vuelta (RTT) completo</strong> antes de poder enviar el primer byte de datos de aplicación (el cliente puede enviar datos junto con el tercer paso, pero la conexión no está confirmada hasta que llega el SYN-ACK). Con 100 ms de RTT, esos 100 ms se pagan en cada conexión nueva, y por eso los clientes reutilizan conexiones (<em>keep-alive</em> de HTTP, pools de conexiones de bases de datos) en lugar de abrir una por petición.</p>
+
+<h3>Los estados de una conexión</h3>
+
+<p>La RFC 9293 define una máquina de estados con once estados (uno de ellos ficticio): <code>LISTEN</code>, <code>SYN-SENT</code>, <code>SYN-RECEIVED</code>, <code>ESTABLISHED</code>, <code>FIN-WAIT-1</code>, <code>FIN-WAIT-2</code>, <code>CLOSE-WAIT</code>, <code>CLOSING</code>, <code>LAST-ACK</code>, <code>TIME-WAIT</code> y el ficticio <code>CLOSED</code>. Son los mismos nombres que muestran <code>ss</code> o <code>netstat</code>, de modo que aprender a leerlos convierte cualquier listado de conexiones en un diagnóstico.</p>
+
+<table>
+  <thead>
+    <tr><th>Estado</th><th>Significado práctico</th><th>Cuándo preocuparse</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>LISTEN</code></td><td>El servidor espera conexiones entrantes.</td><td>Si falta, el servicio no está escuchando en ese puerto.</td></tr>
+    <tr><td><code>SYN-SENT</code></td><td>Se envió un SYN y se espera respuesta.</td><td>Muchas conexiones aquí indican destino inaccesible o filtrado.</td></tr>
+    <tr><td><code>SYN-RECEIVED</code></td><td>Llegó un SYN y se respondió con SYN-ACK.</td><td>Acumulación anómala puede indicar un ataque de inundación de SYN.</td></tr>
+    <tr><td><code>ESTABLISHED</code></td><td>Conexión abierta y operativa.</td><td>Cantidades muy altas pueden delatar fugas de conexiones.</td></tr>
+    <tr><td><code>CLOSE-WAIT</code></td><td>El otro extremo cerró; nuestra aplicación aún no.</td><td>Muchos aquí suelen significar que la aplicación local no cierra sus sockets.</td></tr>
+    <tr><td><code>TIME-WAIT</code></td><td>Cerrada activamente; se espera por seguridad.</td><td>Es normal; solo preocupa en volúmenes extremos.</td></tr>
+  </tbody>
+</table>
+
+<h3>La cola de conexiones y las cookies SYN</h3>
+
+<p>En un servidor, cada SYN entrante ocupa recursos hasta que el acuerdo se completa. Un atacante puede enviar muchos SYN con direcciones falsas, de modo que el tercer paso nunca llegue y la cola de conexiones a medio abrir se agote. Linux dispone de una defensa documentada en <code>tcp(7)</code>: el parámetro <code>tcp_syncookies</code>, cuyo valor por defecto es 1 (activo cuando se desborda la cola de SYN pendientes); el valor 2 las activa de forma incondicional desde la versión 3.12 del kernel. La cola se dimensiona con <code>tcp_max_syn_backlog</code>, cuyo valor por defecto depende de la memoria: 256, que sube a 1024 con 128 MB de RAM o más y baja a 128 con 32 MB o menos, según el manual.</p>
+
+<h2>Cerrar una conexión y el estado TIME-WAIT</h2>
+
+<p>El cierre ordenado usa la bandera FIN en cada sentido, de modo que cada dirección se cierra por separado (cierre <em>half-close</em>): un extremo puede dejar de enviar y seguir recibiendo. El que cierra primero pasa por <code>FIN-WAIT-1</code> y <code>FIN-WAIT-2</code>; el otro pasa por <code>CLOSE-WAIT</code> y <code>LAST-ACK</code>.</p>
+
+<p>El estado más malinterpretado es <code>TIME-WAIT</code>. La RFC 9293 establece que, cuando una conexión se cierra de forma activa, el extremo que la cierra <strong>debe</strong> permanecer en <code>TIME-WAIT</code> durante un tiempo de 2×MSL, donde MSL es la vida máxima de un segmento en la red, y la propia especificación fija el MSL en dos minutos, aclarando que es una decisión de ingeniería. Las implementaciones pueden usar valores distintos en la práctica; lo importante es el propósito del estado, que la bibliografía general atribuye a dos razones (no hemos contrastado aquí el pasaje exacto de la RFC): asegurar que el último ACK llegó al otro extremo (que de lo contrario retransmitiría su FIN) y dejar que expiren los segmentos antiguos de la conexión anterior antes de aceptar otra con el mismo cuádruple de direcciones y puertos.</p>
+
+<p>De ahí se derivan dos ideas útiles. La primera: <code>TIME-WAIT</code> es normal y saludable. Un servidor que cierra miles de conexiones por segundo tendrá miles de sockets en ese estado, y no es un fallo. La segunda: el estado se queda en quien cierra <em>primero</em>. Por eso, en un servidor web que cierra tras cada respuesta, el servidor acumula <code>TIME-WAIT</code>; si es el cliente quien cierra, los acumula el cliente. Cuando el problema es real (agotamiento de puertos efímeros en un cliente que abre muchísimas conexiones cortas), la solución correcta es reutilizar conexiones, no reducir artificialmente el temporizador. El manual de <code>tcp(7)</code> documenta <code>tcp_tw_reuse</code> (desactivado por defecto), que permite reutilizar sockets en <code>TIME-WAIT</code> cuando el protocolo lo permite sin riesgo, y <code>tcp_fin_timeout</code> (60 segundos por defecto, antes 180). Sobre este último, la tabla del manual que consultamos solo nos permitió extraer su valor; la bibliografía general lo asocia con la espera en <code>FIN-WAIT-2</code> de las conexiones cerradas por la aplicación, no con <code>TIME-WAIT</code>, pero conviene confirmarlo en la documentación de tu versión.</p>
+
+<h2>Segmentos y tamaño máximo: el MSS</h2>
+
+<p>Los datos se trocean en segmentos para encajar en los paquetes de la red. El <em>Maximum Segment Size</em> (MSS) es el máximo de datos útiles por segmento que un extremo está dispuesto a recibir, y se anuncia en una opción de la cabecera durante el acuerdo inicial. Según la RFC 9293 (sección 3.7.1), si no se recibe la opción, la implementación debe asumir un MSS de envío por defecto de 536 bytes para IPv4 (576 menos 40 de cabeceras) y de 1220 para IPv6. El MSS efectivo de envío es el menor entre el que anuncia el otro extremo y el máximo que el nivel IP permite, descontando las cabeceras TCP e IP.</p>
+
+<p>Esto tiene un efecto en el rendimiento: con una cabecera de 40 bytes (IPv4 y TCP sin opciones) y un MSS de 1460, la eficiencia es alta (alrededor del 97 %); con segmentos muy pequeños, la cabecera pesa proporcionalmente mucho. Por eso se agrupan pequeñas escrituras, como veremos al hablar del algoritmo de Nagle.</p>
+
+<h2>Fiabilidad: confirmaciones y retransmisión</h2>
+
+<p>TCP numera cada byte y el receptor confirma lo que ha recibido <em>de forma acumulativa</em>: un ACK con el número N significa "he recibido bien todos los bytes anteriores al N". Si el emisor no recibe la confirmación a tiempo, retransmite. La pregunta clave es: ¿cuánto esperar? Si se espera poco, se retransmite en vano (retransmisiones espurias) y se aumenta la congestión; si se espera mucho, una pérdida real se tarda en reparar.</p>
+
+<h3>El temporizador de retransmisión (RTO)</h3>
+
+<p>La respuesta está en la RFC 6298, que la RFC 9293 exige seguir (sección 3.8.1) incluyendo el algoritmo de Karn. El procedimiento mantiene dos variables: el RTT suavizado (<code>SRTT</code>) y su variación (<code>RTTVAR</code>):</p>
+
+<ul>
+  <li><strong>RTO inicial:</strong> antes de tener ninguna medida, el emisor debería fijar el RTO en 1 segundo.</li>
+  <li><strong>Primera medida R:</strong> <code>SRTT = R</code>, <code>RTTVAR = R/2</code> y <code>RTO = SRTT + max(G, 4 × RTTVAR)</code>, donde G es la granularidad del reloj.</li>
+  <li><strong>Medidas siguientes R':</strong> primero <code>RTTVAR = (1 − β) × RTTVAR + β × |SRTT − R'|</code> y después <code>SRTT = (1 − α) × SRTT + α × R'</code>, con α = 1/8 y β = 1/4 (la RFC dice que deben calcularse con esos valores).</li>
+  <li><strong>RTO mínimo:</strong> si el RTO calculado es menor de 1 segundo, debería redondearse a 1 segundo. Es una recomendación (SHOULD), no una obligación.</li>
+  <li><strong>RTO máximo:</strong> puede imponerse un máximo, siempre que sea de al menos 60 segundos.</li>
+  <li><strong>Algoritmo de Karn:</strong> las muestras de RTT tomadas de segmentos retransmitidos no se usan, porque no se sabe a cuál de las transmisiones corresponde la confirmación (salvo que se use la opción de marcas de tiempo).</li>
+</ul>
+
+<p>Veamos un ejemplo numérico que puedes repetir con una calculadora. Supón que la primera medida de RTT es de 100 ms. Entonces <code>SRTT = 100</code>, <code>RTTVAR = 50</code> y <code>RTO = 100 + 4 × 50 = 300</code> ms, que la regla del mínimo eleva a 1 segundo. Llega una segunda medida de 120 ms: <code>RTTVAR = 0,75 × 50 + 0,25 × |100 − 120| = 37,5 + 5 = 42,5</code> y <code>SRTT = 0,875 × 100 + 0,125 × 120 = 87,5 + 15 = 102,5</code>, de modo que <code>RTO = 102,5 + 4 × 42,5 = 272,5</code> ms, que otra vez se redondea a 1 segundo. Lo importante de este ejemplo es una conclusión práctica: <strong>en una red local con RTT de milisegundos, el RTO sigue siendo de 1 segundo</strong> si se aplica el mínimo recomendado, de modo que una pérdida que haya que resolver por temporizador cuesta aproximadamente un segundo, enorme comparado con el RTT. Por eso la retransmisión rápida (que veremos enseguida) es tan importante para mantener baja la latencia.</p>
+
+<h3>Retroceso exponencial</h3>
+
+<p>Cuando el temporizador vence y se retransmite, la RFC 6298 exige duplicar el RTO ("el host debe fijar RTO ← RTO × 2"). Los intentos sucesivos esperan, por tanto, 1, 2, 4, 8, 16 segundos y así sucesivamente hasta un posible máximo. Este comportamiento, que evita agravar una red congestionada con retransmisiones a ritmo constante, también explica los tiempos de espera largos antes de que una aplicación se entere de que el otro extremo ha desaparecido. En Linux, el parámetro <code>tcp_retries2</code> (15 por defecto) fija el número de reintentos antes de abandonar una conexión establecida, lo que el manual traduce en unos 13 a 30 minutos según el RTO. Si necesitas detectar un fallo más rápido, la opción de socket <code>TCP_USER_TIMEOUT</code> (desde Linux 2.6.37, en milisegundos; con 0 se usa el valor del sistema) permite fijar un límite por conexión.</p>
+
+<h3>Retransmisión rápida y confirmaciones selectivas</h3>
+
+<p>Esperar un RTO de un segundo para recuperar una pérdida sería desastroso para el rendimiento. La RFC 5681 describe un atajo: la <strong>retransmisión rápida</strong>. Si un segmento se pierde pero los siguientes llegan, el receptor responde a cada uno de ellos con un ACK duplicado del mismo número (pidiendo el byte que falta). Al recibir <strong>tres ACK duplicados</strong>, el emisor deduce que ese segmento se perdió y lo retransmite sin esperar al temporizador.</p>
+
+<p>Las confirmaciones selectivas (SACK, RFC 2018) refinan el mecanismo: el receptor informa de qué bloques fuera de orden ha recibido, de modo que el emisor solo retransmite lo que de verdad falta. En Linux están activadas por defecto (<code>tcp_sack</code>), igual que el escalado de ventana (<code>tcp_window_scaling</code>) y las marcas de tiempo (<code>tcp_timestamps</code> a 1, con desplazamientos aleatorios), según <code>tcp(7)</code>.</p>
+
+<h2>Control de flujo: no abrumar al receptor</h2>
+
+<p>El campo <em>ventana</em> de la cabecera es el mecanismo de control de flujo: el receptor anuncia cuántos bytes más puede aceptar en su búfer, y el emisor no debe enviar más de eso sin confirmación. Si el receptor tarda en leer, la ventana se reduce; si llega a cero, el emisor se detiene. La RFC 9293 (sección 3.8.6.1) exige soportar el <strong>sondeo de ventana cero</strong>: el emisor envía periódicamente un segmento pequeño para averiguar si la ventana se ha reabierto, con intervalos que, según la recomendación de la RFC, deberían crecer de forma exponencial, de modo que la conexión no quede bloqueada para siempre si se perdió el aviso de reapertura. La especificación añade que un receptor no debería reducir una ventana ya anunciada.</p>
+
+<p>La especificación incluye también mecanismos para evitar el <em>síndrome de la ventana tonta</em> (<em>silly window syndrome</em>), un fenómeno en el que, por anunciar y consumir ventanas diminutas, la conexión acaba enviando segmentos minúsculos con una proporción absurda de cabecera. Tanto emisor como receptor deben incluir algoritmos para evitarlo (secciones 3.8.6.2.1 y 3.8.6.2.2).</p>
+
+<h3>El techo del producto ancho de banda por retardo</h3>
+
+<p>La ventana tiene una consecuencia fundamental: <strong>el rendimiento máximo de una conexión es la ventana dividida por el RTT</strong>. El campo de ventana de la cabecera tiene 16 bits, de modo que sin extensiones la ventana máxima es de 65.535 bytes. Con un RTT de 100 ms, el rendimiento máximo sería 65.535 × 8 bits / 0,1 s ≈ 5,2 Mbit/s, independientemente de que el enlace sea de 100 Mbit/s o de 10 Gbit/s. Es la razón por la que existe la opción de <em>escalado de ventana</em> (documentada como <code>tcp_window_scaling</code> en la página del manual), que permite anunciar ventanas mucho mayores, y por la que el dimensionamiento de los búferes del kernel importa: <code>tcp_rmem</code> y <code>tcp_wmem</code> definen mínimo, valor por defecto y máximo; el manual documenta valores por defecto de 87.380 bytes para recepción y 16 kB para envío, con máximos que dependen de la memoria disponible, y de hasta 4 MB como tope del cálculo por defecto.</p>
+
+<p>Para llenar un enlace de 1 Gbit/s con 50 ms de RTT hay que mantener en vuelo, como mínimo, el producto ancho de banda por retardo: 1.000.000.000 bit/s × 0,05 s / 8 = 6,25 MB. Con búferes de 4 MB como máximo, el enlace no se llenaría por limitación de ventana. Un ajuste de búferes bien medido puede, por tanto, multiplicar el rendimiento en enlaces largos, mientras que en redes locales con RTT de fracciones de milisegundo apenas importa.</p>
+
+<h2>Control de congestión: no abrumar a la red</h2>
+
+<p>El control de flujo protege al receptor; el <strong>control de congestión</strong> protege a la red entre ambos. El emisor mantiene una variable, la <em>ventana de congestión</em> (<code>cwnd</code>), que limita cuánto puede enviar sin confirmación; la cantidad efectiva en vuelo es el mínimo entre <code>cwnd</code> y la ventana anunciada por el receptor (<code>rwnd</code>). La RFC 5681 especifica cuatro algoritmos: arranque lento (<em>slow start</em>), evitación de congestión, retransmisión rápida y recuperación rápida.</p>
+
+<h3>Arranque lento</h3>
+
+<p>Al empezar no se conoce la capacidad de la red, así que se empieza con una ventana pequeña y se crece de forma exponencial. La ventana inicial (IW) depende del tamaño de segmento del emisor (SMSS): según la RFC 5681, 2 segmentos si SMSS es mayor que 2190 bytes, 3 si está entre 1096 y 2190, y 4 si es de 1095 o menos. Con un SMSS típico de 1460 bytes, la ventana inicial son 3 segmentos (4380 bytes). En el arranque lento, cada ACK que confirma datos nuevos incrementa la ventana en hasta un SMSS, lo que equivale a duplicar la ventana aproximadamente en cada RTT.</p>
+
+<p>La RFC 6928, de carácter experimental (abril de 2013), propuso aumentar la ventana inicial a 10 segmentos con un tope de 14.600 bytes (<code>min(10×MSS, max(2×MSS, 14600))</code>), con una motivación muy concreta: el tráfico de Internet está dominado por la web y por conexiones cortas, en las que la ventana inicial pequeña es un factor limitante. Con un MSS de 1460, esa fórmula da exactamente 14.600 bytes (10 segmentos). Un cálculo aproximado, con duplicación ideal por RTT y sin pérdidas, ilustra la diferencia en una transferencia de 32 segmentos: con una ventana inicial de 3, se envían 3, 6, 12 y 24 segmentos en cuatro rondas (suman 45, suficientes); con una de 10, bastan tres rondas (10, 20 y 40). Es una cuenta simplificada nuestra, no un cálculo de la RFC. Lo esencial es que cada ronda ahorrada es un RTT menos de latencia. La RFC 6928 incluye, no obstante, advertencias que conviene leer: las ráfagas grandes pueden desbordar los búferes de routers pequeños y una ventana inicial grande aumenta la probabilidad de un RTO espurio en rutas de poco ancho de banda.</p>
+
+<h3>Evitación de congestión</h3>
+
+<p>La variable <code>ssthresh</code> (umbral de arranque lento) marca el punto de cambio: mientras <code>cwnd &lt; ssthresh</code>, se usa arranque lento; cuando <code>cwnd &gt; ssthresh</code>, se usa evitación de congestión, que según la RFC incrementa la ventana "aproximadamente un segmento completo por RTT", y nunca más de un SMSS por RTT. El crecimiento pasa de exponencial a lineal: se sigue buscando más capacidad, pero con cautela.</p>
+
+<h3>Qué ocurre cuando hay pérdidas</h3>
+
+<p>Las pérdidas se interpretan como señal de congestión, y la reacción depende de cómo se detectan:</p>
+
+<ul>
+  <li><strong>Por tres ACK duplicados</strong> (retransmisión rápida): se retransmite el segmento perdido y el umbral se fija con la ecuación <code>ssthresh = max(FlightSize / 2, 2 × SMSS)</code>. Después, en la recuperación rápida, la ventana pasa a <code>ssthresh + 3 × SMSS</code> mientras dure la recuperación y se reduce a <code>ssthresh</code> cuando llega un ACK que confirma datos nuevos. Por ejemplo, con 20 segmentos en vuelo de 1460 bytes (29.200 bytes), <code>ssthresh = max(14.600; 2.920) = 14.600</code> bytes, es decir, la ventana se reduce a la mitad (10 segmentos).</li>
+  <li><strong>Por vencimiento del RTO</strong>: es una señal más grave. La RFC exige fijar <code>cwnd</code> en un valor no superior a la ventana de pérdida (LW), que vale un segmento completo con independencia de la ventana inicial, y volver al arranque lento.</li>
+</ul>
+
+<p>El patrón resultante, un crecimiento gradual seguido de reducciones bruscas, es el característico "diente de sierra" del TCP clásico (Reno), y explica por qué la velocidad de una transferencia larga oscila alrededor de la capacidad disponible.</p>
+
+<h3>CUBIC y otros algoritmos</h3>
+
+<p>El crecimiento lineal de Reno es demasiado lento en enlaces de mucho ancho de banda y gran latencia, porque tarda muchos RTT en recuperar la ventana tras una pérdida. CUBIC, estandarizado en la RFC 9438 (agosto de 2023, que obsoleta la RFC 8312 y actualiza la 5681), cambia la función de crecimiento: la ventana aumenta como una función cúbica del tiempo transcurrido desde el último evento de congestión. Tras una reducción, crece deprisa al principio, se aplana al acercarse a la ventana que tenía antes de la pérdida y vuelve a crecer con rapidez si no hay pérdidas, para explorar si hay más capacidad. Según la RFC, la tasa de crecimiento es independiente del RTT fuera de la región "compatible con Reno", donde CUBIC se comporta al menos como Reno para no perder rendimiento en redes de pequeño producto ancho de banda por retardo.</p>
+
+<p>Los parámetros recomendados por la RFC son un factor de reducción multiplicativo <code>β_cubic = 0,7</code> (frente al 0,5 de Reno) y una constante <code>C = 0,4</code>. Con CUBIC, una ventana de 20 segmentos que sufre una pérdida baja a 14 (20 × 0,7), mientras que con Reno bajaría a 10: la caída es menos brusca y la recuperación más rápida.</p>
+
+<p>¿Qué algoritmo usa tu servidor? En Linux se elige con <code>tcp_congestion_control</code>, cuyo valor por defecto se fija al configurar el kernel según <code>tcp(7)</code>, y se pueden listar los disponibles en <code>tcp_available_congestion_control</code>; <code>reno</code> está siempre disponible. Existen otros algoritmos (por ejemplo, BBR, que estima el ancho de banda y el RTT en lugar de reaccionar a las pérdidas), cuya descripción detallada queda fuera de las fuentes de este artículo. Lo importante para la práctica es que el algoritmo se puede cambiar por socket o por sistema, y que conviene medir antes de cambiar el valor por defecto.</p>
+
+<h2>Nagle, ACK retardado y la latencia de los mensajes pequeños</h2>
+
+<p>Dos optimizaciones, pensadas para aprovechar mejor la red con mensajes pequeños, interactúan de formas que sorprenden a quien mide latencias.</p>
+
+<p>El <strong>algoritmo de Nagle</strong> agrupa pequeñas escrituras: mientras haya datos enviados sin confirmar, retiene los nuevos hasta tener un segmento completo o recibir la confirmación. La RFC 9293 (sección 3.7.4) dice que una implementación debería (<em>SHOULD</em>) implementar Nagle para unir segmentos cortos, y que debe (<em>MUST</em>) ofrecer a las aplicaciones una forma de desactivarlo por conexión. En la API de sockets, esa forma es la opción <code>TCP_NODELAY</code>.</p>
+
+<p>El <strong>ACK retardado</strong> hace lo propio en el receptor: no confirma de inmediato cada segmento, sino que espera un poco por si puede enviar la confirmación junto con datos propios o confirmar varios segmentos a la vez. La RFC 9293 (sección 3.8.6.3) exige que el retardo sea inferior a 0,5 segundos y recomienda generar un ACK al menos por cada segundo segmento completo.</p>
+
+<p>La combinación puede producir esperas inesperadas cuando una aplicación escribe un mensaje pequeño en dos partes y espera la respuesta: el emisor retiene la segunda parte por Nagle hasta que llegue el ACK de la primera, y el receptor retrasa ese ACK por si tiene algo que enviar. Es un fenómeno bien conocido en la práctica (no una cifra extraída de las fuentes de este artículo), y la solución habitual es desactivar Nagle con <code>TCP_NODELAY</code> en aplicaciones sensibles a la latencia o, mejor, escribir cada mensaje con una sola llamada. La página <code>tcp(7)</code> documenta además <code>TCP_CORK</code>, la opción contraria: retiene tramas parciales hasta tener un segmento completo, con un tope de 200 ms para que no se retengan indefinidamente.</p>
+
+<pre data-lang="python"><code>import socket
+
+# Ejemplo ilustrativo (no ejecutado): opciones de socket TCP en Linux con Python
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+# Aplicación sensible a la latencia: desactivar Nagle
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+# Keepalive: detectar a un par desaparecido
+s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)   # segundos de inactividad antes de sondear
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)  # segundos entre sondeos
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)     # sondeos fallidos antes de cerrar
+
+s.connect(("ejemplo.org", 80))</code></pre>
+
+<h2>Keepalive: ¿sigue vivo el otro extremo?</h2>
+
+<p>Una conexión TCP inactiva no genera tráfico, de modo que si el otro extremo desaparece (apagón, cable cortado, cortafuegos que descarta el estado), nadie se entera hasta que se intenta enviar. Para eso existen los <em>keepalive</em>, sondeos periódicos. La RFC 9293 (sección 3.8.4) los considera opcionales; si se implementan deben estar desactivados por defecto y su intervalo por defecto debe ser de al menos dos horas, y no se debe interpretar la falta de respuesta a un solo sondeo como conexión muerta.</p>
+
+<p>Linux sigue esa pauta: según <code>tcp(7)</code>, <code>tcp_keepalive_time</code> vale 7200 segundos (dos horas de inactividad antes de empezar a sondear), <code>tcp_keepalive_intvl</code> son 75 segundos entre sondeos y <code>tcp_keepalive_probes</code> son 9 sondeos antes de abandonar. Con esos valores, detectar un par muerto puede tardar más de dos horas, que para muchas aplicaciones es demasiado: de ahí que las aplicaciones ajusten <code>TCP_KEEPIDLE</code> y compañía por socket, como en el ejemplo de Python anterior, o usen mecanismos de aplicación (latidos a nivel de protocolo). Los cortafuegos y los balanceadores suelen descartar conexiones inactivas tras unos minutos (dato de experiencia general, no extraído de las fuentes), de modo que los keepalive de dos horas ni siquiera llegan a enviarse antes de que la conexión quede inutilizada.</p>
+
+<h2>Diagnóstico con ss</h2>
+
+<p><code>ss</code> (<em>socket statistics</em>) es la herramienta moderna para inspeccionar sockets en Linux, sucesora de <code>netstat</code>. Según su página del manual, muestra más información sobre TCP y estados que otras herramientas. Las opciones más útiles son:</p>
+
+<ul>
+  <li><code>-t</code> para sockets TCP y <code>-u</code> para UDP; <code>-l</code> para los que están escuchando (que se omiten por defecto).</li>
+  <li><code>-n</code> para no resolver nombres de servicios y mostrar valores exactos.</li>
+  <li><code>-p</code> para mostrar el proceso propietario (necesita privilegios para ver los de otros usuarios).</li>
+  <li><code>-i</code> para mostrar la información interna de TCP.</li>
+  <li><code>-o</code> para mostrar información de temporizadores (nombre, tiempo restante y número de retransmisiones).</li>
+  <li><code>-e</code> para información ampliada (UID, inodo y cookie del socket).</li>
+  <li><code>-s</code> para un resumen estadístico sin recorrer toda la lista, útil con muchísimos sockets.</li>
+  <li><code>-H</code> para suprimir la cabecera, útil en scripts.</li>
+</ul>
+
+<pre data-lang="bash"><code># Resumen rápido del número de sockets por estado
+ss -s
+
+# Conexiones TCP establecidas, sin resolver nombres, con procesos
+sudo ss -tnp state established
+
+# Información interna de TCP de cada conexión (rto, rtt, cwnd, ssthresh, mss...)
+ss -tin
+
+# Con temporizadores: cuántas retransmisiones lleva cada conexión
+ss -tno state established
+
+# Conexiones en TIME-WAIT, para contarlas
+ss -tn state time-wait | wc -l
+
+# Quién escucha en qué puerto
+sudo ss -tlnp</code></pre>
+
+<h3>Cómo leer ss -i</h3>
+
+<p>La opción <code>-i</code> añade a cada conexión una línea con campos que la página del manual describe: <code>rto</code> es el valor del temporizador de retransmisión en milisegundos; <code>rtt</code> se muestra como <code>rtt/rttvar</code>, el RTT medio y su variación, también en milisegundos; <code>cwnd</code> es el tamaño de la ventana de congestión; <code>ssthresh</code> es el umbral de arranque lento; <code>mss</code> es el tamaño máximo de segmento; <code>bytes_acked</code> y <code>bytes_received</code> los bytes confirmados y recibidos; <code>segs_out</code> y <code>segs_in</code> los segmentos enviados y recibidos; y <code>send</code> la tasa de envío estimada en bits por segundo. Con ellos, el análisis es casi mecánico:</p>
+
+<ul>
+  <li><strong>rtt alto y estable:</strong> el retardo es de la ruta (distancia, enlace lento). No lo arregla ningún ajuste de TCP.</li>
+  <li><strong>rtt con gran variación:</strong> congestión o colas largas en algún punto del camino.</li>
+  <li><strong>cwnd bajo y ssthresh bajo tras un tramo largo:</strong> la conexión ha sufrido pérdidas y no se ha recuperado; una transferencia con pérdidas frecuentes nunca alcanzará su velocidad máxima.</li>
+  <li><strong>rto elevado:</strong> el estimador ha visto RTT altos o ha sufrido retransmisiones con retroceso.</li>
+  <li><strong>mss pequeño:</strong> posible problema de MTU en la ruta o negociación con opciones inesperadas.</li>
+</ul>
+
+<p>Un detalle de honestidad con las fuentes: la página del manual de <code>ss</code> no explica el significado de las columnas <code>Recv-Q</code> y <code>Send-Q</code> ni lista los campos <code>retrans</code> o <code>bytes_sent</code> entre los de <code>-i</code>, de modo que no los tratamos como documentados aquí. Por conocimiento general del uso de la herramienta (que conviene confirmar en la documentación de tu versión), en un socket establecido <code>Recv-Q</code> son los bytes recibidos que la aplicación aún no ha leído y <code>Send-Q</code> los enviados que aún no han sido confirmados; en un socket en escucha, <code>Recv-Q</code> es el número de conexiones completadas pendientes de aceptación y <code>Send-Q</code> el tamaño máximo de esa cola. Una <code>Recv-Q</code> alta en una conexión establecida suele indicar que la aplicación no lee a tiempo, y una <code>Recv-Q</code> que crece en un socket en escucha, que el servidor no acepta conexiones al ritmo que llegan.</p>
+
+<h2>Diagnóstico con tcpdump</h2>
+
+<p>Cuando <code>ss</code> no basta, <code>tcpdump</code> permite ver los segmentos reales que cruzan una interfaz. Las opciones documentadas en su manual que más se usan son: <code>-i</code> para elegir la interfaz (la pseudointerfaz <code>any</code> captura en todas las interfaces ordinarias, sin modo promiscuo), <code>-n</code> para no convertir direcciones y puertos en nombres, <code>-c</code> para detenerse tras un número de paquetes, <code>-w</code> para guardar los paquetes crudos en un archivo y <code>-r</code> para leer de uno, <code>-s</code> para ajustar cuántos bytes se capturan de cada paquete (por defecto 262.144), <code>-v</code> para una salida más detallada y <code>-X</code> o <code>-A</code> para ver el contenido en hexadecimal y ASCII, o solo en ASCII.</p>
+
+<h3>Leer las banderas</h3>
+
+<p>La leyenda del manual de <code>tcpdump</code> para las banderas TCP es: <code>S</code> es SYN, <code>F</code> es FIN, <code>P</code> es PSH, <code>R</code> es RST, <code>U</code> es URG, <code>W</code> es CWR, <code>E</code> es ECE y el punto (<code>.</code>) es ACK. Los ejemplos de la página muestran <code>[S]</code> para un SYN, <code>[S.]</code> para un SYN-ACK, <code>[.]</code> para un ACK simple y <code>[P.]</code> para PSH con ACK; <code>[F.]</code> y <code>[R]</code> siguen la misma leyenda. Con eso, reconocer un acuerdo en tres pasos en una captura es inmediato: una línea <code>[S]</code> del cliente, una <code>[S.]</code> del servidor y una <code>[.]</code> del cliente.</p>
+
+<h3>Filtros útiles</h3>
+
+<p>La sintaxis de filtros es la de <code>pcap-filter</code>, a la que remite el manual. Los ejemplos de la página incluyen filtros por puerto (<code>port 8080</code>), por host (<code>host 192.0.2.1</code>) y por protocolo (<code>icmp</code>), y filtros por banderas TCP con <code>tcp[tcpflags]</code> (equivalente a <code>tcp[13]</code>):</p>
+
+<pre data-lang="bash"><code># Solo los SYN (inicios de conexión) hacia o desde el puerto 443
+sudo tcpdump -i any -n 'tcp port 443 and tcp[tcpflags] == tcp-syn'
+
+# Paquetes SYN o FIN (aperturas y cierres)
+sudo tcpdump -n 'tcp[tcpflags] &amp; (tcp-syn|tcp-fin) != 0'
+
+# Reinicios de conexión (RST)
+sudo tcpdump -i any -n 'tcp[tcpflags] &amp; tcp-rst != 0'
+
+# Guardar una captura limitada para analizarla después (p. ej. en Wireshark)
+sudo tcpdump -i any -n -c 2000 -w captura.pcap 'host 192.0.2.1 and port 5432'</code></pre>
+
+<h3>Qué buscar en una captura</h3>
+
+<p>Sin reproducir salidas que no hemos obtenido, estas son las señales características que se leen en una captura, derivadas de los mecanismos que hemos descrito:</p>
+
+<ul>
+  <li><strong>SYN repetidos sin SYN-ACK:</strong> el destino no responde. Las retransmisiones del SYN siguen el retroceso exponencial (1, 2, 4 segundos...). Suele ser un cortafuegos que descarta paquetes o una ruta rota.</li>
+  <li><strong>SYN seguido de RST:</strong> el destino responde que no hay nadie escuchando en ese puerto.</li>
+  <li><strong>El mismo número de secuencia enviado varias veces:</strong> retransmisiones. Si el intervalo entre ellas se duplica, es el retroceso del RTO.</li>
+  <li><strong>Varios ACK iguales seguidos:</strong> ACK duplicados, señal de una pérdida que la retransmisión rápida resolverá.</li>
+  <li><strong>Anuncios de ventana 0:</strong> el receptor no consume los datos; mira la aplicación receptora.</li>
+  <li><strong>RST inesperados en mitad de una conexión:</strong> un extremo (o un cortafuegos o balanceador intermedio) ha descartado el estado de la conexión.</li>
+</ul>
+
+<h2>Tabla de síntomas y causas habituales</h2>
+
+<table>
+  <thead>
+    <tr><th>Síntoma</th><th>Causas más probables</th><th>Dónde mirar</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>La conexión tarda ~1, 3 o 7 s en abrirse</td><td>Pérdida del SYN o SYN-ACK; retroceso exponencial</td><td><code>tcpdump</code> con filtro de SYN; pérdida en la ruta</td></tr>
+    <tr><td>Transferencia lenta en enlace rápido y lejano</td><td>Ventana limitada por búferes; pérdidas que mantienen <code>cwnd</code> bajo</td><td><code>ss -ti</code> (cwnd, ssthresh), <code>tcp_rmem</code>/<code>tcp_wmem</code></td></tr>
+    <tr><td>Conexiones colgadas tras un cambio de red</td><td>Par desaparecido sin FIN ni RST; sin keepalive</td><td><code>ss -o</code>, <code>TCP_KEEPIDLE</code>, <code>TCP_USER_TIMEOUT</code></td></tr>
+    <tr><td>Miles de sockets en <code>CLOSE-WAIT</code></td><td>La aplicación local no cierra sus sockets</td><td>Revisar el código; <code>ss -tnp state close-wait</code></td></tr>
+    <tr><td>Miles de sockets en <code>TIME-WAIT</code></td><td>Muchas conexiones cortas; es normal salvo agotamiento de puertos</td><td>Reutilizar conexiones; <code>ss -s</code></td></tr>
+    <tr><td>Latencia de unos cientos de ms en mensajes pequeños</td><td>Interacción Nagle + ACK retardado</td><td><code>TCP_NODELAY</code>; una sola escritura por mensaje</td></tr>
+    <tr><td>El servidor deja de aceptar conexiones bajo carga</td><td>Cola de aceptación llena o SYN flood</td><td><code>ss -ltn</code> (Recv-Q de escucha), <code>tcp_syncookies</code>, <code>tcp_max_syn_backlog</code></td></tr>
+  </tbody>
+</table>
+
+<h2>Ajustes del kernel de Linux (con precaución)</h2>
+
+<p>La página <code>tcp(7)</code> documenta los parámetros de <code>/proc/sys/net/ipv4/</code> que controlan el comportamiento del protocolo. Estos son los más relevantes con los valores por defecto que da el manual:</p>
+
+<table>
+  <thead>
+    <tr><th>Parámetro</th><th>Valor por defecto documentado</th><th>Para qué sirve</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>tcp_congestion_control</code></td><td>Se fija al configurar el kernel</td><td>Algoritmo de congestión por defecto; <code>reno</code> siempre disponible</td></tr>
+    <tr><td><code>tcp_syncookies</code></td><td>1</td><td>Defensa frente a inundaciones de SYN</td></tr>
+    <tr><td><code>tcp_max_syn_backlog</code></td><td>256 (1024 con ≥ 128 MB; 128 con ≤ 32 MB)</td><td>Cola de conexiones a medio abrir</td></tr>
+    <tr><td><code>tcp_fin_timeout</code></td><td>60 s</td><td>Espera asociada al cierre de conexiones</td></tr>
+    <tr><td><code>tcp_keepalive_time</code> / <code>intvl</code> / <code>probes</code></td><td>7200 s / 75 s / 9</td><td>Detección de pares muertos</td></tr>
+    <tr><td><code>tcp_retries2</code></td><td>15</td><td>Reintentos antes de abandonar una conexión establecida</td></tr>
+    <tr><td><code>tcp_tw_reuse</code></td><td>Desactivado</td><td>Reutilizar sockets en TIME-WAIT cuando es seguro</td></tr>
+    <tr><td><code>tcp_rmem</code> / <code>tcp_wmem</code></td><td>Recepción 87.380 B; envío 16 kB (por defecto)</td><td>Búferes; limitan la ventana efectiva</td></tr>
+    <tr><td><code>tcp_window_scaling</code>, <code>tcp_sack</code>, <code>tcp_timestamps</code></td><td>Activados</td><td>Ventanas grandes, SACK y marcas de tiempo</td></tr>
+  </tbody>
+</table>
+
+<p>Una regla de oro: <strong>no copies parámetros de una guía de rendimiento sin medir</strong>. Muchos ajustes populares en internet ("reducir tcp_fin_timeout", "activar tcp_tw_reuse en todo") nacieron para problemas específicos de otro entorno y pueden empeorar el tuyo. El orden razonable es medir (con <code>ss -i</code> y capturas), identificar el cuello de botella (ventana, pérdidas, aplicación) y cambiar un parámetro cada vez, comprobando el efecto. Los valores del manual, además, son los documentados para el kernel de referencia: tu distribución puede aplicar valores distintos.</p>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>"TCP garantiza que el mensaje llega entero"</h3>
+
+<p>Garantiza que los bytes llegan en orden mientras la conexión viva, pero no conserva las fronteras de los mensajes. Una sola lectura puede devolver parte de un mensaje o varios mensajes unidos. Las aplicaciones deben enmarcar sus mensajes.</p>
+
+<h3>"Tener muchos TIME-WAIT es una señal de que algo va mal"</h3>
+
+<p>Es lo esperable en un sistema que abre y cierra muchas conexiones. El estado se mantiene por razones de corrección del protocolo y sus recursos son modestos. Los problemas reales, como el agotamiento de puertos efímeros, se resuelven reutilizando conexiones, no acortando el temporizador sin entender las consecuencias.</p>
+
+<h3>"Si desactivo Nagle todo va más rápido"</h3>
+
+<p>Reduce la latencia de los mensajes pequeños, pero genera más segmentos diminutos, con más sobrecarga de cabeceras, si la aplicación escribe en trozos pequeños. Lo más eficaz suele ser agrupar los datos en la propia aplicación y enviar cada mensaje de una vez.</p>
+
+<h3>"Más ancho de banda equivale a transferencias más rápidas"</h3>
+
+<p>No necesariamente. El rendimiento de una conexión está limitado por la ventana dividida por el RTT, y por la capacidad de la ventana de congestión de crecer sin pérdidas. En enlaces de gran latencia, aumentar el ancho de banda sin ajustar los búferes no mejora nada.</p>
+
+<h3>"El keepalive de TCP detecta fallos rápidamente"</h3>
+
+<p>Con los valores por defecto de Linux (7200 s de inactividad), tarda más de dos horas en empezar a sondear. Para detectar fallos con rapidez hay que ajustar los parámetros por socket o usar latidos en el protocolo de aplicación.</p>
+
+<h3>"Un ACK de TCP confirma que la aplicación procesó los datos"</h3>
+
+<p>Solo confirma que el sistema operativo receptor tiene los bytes en su búfer. La aplicación puede no haberlos leído, o puede haber fallado al procesarlos.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿Qué diferencia hay entre TCP y UDP?</h3>
+
+<p>TCP ofrece un flujo fiable, ordenado y con control de flujo y de congestión; UDP envía datagramas sueltos sin garantías, con menos sobrecarga y sin esperas por retransmisión. El tema de UDP, y de cómo QUIC lo usa para construir un transporte fiable por encima, excede los límites de este artículo.</p>
+
+<h3>¿Cuántas conexiones TCP puede tener un servidor?</h3>
+
+<p>Una conexión se identifica por la cuaterna de direcciones IP y puertos de origen y destino, así que el límite teórico por servidor es enorme. En la práctica lo limitan la memoria, los descriptores de archivo y la cola del kernel, no el espacio de puertos del servidor; el límite que sí se agota con frecuencia es el de puertos efímeros del <em>cliente</em> hacia un mismo destino.</p>
+
+<h3>¿Por qué mi conexión tarda un segundo en abrirse a veces?</h3>
+
+<p>Una causa clásica es la pérdida del primer SYN: el emisor espera el RTO inicial, que según la RFC 6298 es de 1 segundo, antes de reenviarlo. Si se pierde otra vez, esperará 2 segundos, luego 4, y así sucesivamente. Una captura con filtro de SYN lo confirma en segundos.</p>
+
+<h3>¿Qué es el MTU y cómo se relaciona con el MSS?</h3>
+
+<p>El MTU es el tamaño máximo de paquete que admite un enlace; el MSS es el tamaño máximo de datos de un segmento TCP, y debe caber en el MTU descontando las cabeceras de IP y de TCP. La RFC 9293 define cómo se calcula el MSS efectivo y su valor por defecto cuando no se anuncia la opción; el descubrimiento del MTU de la ruta es un tema aparte que no hemos cubierto aquí.</p>
+
+<h3>¿Cómo sé si estoy perdiendo paquetes?</h3>
+
+<p>Con <code>ss -i</code>, un <code>cwnd</code> y un <code>ssthresh</code> persistentemente bajos y un <code>rto</code> elevado son indicios. Con <code>ss -o</code> verás el número de retransmisiones de cada conexión. Y con <code>tcpdump</code> puedes confirmar las retransmisiones y los ACK duplicados.</p>
+
+<h3>¿Por qué TCP reduce la velocidad al perder un paquete aunque la red no esté congestionada?</h3>
+
+<p>Porque TCP interpreta toda pérdida como una señal de congestión: no puede distinguir por sí mismo entre una pérdida por saturación y una por interferencia (por ejemplo, en una red inalámbrica). Esta es una de las razones por las que existen algoritmos alternativos que estiman la capacidad de otras formas.</p>
+
+<h3>¿Se puede cambiar el algoritmo de congestión sin reiniciar?</h3>
+
+<p>En Linux, el parámetro <code>tcp_congestion_control</code> se puede modificar en tiempo de ejecución con <code>sysctl</code>, siempre que el algoritmo esté disponible en la lista de <code>tcp_available_congestion_control</code>. Afecta a las conexiones nuevas. Comprueba en la documentación de tu versión los detalles de cambio por socket.</p>
+
+<h3>¿Cuál es la diferencia entre cwnd y rwnd?</h3>
+
+<p><code>rwnd</code> es la ventana que anuncia el receptor (control de flujo, depende del búfer del receptor); <code>cwnd</code> es la ventana que calcula el emisor para no saturar la red (control de congestión). El emisor no puede tener en vuelo más que el mínimo de ambas.</p>
+
+<h2>Conclusión</h2>
+
+<p>TCP es, en el fondo, una colección de mecanismos sencillos que se refuerzan entre sí: números de secuencia y confirmaciones para ordenar y asegurar la entrega, un temporizador calculado con fórmulas explícitas para decidir cuándo reenviar, ventanas para no desbordar ni al receptor ni a la red, y un algoritmo de congestión que explora la capacidad disponible con crecimiento prudente y retrocesos bruscos. Casi cualquier comportamiento extraño que se observa (un segundo de espera inexplicable, una transferencia limitada a unos pocos megabits, una conexión que parece viva pero está muerta) se explica con alguno de esos mecanismos y se confirma con unas pocas líneas de <code>ss</code> o <code>tcpdump</code>.</p>
+
+<p>El método para sacar partido de este conocimiento es sencillo. Primero, identificar qué mecanismo es sospechoso a partir del síntoma, con ayuda de la tabla del artículo. Segundo, medir antes de cambiar nada: el estado interno de la conexión con <code>ss -i</code>, los segmentos reales con <code>tcpdump</code>. Y tercero, preferir las soluciones de aplicación (reutilizar conexiones, enmarcar mensajes, escribir de una vez, usar latidos) a los ajustes del kernel, que suelen ser el último recurso y deben validarse con mediciones.</p>
+
+<p>Si quieres continuar, el siguiente paso natural es la seguridad del transporte: TLS añade a TCP confidencialidad e integridad, y su establecimiento suma viajes de ida y vuelta al coste que hemos calculado aquí. Es el tema del próximo artículo de esta serie.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Eddy, W. (ed.). «RFC 9293: Transmission Control Protocol (TCP)». IETF, agosto de 2022 (STD 7). <a href="https://www.rfc-editor.org/rfc/rfc9293.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc9293.html</a> (consultado el 27-10-2026; se leyeron los primeros 200.000 de 252.501 caracteres).</li>
+  <li>Allman, M., Paxson, V. y Blanton, E. «RFC 5681: TCP Congestion Control». IETF. <a href="https://www.rfc-editor.org/rfc/rfc5681.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc5681.html</a> (consultado el 27-10-2026).</li>
+  <li>Paxson, V. et al. «RFC 6298: Computing TCP's Retransmission Timer». IETF. <a href="https://www.rfc-editor.org/rfc/rfc6298.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc6298.html</a> (consultado el 27-10-2026).</li>
+  <li>Xu, L. et al. «RFC 9438: CUBIC for Fast and Long-Distance Networks». IETF, agosto de 2023. <a href="https://www.rfc-editor.org/rfc/rfc9438.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc9438.html</a> (consultado el 27-10-2026).</li>
+  <li>Chu, J. et al. «RFC 6928: Increasing TCP's Initial Window». IETF, abril de 2013 (Experimental). <a href="https://www.rfc-editor.org/rfc/rfc6928.html" rel="noopener">https://www.rfc-editor.org/rfc/rfc6928.html</a> (consultado el 27-10-2026).</li>
+  <li>Linux man-pages. «tcp(7)». man7.org. <a href="https://man7.org/linux/man-pages/man7/tcp.7.html" rel="noopener">https://man7.org/linux/man-pages/man7/tcp.7.html</a> (consultado el 27-10-2026).</li>
+  <li>Linux man-pages. «ss(8)». man7.org. <a href="https://man7.org/linux/man-pages/man8/ss.8.html" rel="noopener">https://man7.org/linux/man-pages/man8/ss.8.html</a> (consultado el 27-10-2026).</li>
+  <li>The Tcpdump Group. «tcpdump(1)». <a href="https://www.tcpdump.org/manpages/tcpdump.1.html" rel="noopener">https://www.tcpdump.org/manpages/tcpdump.1.html</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>

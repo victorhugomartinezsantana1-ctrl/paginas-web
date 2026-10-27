@@ -1,0 +1,12 @@
+{
+  "id": "ART-008",
+  "slug": "dns-resolucion-cache-dnssec",
+  "titulo": "DNS de extremo a extremo: resolución, caché, DNSSEC y fallos habituales",
+  "etiqueta": "redes",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo se resuelve un nombre: zonas, delegación, recursión, TTL y caché negativa, DNSSEC, DNS sobre TCP y HTTPS, y cómo diagnosticar fallos con dig y resolv.conf.",
+  "palabra_clave": "cómo funciona dns",
+  "secundarias": ["resolución recursiva", "TTL", "caché negativa", "DNSSEC", "dig"],
+  "relacionados": ["tcp-en-la-practica-handshake-congestion-diagnostico", "tls-13-https-certificados-hsts", "azure-static-web-apps"],
+  "barra": "turquesa"
+}

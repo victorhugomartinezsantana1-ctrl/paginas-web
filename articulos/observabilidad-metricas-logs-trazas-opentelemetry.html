@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Observabilidad: métricas, logs y trazas con Prometheus y OpenTelemetry — devlog</title>
+  <meta name="description" content="Cómo instrumentar un sistema: modelo de datos de Prometheus, tipos de métrica, PromQL, trazas con OpenTelemetry y W3C Trace Context, logs correlacionados, SLO y alertas.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/observabilidad-metricas-logs-trazas-opentelemetry.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Observabilidad: métricas, logs y trazas con Prometheus y OpenTelemetry">
+  <meta property="og:description" content="Cómo instrumentar un sistema: modelo de datos de Prometheus, tipos de métrica, PromQL, trazas con OpenTelemetry y W3C Trace Context, logs correlacionados, SLO y alertas.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/observabilidad-metricas-logs-trazas-opentelemetry.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Observabilidad: métricas, logs y trazas con Prometheus y OpenTelemetry",
+    "description": "Cómo instrumentar un sistema: modelo de datos de Prometheus, tipos de métrica, PromQL, trazas con OpenTelemetry y W3C Trace Context, logs correlacionados, SLO y alertas.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 8835,
+    "keywords": "observabilidad prometheus opentelemetry, métricas, trazas distribuidas, SLO, histogramas, alertas",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/observabilidad-metricas-logs-trazas-opentelemetry.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[devops]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          Observabilidad: métricas, logs y trazas con Prometheus y OpenTelemetry
+        </h1>
+        <p class="mt-4 text-muted">Cómo instrumentar un sistema: modelo de datos de Prometheus, tipos de métrica, PromQL, trazas con OpenTelemetry y W3C Trace Context, logs correlacionados, SLO y alertas.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 45 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-monitorizar-no-es-lo-mismo-que-observar" class="text-accent hover:underline">Monitorizar no es lo mismo que observar</a></li>
+          <li><a href="#2-metricas-con-prometheus-el-modelo-de-dat" class="text-accent hover:underline">Métricas con Prometheus: el modelo de datos</a></li>
+          <li><a href="#3-los-cuatro-tipos-de-metrica" class="text-accent hover:underline">Los cuatro tipos de métrica</a></li>
+          <li><a href="#4-nombres-y-etiquetas-las-convenciones-que" class="text-accent hover:underline">Nombres y etiquetas: las convenciones que ahorran problemas</a></li>
+          <li><a href="#5-instrumentar-una-aplicacion" class="text-accent hover:underline">Instrumentar una aplicación</a></li>
+          <li><a href="#6-promql-leer-contadores-con-rate-increase" class="text-accent hover:underline">PromQL: leer contadores con rate, increase e irate</a></li>
+          <li><a href="#7-histogramas-resumenes-y-el-error-de-los" class="text-accent hover:underline">Histogramas, resúmenes y el error de los cuantiles</a></li>
+          <li><a href="#8-registros-estructura-y-correlacion" class="text-accent hover:underline">Registros: estructura y correlación</a></li>
+          <li><a href="#9-trazas-seguir-una-peticion-entre-servici" class="text-accent hover:underline">Trazas: seguir una petición entre servicios</a></li>
+          <li><a href="#10-propagacion-de-contexto-w3c-trace-contex" class="text-accent hover:underline">Propagación de contexto: W3C Trace Context</a></li>
+          <li><a href="#11-el-collector-de-opentelemetry" class="text-accent hover:underline">El Collector de OpenTelemetry</a></li>
+          <li><a href="#12-objetivos-de-nivel-de-servicio-sli-slo-y" class="text-accent hover:underline">Objetivos de nivel de servicio: SLI, SLO y presupuestos de error</a></li>
+          <li><a href="#13-alertas-que-valen-la-pena" class="text-accent hover:underline">Alertas que valen la pena</a></li>
+          <li><a href="#14-un-caso-de-principio-a-fin-de-va-lento-a" class="text-accent hover:underline">Un caso de principio a fin: de «va lento» a la línea responsable</a></li>
+          <li><a href="#15-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#16-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#17-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>Cuando un sistema falla a las tres de la madrugada, la pregunta útil no es «¿qué ha pasado?» sino «¿qué puedo averiguar sin tocar nada?». Si lo único que existe es un archivo de texto con mensajes sueltos en un servidor, la respuesta suele ser «muy poco»: hay que conectarse, adivinar y probar. Si, en cambio, el sistema se diseñó para dejar rastro, se puede responder con datos: cuántas peticiones fallan, desde cuándo, en qué ruta, qué servicio tardó de más en una petición concreta y qué mensaje escribió ese servicio justo en ese instante. Eso es lo que persigue la observabilidad, y se apoya en tres tipos de señales que conviene entender por separado antes de combinarlas: <strong>métricas</strong>, <strong>registros</strong> (logs) y <strong>trazas</strong>.</p>
+
+<p>En este artículo recorremos las tres con dos proyectos abiertos que se han vuelto un estándar de hecho: Prometheus, para métricas, y OpenTelemetry, que define cómo se representan y se transportan trazas, métricas y registros. Veremos el modelo de datos de Prometheus y por qué las etiquetas son a la vez su mayor virtud y su mayor riesgo, cómo funcionan los cuatro tipos de métrica, qué hacen realmente funciones como <code>rate()</code> y <code>histogram_quantile()</code>, qué es una traza y cómo viaja su identificador entre servicios mediante el estándar W3C Trace Context, cómo se correlacionan los registros con las trazas, cómo se definen objetivos de nivel de servicio con la terminología del libro de Google sobre ingeniería de fiabilidad y cómo se escriben alertas que no despierten a nadie sin motivo. Una advertencia de método, igual que en los demás artículos de esta serie: el equipo de redacción no ha desplegado ningún Prometheus ni ningún Collector para escribir esto. Todos los fragmentos de código y consultas son ilustrativos y no se han ejecutado, no mostramos salidas inventadas y las cifras de cardinalidad y de presupuestos de error son aritmética nuestra, que el lector puede repetir con lápiz y papel. Lo que se atribuye a una fuente procede de las páginas oficiales citadas al final, consultadas el 27 de octubre de 2026.</p>
+
+<p>Si vienes del artículo anterior sobre <a href="/articulos/systemd-unidades-dependencias-journald-temporizadores.html">systemd</a>, ya conoces una de las piezas: el diario de <code>journald</code> es una fuente de registros estructurados. Aquí subimos un nivel y pensamos en sistemas compuestos por varios servicios, donde ninguna máquina tiene la historia completa.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Las tres señales responden a preguntas distintas: las métricas dicen <em>cuánto y desde cuándo</em>, las trazas dicen <em>dónde se fue el tiempo en una petición</em> y los registros dicen <em>qué ocurrió exactamente</em>.</li>
+    <li>En Prometheus una serie temporal es un nombre de métrica más un conjunto de etiquetas; <strong>cada combinación distinta de etiquetas es una serie nueva</strong>, así que una etiqueta con muchos valores posibles multiplica el coste.</li>
+    <li>Un contador solo sube (o vuelve a cero al reiniciar el proceso); se consulta con <code>rate()</code> o <code>increase()</code>, nunca por su valor bruto.</li>
+    <li>Los histogramas permiten agregar cuantiles entre instancias; los resúmenes no. Los cubos del histograma deben elegirse cerca del objetivo de latencia.</li>
+    <li>Una cabecera <code>traceparent</code> lleva el identificador de la traza (16 bytes), el del tramo padre (8 bytes) y una bandera de muestreo; es lo que permite unir lo que hace cada servicio en una sola traza.</li>
+    <li>Un objetivo de nivel de servicio (SLO) del 99,9 % en 30 días deja un presupuesto de error de 43,2 minutos; alertar sobre síntomas visibles para el usuario y no sobre cada causa posible reduce el ruido.</li>
+  </ul>
+</div>
+
+<h2 id="1-monitorizar-no-es-lo-mismo-que-observar">Monitorizar no es lo mismo que observar</h2>
+
+<p>La palabra «observabilidad» se usa a veces como sinónimo de moda de «monitorización», y conviene separarlas. Según la definición habitual (que no procede de las páginas consultadas, sino del uso general del término), monitorizar es vigilar de antemano aquello que sabes que puede fallar: el uso de disco, la tasa de errores, el tiempo de respuesta. Se prepara un panel, se fija un umbral, se espera. Observar, en cambio, es la capacidad de formular preguntas que no se previeron cuando se instrumentó el sistema: «¿por qué solo fallan las peticiones de los clientes de este país cuando pasan por esta versión del servicio?». Un sistema es más observable cuanto más rico y mejor correlacionado es lo que emite, de modo que esa pregunta nueva se pueda contestar con datos ya existentes y sin desplegar código nuevo a ciegas.</p>
+
+<p>OpenTelemetry organiza lo que un sistema emite en <em>señales</em>. En su página de conceptos enumera las trazas, las métricas, los registros y el <em>baggage</em> (información contextual que se transmite entre señales), y menciona que los perfiles y los eventos están todavía en desarrollo. Esa lista es útil como mapa: cada señal tiene una forma distinta y una pregunta a la que responde mejor. Nuestra valoración de conjunto, que es una simplificación y no una cita, sería esta:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Señal</th><th>Pregunta típica</th><th>Granularidad</th><th>Punto débil</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Métricas</td><td>¿Cuántas peticiones fallan por minuto? ¿Está subiendo la latencia?</td><td>Agregada: números a lo largo del tiempo</td><td>No dice <em>qué</em> petición concreta falló</td></tr>
+    <tr><td>Trazas</td><td>¿Dónde se gastó el tiempo de esta petición entre cinco servicios?</td><td>Una petición, con su estructura de llamadas</td><td>Hay que instrumentar y propagar el contexto; suele muestrearse</td></tr>
+    <tr><td>Registros</td><td>¿Qué mensaje y qué datos escribió el servicio en ese momento?</td><td>Un suceso</td><td>Sin estructura ni identificadores son difíciles de cruzar con lo demás</td></tr>
+  </tbody>
+</table></div>
+
+<p>Ninguna señal sustituye a las otras. Una alerta de métricas te avisa de que el 3 % de las peticiones fallan; la traza de una petición fallida te dice que el tiempo se fue en la llamada a la pasarela de pago; el registro de ese tramo te dice que la pasarela devolvió un error concreto. El truco, y el hilo conductor de este artículo, es que las tres señales compartan identificadores para poder saltar de una a otra.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-metricas-con-prometheus-el-modelo-de-dat">Métricas con Prometheus: el modelo de datos</h2>
+
+<p>Prometheus almacena series temporales. La documentación de su modelo de datos define una serie como un flujo de valores con marca de tiempo que pertenece a la misma métrica y al mismo conjunto de dimensiones etiquetadas. Cada serie se identifica por el <strong>nombre de la métrica</strong> y un conjunto de pares <strong>etiqueta-valor</strong>, y la notación habitual es <code>nombre{etiqueta="valor", otra="valor"}</code>. Por ejemplo, <code>http_requests_total{metodo="GET", estado="200"}</code> es una serie, y <code>http_requests_total{metodo="GET", estado="500"}</code> es otra distinta, aunque compartan nombre.</p>
+
+<p>Las reglas de sintaxis que documenta la página son estas: el nombre de una métrica debería ajustarse a la expresión regular <code>[a-zA-Z_:][a-zA-Z0-9_:]*</code> y los nombres de etiqueta a <code>[a-zA-Z_][a-zA-Z0-9_]*</code>. Los nombres de etiqueta que empiezan por doble guion bajo (<code>__</code>) están reservados para uso interno; y el propio nombre de la métrica es, internamente, una etiqueta más llamada <code>__name__</code>. Otras dos reglas tienen consecuencias prácticas: cualquier cambio en una etiqueta, incluido añadir o quitar una, crea una serie distinta, y una etiqueta con valor vacío se considera equivalente a una etiqueta ausente.</p>
+
+<p>Lo que se guarda en cada serie son <strong>muestras</strong>: un valor y una marca de tiempo con precisión de milisegundos. El valor es un número de coma flotante de 64 bits (<code>float64</code>) o, en las versiones recientes, un histograma nativo. Esa elección tiene una implicación que a veces se pasa por alto: Prometheus no guarda sucesos individuales, sino el estado de contadores y medidores en el instante en que los lee. Si una petición dura 2 ms y otra 4 s, Prometheus no guarda esas dos duraciones; guarda cómo evolucionan los contadores o los cubos de un histograma que las contaron. La riqueza está en las etiquetas, no en el detalle de cada suceso.</p>
+
+<h3>La recolección: el modelo de «extracción»</h3>
+
+<p>Una característica que se da por sabida y conviene mencionar, aunque las páginas consultadas para este artículo no la desarrollan, es que en el modelo habitual Prometheus <em>extrae</em> las métricas: cada cierto intervalo lee, por HTTP, una página de texto que cada aplicación expone (por convención, en la ruta <code>/metrics</code>). La aplicación no envía nada; solo mantiene sus contadores al día y los publica. Tiene ventajas (la aplicación no necesita saber dónde está el servidor de métricas, y un objetivo que no responde es en sí mismo una señal) y limitaciones (las tareas de vida muy corta pueden desaparecer antes de la siguiente lectura). Aquí lo tratamos como conocimiento general y no profundizamos más.</p>
+
+<h2 id="3-los-cuatro-tipos-de-metrica">Los cuatro tipos de métrica</h2>
+
+<p>La biblioteca cliente de Prometheus ofrece cuatro tipos de métrica. Los tipos son sobre todo una convención de las bibliotecas y de la forma de interpretar los datos: en el servidor, todo acaba siendo series de muestras con nombre y etiquetas, como describe el modelo de datos. Elegir bien el tipo es lo que luego permite hacer las consultas correctas.</p>
+
+<h3>Contador (counter)</h3>
+
+<p>Un contador es una cifra acumulada que solo puede aumentar, o volver a cero cuando el proceso se reinicia. Sirve para contar cosas que ocurren: peticiones atendidas, errores, bytes enviados. La documentación advierte expresamente de que no se use un contador para algo que pueda disminuir: para eso existe el medidor. El valor bruto de un contador casi nunca interesa (decir «hay 14 982 304 peticiones» no informa de nada sin un contexto temporal); lo útil es su <em>velocidad de cambio</em>, y por eso la inmensa mayoría de las consultas sobre contadores pasan por <code>rate()</code> o <code>increase()</code>.</p>
+
+<h3>Medidor (gauge)</h3>
+
+<p>Un medidor es un valor que puede subir y bajar libremente: el número de conexiones abiertas, la memoria en uso, la temperatura de una CPU, el tamaño de una cola. Se lee directamente y se grafica tal cual. La pregunta para decidir entre contador y medidor es sencilla: ¿el valor tiene sentido por sí solo en un instante (medidor) o solo tiene sentido la diferencia entre dos instantes (contador)?</p>
+
+<h3>Histograma (histogram)</h3>
+
+<p>Un histograma cuenta cuántas observaciones caen en cada uno de un conjunto de intervalos o <em>cubos</em> (buckets), y además lleva la suma de todos los valores observados y el número total de observaciones. En el formato clásico, un histograma de nombre <code>base</code> genera varias series: <code>base_bucket{le="0.1"}</code>, <code>base_bucket{le="0.2"}</code> y así sucesivamente, donde <code>le</code> significa «menor o igual», más una serie <code>base_bucket{le="+Inf"}</code>, además de <code>base_sum</code> y <code>base_count</code>. El valor de <code>base_count</code> coincide con el del cubo <code>+Inf</code>, porque ese cubo contiene todas las observaciones. Que los cubos sean acumulativos (el de 0,2 incluye lo del de 0,1) se deduce de ese significado de «menor o igual». La documentación menciona además los <em>histogramas nativos</em>, una representación más eficiente; en este artículo trabajamos con el formato clásico porque es el que se ve en la mayoría de los sistemas existentes y el que hace visibles los mecanismos.</p>
+
+<h3>Resumen (summary)</h3>
+
+<p>Un resumen también lleva <code>_sum</code> y <code>_count</code>, pero en lugar de cubos expone cuantiles ya calculados, en series con la etiqueta <code>quantile</code>, por ejemplo <code>base{quantile="0.99"}</code>. El resumen calcula esos cuantiles en la propia aplicación. La consecuencia, que explicamos en una sección posterior, es que no se pueden agregar entre varias instancias de un servicio.</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Tipo</th><th>Forma</th><th>Se consulta con</th><th>Uso típico</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Contador</td><td>Un número que solo sube</td><td><code>rate()</code>, <code>increase()</code></td><td>Peticiones, errores, bytes</td></tr>
+    <tr><td>Medidor</td><td>Un número que sube y baja</td><td>El valor directamente; <code>avg_over_time()</code> y similares</td><td>Memoria, cola, conexiones activas</td></tr>
+    <tr><td>Histograma</td><td>Cubos acumulativos <code>le</code> + suma + cuenta</td><td><code>histogram_quantile()</code> sobre <code>rate()</code> de los cubos</td><td>Latencias, tamaños de respuesta</td></tr>
+    <tr><td>Resumen</td><td>Cuantiles precalculados + suma + cuenta</td><td>El valor del cuantil directamente</td><td>Cuantiles de una sola instancia</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="4-nombres-y-etiquetas-las-convenciones-que">Nombres y etiquetas: las convenciones que ahorran problemas</h2>
+
+<p>La página de buenas prácticas sobre nombres de Prometheus reúne unas pocas reglas cuyo valor se aprecia cuando la colección de métricas crece. Las resumimos con nuestras palabras:</p>
+
+<ul>
+  <li><strong>Un prefijo de una sola palabra</strong> que identifique la aplicación o el dominio (<code>miapi_</code>, <code>prometheus_</code>), para que se sepa de dónde viene cada métrica.</li>
+  <li><strong>Unidades base</strong>: segundos en lugar de milisegundos, bytes en lugar de megabytes. Así las unidades no se mezclan entre servicios y las conversiones se hacen en el panel, no en la métrica.</li>
+  <li><strong>Sufijo con la unidad en plural</strong> (<code>_seconds</code>, <code>_bytes</code>) y <code>_total</code> en los contadores acumulativos.</li>
+  <li><strong>Una sola unidad y una sola cantidad</strong> por métrica: no mezclar, por ejemplo, bytes y segundos.</li>
+  <li><strong>Que la suma o la media tengan sentido</strong>: si <code>sum()</code> o <code>avg()</code> sobre la métrica no significa nada, probablemente la métrica agrupa cosas distintas.</li>
+  <li><strong>Las razones o proporciones</strong> se expresan entre 0 y 1, no como porcentajes.</li>
+</ul>
+
+<p>La misma página incluye una advertencia que merece un apartado propio: hay que tener cuidado con las etiquetas de alta cardinalidad, como los identificadores de usuario o las direcciones de correo electrónico.</p>
+
+<h3>Cardinalidad: la cuenta que casi nadie hace</h3>
+
+<p>«Cardinalidad» es, en este contexto, el número de series distintas que produce una métrica. Como cada combinación de etiquetas es una serie, el número de series es, como máximo, el producto del número de valores posibles de cada etiqueta. Hagamos la cuenta con un ejemplo inventado pero verosímil. Una métrica <code>miapi_http_requests_total</code> con tres etiquetas:</p>
+
+<ul>
+  <li><code>metodo</code>: 4 valores posibles (GET, POST, PUT, DELETE).</li>
+  <li><code>ruta</code>: 25 rutas de la aplicación.</li>
+  <li><code>estado</code>: 8 códigos de estado distintos que la aplicación llega a devolver.</li>
+</ul>
+
+<p>El máximo teórico es 4 × 25 × 8 = <strong>800 series</strong>. Es una cota superior: no todas las combinaciones se dan (nadie hace <code>DELETE</code> a una ruta que solo admite <code>GET</code>), así que el número real será menor. Es una cifra perfectamente manejable. Ahora supongamos que el desarrollador, para depurar un problema, añade la etiqueta <code>usuario</code> con el identificador de cada cliente, y hay 5 000 usuarios activos. La cota pasa a 800 × 5 000 = <strong>4 000 000 series</strong> para una sola métrica y una sola instancia. Y se multiplica otra vez por el número de instancias: cuando Prometheus extrae las métricas, normalmente añade por su cuenta etiquetas que identifican el trabajo y la instancia (dato general, no extraído de las páginas consultadas), de modo que con 20 instancias la cota sería 80 millones. La documentación de nombres lo resume al advertir contra esas etiquetas; la aritmética muestra por qué.</p>
+
+<p>El efecto se agrava con los histogramas. Un histograma clásico con 10 cubos finitos genera, por cada combinación de etiquetas, 10 series de cubos finitos, una de <code>+Inf</code>, una de <code>_sum</code> y una de <code>_count</code>: <strong>13 series</strong>. Si las etiquetas son <code>metodo</code>, <code>ruta</code> y <code>estado</code> (800 combinaciones como máximo), son 800 × 13 = 10 400 series por instancia, frente a las 800 del contador. Con 20 instancias, hasta 208 000. De ahí un consejo que se deduce de la cuenta: en los histogramas, usa pocas etiquetas y con pocos valores, y no pongas <code>estado</code> si solo te interesa la latencia por ruta (en el ejemplo de código más abajo, el histograma solo lleva <code>ruta</code>: 25 × 13 = 325 series por instancia).</p>
+
+<div class="alert">
+  <strong>Regla práctica.</strong> Antes de añadir una etiqueta, estima cuántos valores distintos puede tomar. Si la respuesta es «no lo sé» o «crece con el número de usuarios, pedidos o peticiones», no es una etiqueta de métrica: es un campo de un registro o un atributo de una traza, donde el coste de un valor nuevo es una línea, no una serie temporal permanente.
+</div>
+
+<p>Una variante habitual del mismo error es poner en la etiqueta <code>ruta</code> la URL tal como llega (<code>/pedidos/48213</code>) en lugar de la plantilla de la ruta (<code>/pedidos/{id}</code>). Cada identificador produce una serie nueva. Es un fallo fácil de cometer porque el valor «parece» una ruta, y por eso conviene que la instrumentación use la plantilla que ya conoce el marco web.</p>
+
+<h2 id="5-instrumentar-una-aplicacion">Instrumentar una aplicación</h2>
+
+<p>Instrumentar es hacer que la aplicación mantenga y publique sus métricas. Las bibliotecas cliente de Prometheus existen para varios lenguajes; el siguiente ejemplo en Python usa <code>prometheus_client</code>. No se ha ejecutado en la preparación de este artículo, y el comportamiento exacto de la biblioteca puede variar entre versiones, así que tómalo como ilustración de la estructura.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># ejemplo ilustrativo, no ejecutado
+import time
+from prometheus_client import Counter, Histogram, start_http_server
+
+PETICIONES = Counter(
+    "miapi_http_requests_total",
+    "Peticiones HTTP atendidas",
+    ["metodo", "ruta", "estado"],
+)
+DURACION = Histogram(
+    "miapi_http_request_duration_seconds",
+    "Duración de las peticiones HTTP",
+    ["ruta"],
+    buckets=(0.05, 0.1, 0.2, 0.3, 0.45, 0.8, 1.5, 3, 6),
+)
+
+def atender(metodo, ruta_plantilla):
+    inicio = time.perf_counter()
+    estado = "200"
+    try:
+        ...  # trabajo real de la petición
+    except Exception:
+        estado = "500"
+        raise
+    finally:
+        PETICIONES.labels(metodo, ruta_plantilla, estado).inc()
+        DURACION.labels(ruta_plantilla).observe(time.perf_counter() - inicio)
+
+if __name__ == "__main__":
+    start_http_server(8000)  # publica las métricas por HTTP
+    ...</code></pre>
+        </div>
+
+<p>Hay varias decisiones de diseño en esas pocas líneas que merecen comentario. El nombre del contador acaba en <code>_total</code> y el del histograma en <code>_seconds</code>, siguiendo las convenciones. El contador lleva tres etiquetas (800 series como máximo) y el histograma solo una, <code>ruta</code>, por la razón que acabamos de ver. Las duraciones se miden en segundos con un reloj monótono (<code>perf_counter</code>), no con la hora de pared, que puede saltar si se ajusta el reloj del sistema. El incremento y la observación se hacen en el bloque <code>finally</code>, de modo que las peticiones que fallan también se cuentan y se miden (una instrumentación que solo registra los éxitos engaña justo cuando más importa). Y la ruta que se pasa es la plantilla, no la URL real.</p>
+
+<p>Los cubos del histograma (0,05; 0,1; 0,2; 0,3; 0,45; 0,8; 1,5; 3 y 6 segundos) los hemos elegido nosotros pensando en un objetivo de 300 ms, por la razón que se explica en la sección de histogramas. Lo importante es que haya un cubo cuyo límite sea justo el objetivo.</p>
+
+<h2 id="6-promql-leer-contadores-con-rate-increase">PromQL: leer contadores con rate, increase e irate</h2>
+
+<p>Prometheus incluye un lenguaje de consulta, PromQL. No lo cubrimos entero; nos centramos en las funciones que la documentación describe para contadores e histogramas, porque son las que más malentendidos generan.</p>
+
+<h3>rate, increase e irate</h3>
+
+<p>La función <code>rate()</code> calcula el <strong>incremento medio por segundo</strong> de un contador en una ventana de tiempo (por ejemplo, <code>rate(miapi_http_requests_total[5m])</code>). Según la documentación, tiene en cuenta los reinicios del contador (los saltos hacia abajo se interpretan como un reinicio desde cero) y extrapola hacia los bordes de la ventana, y solo está pensada para contadores. La función <code>increase()</code> devuelve el incremento total en la ventana en lugar de por segundo (la documentación la describe como azúcar sintáctico de <code>rate()</code> multiplicado por los segundos de la ventana, pensada sobre todo para facilitar la lectura humana), y <code>irate()</code> usa solo las dos últimas muestras de la ventana, por lo que reacciona mucho más rápido pero es muy volátil.</p>
+
+<p>Veamos con números de ejemplo (inventados) qué hace <code>rate()</code> con un reinicio. Un contador tiene estas lecturas, una por minuto: 1 000, 1 050, 20, 80. Entre la primera y la segunda subió 50. Entre la segunda y la tercera el valor bajó de 1 050 a 20, lo que indica que el proceso se reinició y el contador volvió a empezar desde cero; el tramo cuenta entonces como un aumento de 20 (lo acumulado desde el reinicio). Entre la tercera y la cuarta subió 60. El incremento total, ajustado por el reinicio, es 50 + 20 + 60 = 130. Si el contador se hubiera consultado sin ese ajuste, la diferencia entre el primer y el último valor (80 − 1 000) daría −920, un disparate. Esta es la razón de fondo por la que nunca se grafica un contador en bruto y se usa <code>rate()</code>: la función se encarga de los reinicios. (El cálculo exacto de Prometheus incluye una extrapolación hacia los extremos de la ventana, de modo que el resultado puede no ser un número entero ni coincidir con nuestra suma; la cuenta de arriba ilustra el principio, no reproduce el algoritmo al decimal.)</p>
+
+<p>¿Cuál usar y cuándo? La documentación orienta así: <code>irate()</code> para gráficos de series muy volátiles donde se quiere ver el pico, y <code>rate()</code> para las alertas y para las series lentas, porque promedia sobre toda la ventana. La razón que da la página para las alertas es que los cambios breves de la tasa pueden reiniciar la cláusula <code>FOR</code> de la regla. Dicho de otro modo, una alerta basada en <code>irate()</code> puede dispararse o apagarse por una sola muestra; una basada en <code>rate()</code> es más estable. Sobre el tamaño de la ventana, la regla práctica que se oye a menudo es que debe contener varias muestras, pero la documentación consultada no fija un múltiplo concreto del intervalo de recolección, así que no la damos como regla oficial: piensa en que una ventana demasiado corta puede quedarse sin los datos suficientes y una demasiado larga suaviza un problema real.</p>
+
+<h3>Consultas habituales</h3>
+
+<p>Estas tres consultas cubren buena parte de lo que se grafica en un servicio. Son ilustrativas y no se han ejecutado contra ningún Prometheus.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>promql</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Peticiones por segundo, por ruta
+sum by (ruta) (rate(miapi_http_requests_total[5m]))
+
+# Proporción de peticiones con error de servidor (entre 0 y 1)
+sum(rate(miapi_http_requests_total{estado=~"5.."}[5m]))
+/
+sum(rate(miapi_http_requests_total[5m]))
+
+# Percentil 95 de la latencia, agregado entre todas las instancias
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(miapi_http_request_duration_seconds_bucket[5m]))
+)</code></pre>
+        </div>
+
+<p>La primera consulta suma, por ruta, las tasas de todas las series que comparten esa ruta (sea cual sea el método, el estado o la instancia). La segunda divide dos sumas: el numerador selecciona las series cuyo estado coincide con la expresión regular <code>5..</code> (cualquier código de tres cifras que empiece por 5), y el denominador las suma todas; el resultado es una proporción entre 0 y 1, en línea con la convención de nombres. Observa un detalle: se suman las <em>tasas</em>, no los contadores, y se hace antes de dividir. La tercera es la forma estándar de la documentación para calcular un cuantil de un histograma: se toma la tasa de cada cubo, se suma agrupando por <code>le</code> (para unir todas las instancias y rutas) y se aplica <code>histogram_quantile()</code>.</p>
+
+<h2 id="7-histogramas-resumenes-y-el-error-de-los">Histogramas, resúmenes y el error de los cuantiles</h2>
+
+<p>Los cuantiles (el percentil 95, el 99) son la medida natural de la latencia, y el libro de Google sobre ingeniería de fiabilidad insiste en ello: sostiene que conviene mirar la distribución de los tiempos en lugar de la media, porque una media oculta la cola de peticiones lentas que sufre una parte de los usuarios. Con una media de 100 ms, es perfectamente posible que el 5 % de las peticiones tarden más de un segundo. Prometheus ofrece dos tipos de métrica para esto y la documentación de buenas prácticas los compara.</p>
+
+<h3>Cuál elegir</h3>
+
+<p>La diferencia esencial es dónde y cuándo se decide qué cuantiles se calculan. En un histograma, los cuantiles se calculan <em>en el servidor, al consultar</em>, con <code>histogram_quantile()</code>, de modo que se puede pedir cualquier cuantil a posteriori. En un resumen, los cuantiles se fijan <em>al instrumentar</em>, en el cliente, y no se puede obtener después un cuantil que no se configuró. Pero la consecuencia más importante es la agregación: la documentación indica que los cuantiles de un histograma se pueden agregar entre instancias (siempre que los límites de los cubos sean los mismos), mientras que los de un resumen no se pueden agregar de forma significativa. Y es intuitivo por qué: el percentil 99 global de un servicio con tres instancias no es la media de los tres percentiles 99, ni su máximo; para calcularlo hay que combinar las distribuciones, y eso es lo que sí permiten las series de cubos, que se suman. Si tienes más de una instancia (lo normal), el histograma es casi siempre la opción adecuada. El resumen queda para cuando solo hay una instancia o cuando se necesitan cuantiles precisos de una sola.</p>
+
+<h3>El precio del histograma: la exactitud depende de los cubos</h3>
+
+<p>Un histograma no guarda cada observación, solo cuántas cayeron en cada cubo. Al pedir un cuantil, <code>histogram_quantile()</code> debe estimar dónde cae dentro del cubo que lo contiene. El método clásico supone, según la documentación de funciones, una distribución uniforme de las observaciones dentro del cubo (lo que equivale a una interpolación lineal). Por tanto, el error está acotado por el ancho del cubo donde cae el cuantil, como indica la tabla comparativa de la documentación. Esta ilustra el efecto con un escenario en el que el valor real del percentil 95 es de 220 ms, la estimación clásica sale en 295 ms y lo único garantizado es que el valor real está entre 200 y 300 ms, los límites de ese cubo.</p>
+
+<p>Hagamos la cuenta completa con un ejemplo nuestro, con cifras ficticias. Supongamos que en una ventana tenemos 1 000 observaciones y los contadores acumulativos de los cubos son:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Cubo (<code>le</code>, en segundos)</th><th>Observaciones acumuladas</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>0,1</td><td>600</td></tr>
+    <tr><td>0,2</td><td>900</td></tr>
+    <tr><td>0,3</td><td>960</td></tr>
+    <tr><td>0,45</td><td>990</td></tr>
+    <tr><td>+Inf</td><td>1 000</td></tr>
+  </tbody>
+</table></div>
+
+<p>Queremos el percentil 95. El 95 % de 1 000 son 950 observaciones, y la observación número 950 está en el cubo (0,2; 0,3], porque el acumulado llega a 900 en 0,2 y a 960 en 0,3. Ese cubo contiene 960 − 900 = 60 observaciones, y necesitamos avanzar 950 − 900 = 50 de ellas dentro del cubo. Con interpolación lineal, el resultado es 0,2 + (0,3 − 0,2) × 50 / 60 ≈ <strong>0,283 segundos</strong>. Lo único que sabemos con certeza es que el valor real está entre 0,2 y 0,3: si las 60 observaciones del cubo estuvieran todas cerca del límite inferior, el percentil real estaría cerca de 0,2; si estuvieran cerca del superior, cerca de 0,3. La estimación de 283 ms es razonable, pero la certeza es «entre 200 y 300 ms».</p>
+
+<h3>Elegir los cubos cerca del objetivo</h3>
+
+<p>La recomendación de la documentación es práctica: coloca los límites de los cubos alrededor de los valores que te importan, en particular de tu objetivo de nivel de servicio. Si el objetivo es que el 95 % de las peticiones responda en menos de 300 ms, el ejemplo de la propia documentación sugiere cubos como 0,1; 0,2; 0,3 y 0,45. La razón es doble. Primero, si hay un cubo cuyo límite es exactamente el objetivo, la pregunta «¿qué fracción de peticiones cumple?» tiene una respuesta <em>exacta</em>, sin interpolar: se divide la tasa del cubo <code>le="0.3"</code> entre la tasa de la cuenta total. Con los números de la tabla, 960 / 1 000 = 96 %, y eso es un hecho contado, no una estimación. Segundo, cerca del objetivo es donde la precisión de los cuantiles más importa, porque ahí se decide si se cumple o no. Lejos del objetivo (por ejemplo, entre 3 s y 6 s) un cubo ancho cuesta poco.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>promql</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Fracción de peticiones que cumplen el objetivo de 300 ms (exacta, el cubo está alineado)
+sum(rate(miapi_http_request_duration_seconds_bucket{le="0.3"}[5m]))
+/
+sum(rate(miapi_http_request_duration_seconds_count[5m]))</code></pre>
+        </div>
+
+<p>Hay una trampa asociada: si cambias los límites de los cubos entre versiones del servicio, los cuantiles que agregan instancias con cubos distintos dejan de tener sentido. Por eso la documentación condiciona la agregación a que los cubos sean los mismos. Los cambios de cubos conviene tratarlos como un cambio de esquema: se hacen de forma deliberada y se anotan.</p>
+
+<h2 id="8-registros-estructura-y-correlacion">Registros: estructura y correlación</h2>
+
+<p>Un registro (log) es el rastro textual de un suceso: «pago rechazado», «conexión cerrada», «arranque completado». Es la señal más antigua y la más familiar, y también la que más se degrada cuando crece el sistema, porque un texto libre es cómodo de escribir y muy incómodo de consultar. La documentación de OpenTelemetry sobre registros recomienda registros estructurados, es decir, con campos con nombre en lugar de una frase única, y describe un modelo de datos con campos como la marca de tiempo (<code>Timestamp</code>), la gravedad (<code>SeverityText</code> y <code>SeverityNumber</code>), el cuerpo (<code>Body</code>), los atributos (<code>Attributes</code>) y, lo más relevante aquí, los identificadores de correlación <code>TraceId</code> y <code>SpanId</code>.</p>
+
+<p>Esos dos últimos campos son la clave de todo el artículo. Si cada línea de registro lleva el identificador de la traza y del tramo en el que se escribió, entonces desde una traza lenta se pueden consultar exactamente los registros de esa petición, y desde un mensaje de error se puede saltar a la traza completa. Sin ellos, hay que cruzar registros y trazas por hora aproximada y por suerte. Un registro estructurado correlacionado podría tener este aspecto (los nombres de los campos son nuestros y el ejemplo es ilustrativo; el identificador de traza es el del ejemplo oficial de W3C que veremos más abajo):</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>json</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>{"ts":"2026-10-27T10:15:02.417Z","nivel":"ERROR","msg":"pago rechazado por la pasarela","trace_id":"0af7651916cd43dd8448eb211c80319c","span_id":"b7ad6b7169203331","pedido":"A-1042","intento":3}</code></pre>
+        </div>
+
+<p>La misma página describe cómo se integra OpenTelemetry con las bibliotecas de registro que ya existen: en lugar de pedirte que cambies de biblioteca, ofrece adaptadores (llamados <em>appenders</em> o puentes) que toman los registros de la biblioteca que ya usas y los convierten al modelo de OpenTelemetry, añadiéndoles los identificadores de la traza activa. Es una decisión sensata: cambiar la forma de registrar de todo un código es costoso y arriesgado, mientras que enganchar un adaptador es una configuración.</p>
+
+<p>Dos reglas que no proceden de las fuentes, pero que se desprenden del apartado anterior sobre la cardinalidad: en los registros sí puedes poner identificadores de alta cardinalidad (el pedido, el usuario, la dirección IP), porque cada línea es un suceso independiente y no una serie permanente; y no registres nunca secretos ni datos personales sin necesidad, porque el registro se replica, se indexa y se conserva. Si usas systemd, recuerda que el diario ya guarda entradas estructuradas y que <code>journalctl</code> permite elegir el formato de salida con la opción <code>-o</code>, de modo que los servicios que escriben JSON a la salida estándar pueden aprovechar la infraestructura sin más.</p>
+
+<h2 id="9-trazas-seguir-una-peticion-entre-servici">Trazas: seguir una petición entre servicios</h2>
+
+<p>Una petición de usuario rara vez la atiende un solo proceso. Un pedido puede pasar por una puerta de entrada, un servicio de pedidos, una base de datos, un servicio de pagos y una cola de mensajes. Las métricas te dicen que «los pedidos van lentos» y los registros de cada servicio están en máquinas distintas. Una <strong>traza</strong> reconstruye el camino completo de esa petición.</p>
+
+<p>Según la documentación de OpenTelemetry, una traza es un conjunto de <em>spans</em> (tramos) relacionados entre sí. Un span representa una unidad de trabajo con un nombre, un inicio y una duración. El primer span de una traza, sin padre, es el <em>span raíz</em>, que representa toda la operación de principio a fin; los demás son hijos suyos o de otros spans, y forman un árbol que refleja quién llamó a quién. Lo que identifica un span y lo enlaza con los demás es su <strong>contexto</strong>, formado por el identificador de la traza (<code>trace ID</code>, común a todos los spans de la traza), el identificador del propio span (<code>span ID</code>), las banderas de la traza (<code>trace flags</code>, que incluyen si se muestrea) y un estado de traza (<code>trace state</code>) con información adicional de cada proveedor.</p>
+
+<h3>Qué lleva un span</h3>
+
+<p>Además del contexto, un span puede llevar varios elementos, todos descritos en la página de conceptos:</p>
+
+<ul>
+  <li><strong>Atributos</strong>: pares clave-valor con metadatos sobre la operación (la ruta, el identificador del pedido, el código de estado).</li>
+  <li><strong>Eventos</strong>: sucesos puntuales con marca de tiempo dentro del span (por ejemplo, «caché sin resultados» o una excepción registrada).</li>
+  <li><strong>Enlaces</strong> (<em>links</em>): referencias a otros spans, útiles cuando una operación está causalmente relacionada con otra pero no es su hija, como un trabajo asíncrono que procesa un lote.</li>
+  <li><strong>Estado</strong>: puede ser <code>Unset</code> (sin establecer, el valor por defecto), <code>Error</code> o <code>Ok</code>.</li>
+  <li><strong>Tipo</strong> (<em>kind</em>): <code>Client</code>, <code>Server</code>, <code>Internal</code>, <code>Producer</code> o <code>Consumer</code>. Describe el papel del span en una interacción: <code>Client</code> para quien hace una llamada remota, <code>Server</code> para quien la atiende, <code>Producer</code> y <code>Consumer</code> para mensajería asíncrona. Si no se indica, el valor por defecto es <code>Internal</code>.</li>
+</ul>
+
+<p>Esta lista muestra una diferencia de fondo con las métricas. En un span puedes poner el identificador del pedido como atributo sin miedo, porque se almacena como parte de ese suceso concreto; en una etiqueta de métrica sería una serie permanente. Las trazas conservan el detalle que las métricas descartan, y lo pagan en volumen, lo que lleva a muestrearlas (conservar solo una fracción, o solo las lentas o fallidas); el muestreo es un tema extenso que aquí solo mencionamos como conocimiento general y que condiciona lo que se puede preguntar luego.</p>
+
+<h3>Instrumentar un tramo</h3>
+
+<p>Con el SDK de OpenTelemetry para Python, crear un span alrededor de una operación se parece a lo siguiente. Es un esbozo ilustrativo no ejecutado; los nombres de las funciones y de los atributos de la aplicación son inventados, y la API de la biblioteca puede cambiar entre versiones, de modo que consulta la documentación de tu lenguaje.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># ejemplo ilustrativo, no ejecutado
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+tracer = trace.get_tracer("miapi.pedidos")
+
+def cobrar(pedido):
+    with tracer.start_as_current_span("cobrar") as span:
+        span.set_attribute("pedido.id", pedido.id)
+        try:
+            return pasarela.cargar(pedido)
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR))
+            raise</code></pre>
+        </div>
+
+<p>El bloque <code>with</code> abre el span al entrar y lo cierra al salir, de modo que su duración es la del bloque. Al hacerlo «actual», cualquier span que se cree dentro de <code>pasarela.cargar()</code> y use la misma biblioteca será hijo suyo sin más. Al fallar, se registra la excepción como un evento del span y se marca su estado como error. Un detalle de diseño general que conviene conocer: OpenTelemetry separa la <em>API</em> (lo que usa tu código, como arriba) del <em>SDK</em> (la implementación que decide a dónde se exportan los datos). Sin un SDK configurado, las llamadas de la API no hacen nada, lo cual permite que una biblioteca se instrumente sin forzar a quien la use a adoptar OpenTelemetry. Es una característica del proyecto que no hemos verificado en las páginas consultadas, por eso la damos como conocimiento general.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="10-propagacion-de-contexto-w3c-trace-contex">Propagación de contexto: W3C Trace Context</h2>
+
+<p>Queda un problema: cuando el servicio de pedidos llama por HTTP al de pagos, ¿cómo sabe el segundo a qué traza pertenece la llamada? Hay que <strong>propagar</strong> el contexto, es decir, enviarlo con la petición. Para que servicios escritos en distintos lenguajes y con distintas bibliotecas se entiendan, existe un estándar: <em>Trace Context</em>, una Recomendación del W3C publicada el 23 de noviembre de 2021 en su nivel 1. Define dos cabeceras HTTP, <code>traceparent</code> y <code>tracestate</code>.</p>
+
+<h3>Anatomía de traceparent</h3>
+
+<p>El ejemplo oficial de la especificación es este:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01</code></pre>
+        </div>
+
+<p>Son cuatro campos separados por guiones, todos en hexadecimal:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Campo</th><th>Valor del ejemplo</th><th>Tamaño</th><th>Significado</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Versión</td><td><code>00</code></td><td>1 byte (2 caracteres)</td><td>Versión del formato</td></tr>
+    <tr><td>trace-id</td><td><code>0af7651916cd43dd8448eb211c80319c</code></td><td>16 bytes (32 caracteres)</td><td>Identifica la traza completa</td></tr>
+    <tr><td>parent-id</td><td><code>b7ad6b7169203331</code></td><td>8 bytes (16 caracteres)</td><td>Identifica el tramo que hizo la llamada</td></tr>
+    <tr><td>trace-flags</td><td><code>01</code></td><td>1 byte (2 caracteres)</td><td>Banderas; el bit menos significativo indica si la traza está muestreada</td></tr>
+  </tbody>
+</table></div>
+
+<p>La aritmética de la cabecera es sencilla: 2 + 1 + 32 + 1 + 16 + 1 + 2 = 55 caracteres, incluidos los tres guiones. Un identificador de traza de 16 bytes son 128 bits; uno de tramo de 8 bytes son 64 bits. La especificación declara inválidos los identificadores formados solo por ceros, para que un valor «vacío» no se confunda con un identificador real. La bandera de muestreo con valor <code>01</code> indica que quien envía la cabecera puede haber registrado datos de la traza, y <code>00</code> que no.</p>
+
+<p>La segunda cabecera, <code>tracestate</code>, transporta información adicional específica de cada proveedor en una lista de pares clave-valor; el ejemplo de la especificación es <code>tracestate: congo=t61rcWkgMzE</code>. Su propósito es permitir que sistemas de trazado distintos añadan sus propios datos junto a la traza común.</p>
+
+<h3>Cómo se usa en la práctica</h3>
+
+<p>El flujo es el siguiente (descrito con nuestras palabras a partir de las dos fuentes). El servicio de pedidos recibe una petición y crea un span <code>Server</code>. Al llamar a pagos, abre un span <code>Client</code>, e inyecta en las cabeceras salientes un <code>traceparent</code> cuyo <code>trace-id</code> es el de la traza y cuyo <code>parent-id</code> es el identificador del span <code>Client</code>. El servicio de pagos lee la cabecera, crea su propio span <code>Server</code> con el mismo <code>trace-id</code> y con el <code>parent-id</code> recibido como padre, y así sucesivamente. Las bibliotecas de instrumentación de OpenTelemetry se encargan de inyectar y extraer esas cabeceras en los marcos más comunes (esa automatización se la damos por conocimiento general, pues la página consultada no la detalla).</p>
+
+<p>La consecuencia práctica de que sea un estándar abierto es que la propagación no te ata a un único proveedor. Un servicio instrumentado con una biblioteca y otro con una distinta pueden formar parte de la misma traza si ambos respetan <code>traceparent</code>. Y como el identificador de traza también aparece en los registros, el círculo se cierra: el mismo valor de 32 caracteres que viaja en la cabecera es el que buscas en el sistema de registros.</p>
+
+<h2 id="11-el-collector-de-opentelemetry">El Collector de OpenTelemetry</h2>
+
+<p>Una aplicación instrumentada genera telemetría; hay que enviarla a algún sitio. Podría exportarla directamente a un sistema concreto, pero eso acopla cada aplicación a un destino. El <em>Collector</em> de OpenTelemetry es un componente independiente del proveedor que recibe, procesa y exporta telemetría, según su documentación. Su estructura se describe en términos de componentes:</p>
+
+<ul>
+  <li><strong>Receptores</strong>: aceptan datos de entrada en un formato o protocolo.</li>
+  <li><strong>Procesadores</strong>: transforman los datos en tránsito (filtrar, enriquecer con atributos, agrupar por lotes).</li>
+  <li><strong>Exportadores</strong>: envían los datos al destino.</li>
+  <li><strong>Conectores</strong>: unen dos flujos del Collector, actuando como exportador de uno y receptor de otro.</li>
+  <li><strong>Extensiones</strong>: añaden capacidades que no manejan telemetría directamente.</li>
+</ul>
+
+<p>Qué valor aporta intercalar un Collector es una valoración nuestra, no una cita: separa la aplicación del destino (cambiar de sistema de almacenamiento se vuelve un cambio de configuración, no de código), permite concentrar en un único sitio operaciones como el filtrado de datos sensibles o el muestreo, y descarga a las aplicaciones de reintentos y de agrupación. La documentación consultada advierte de que la estabilidad de sus componentes es mixta, y es una advertencia que conviene tomar en serio: antes de depender de un receptor o un procesador concreto en producción, comprueba en la documentación su nivel de estabilidad. Esa misma página no describe los patrones de despliegue (un Collector por máquina o uno centralizado) ni define el protocolo nativo de OpenTelemetry, OTLP; son temas que no tratamos aquí por no haberlos verificado.</p>
+
+<p>En un entorno de contenedores, la pregunta de dónde se ejecuta el Collector se vuelve relevante. Si trabajas con el modelo del artículo sobre <a href="/articulos/kubernetes-arquitectura-interna.html">la arquitectura interna de Kubernetes</a>, las opciones razonables incluyen un proceso por nodo o un despliegue central, pero la elección depende de tu volumen y de tus restricciones, y no la detallamos aquí.</p>
+
+<h2 id="12-objetivos-de-nivel-de-servicio-sli-slo-y">Objetivos de nivel de servicio: SLI, SLO y presupuestos de error</h2>
+
+<p>Tener datos no basta; hay que decidir qué es «suficientemente bueno». El capítulo sobre objetivos de nivel de servicio del libro de Google sobre ingeniería de fiabilidad fija una terminología que se ha extendido por toda la industria:</p>
+
+<ul>
+  <li>Un <strong>SLI</strong> (indicador de nivel de servicio) es una medida cuantitativa, cuidadosamente definida, de algún aspecto del nivel de servicio que se presta. Ejemplos que cita el capítulo como típicos: la latencia de las peticiones, la tasa de errores, el rendimiento (peticiones por segundo), la disponibilidad y, en sistemas de almacenamiento, la durabilidad.</li>
+  <li>Un <strong>SLO</strong> (objetivo de nivel de servicio) es un valor o un rango objetivo para un SLI. «El 99 % de las peticiones se responden en menos de 300 ms» es un SLO sobre un SLI de latencia.</li>
+  <li>Un <strong>SLA</strong> (acuerdo de nivel de servicio) es un contrato, explícito o implícito, con consecuencias si no se cumple el objetivo. El SLO es interno; el SLA compromete a la empresa frente al cliente. Este artículo trata de SLO.</li>
+</ul>
+
+<h3>Cómo se mide un SLI con las métricas que ya tenemos</h3>
+
+<p>Las dos consultas de PromQL de la sección anterior son SLIs: la proporción de peticiones sin error de servidor (uno menos la razón de errores) y la fracción de peticiones por debajo de 300 ms. Aquí se ve la ventaja de las convenciones de Prometheus: un ratio entre 0 y 1 se compara directamente con un objetivo expresado como proporción. Para un SLO de disponibilidad del 99,9 % en 30 días, el SLI es el cociente de peticiones buenas entre peticiones totales, calculado sobre una ventana de 30 días.</p>
+
+<p>El capítulo hace tres recomendaciones que merece la pena subrayar. Primera: usa percentiles, no medias, para la latencia, por la razón que ya vimos. Segunda: no fijes los objetivos según el rendimiento actual del sistema, porque eso atrapa el objetivo en lo que ya sucede, sea bueno o malo, en lugar de en lo que los usuarios necesitan. Tercera: mantén los objetivos simples. A esto añadimos, como razonamiento propio, que cada SLO que sumas es algo que alguien debe vigilar y defender.</p>
+
+<h3>El presupuesto de error</h3>
+
+<p>Un objetivo del 99,9 % significa que se admite un 0,1 % de fallos. Ese 0,1 % es un <strong>presupuesto de error</strong>: la cantidad de incumplimiento que puedes «gastar» en un periodo sin incumplir el objetivo. El capítulo menciona la conveniencia de seguir el presupuesto con periodicidad corta (diaria o semanal) en lugar de esperar al final del periodo largo. La utilidad del concepto es convertir una discusión emocional («¿podemos desplegar hoy?») en una cuenta: si queda presupuesto, hay margen para asumir riesgos; si se ha agotado, se prioriza la fiabilidad. Esta forma de usarlo es una interpretación nuestra de la idea; el capítulo consultado no es un manual de gestión de despliegues.</p>
+
+<p>Veamos el tamaño del presupuesto con aritmética sencilla. Un periodo de 30 días tiene 30 × 24 × 60 = 43 200 minutos. Para cada objetivo de disponibilidad, el presupuesto es la fracción restante de ese tiempo:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Objetivo</th><th>Fallo admitido</th><th>Indisponibilidad admitida en 30 días</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>99 %</td><td>1 %</td><td>432 min (7 h 12 min)</td></tr>
+    <tr><td>99,5 %</td><td>0,5 %</td><td>216 min (3 h 36 min)</td></tr>
+    <tr><td>99,9 %</td><td>0,1 %</td><td>43,2 min</td></tr>
+    <tr><td>99,95 %</td><td>0,05 %</td><td>21,6 min</td></tr>
+    <tr><td>99,99 %</td><td>0,01 %</td><td>4,32 min (259,2 s)</td></tr>
+    <tr><td>99,999 %</td><td>0,001 %</td><td>0,432 min (25,92 s)</td></tr>
+  </tbody>
+</table></div>
+
+<p>La tabla explica por qué cada «nueve» adicional es mucho más caro: del 99,9 % al 99,99 % el margen se divide por diez, de 43 a 4 minutos al mes. Nuestra valoración es que una intervención humana (recibir el aviso, abrir un portátil, diagnosticar) difícilmente cabe en 4 minutos, así que a partir de ese punto la recuperación tiene que ser automática. Los ejemplos del capítulo van en esa línea: considera valores como el 99 % y el 99,999 %, y menciona que el servicio de Google Compute Engine publicaba un objetivo del 99,95 %. El 99,9 % de nuestra tabla es un caso que elegimos nosotros por ser frecuente en la práctica; no figura entre los ejemplos del capítulo.</p>
+
+<p>También se puede expresar el presupuesto en peticiones en lugar de minutos. Con 1 000 000 de peticiones en 30 días y un objetivo del 99,9 %, se admiten 1 000 peticiones fallidas. Si un despliegue defectuoso hace fallar el 1 % de las peticiones, la tasa de gasto es 0,01 / 0,001 = <strong>10 veces</strong> la permitida: a ese ritmo, el presupuesto de 30 días se agotaría en 30 / 10 = 3 días. Esta razón entre el ritmo real de fallo y el admitido se suele llamar velocidad de consumo (en inglés, <em>burn rate</em>); el término no aparece en el capítulo consultado, pero la aritmética se deduce de las definiciones y es la base de las alertas más útiles, como veremos ahora.</p>
+
+<h2 id="13-alertas-que-valen-la-pena">Alertas que valen la pena</h2>
+
+<p>Una alerta es una regla que convierte una condición en una notificación a una persona. Escribirlas mal es una forma segura de cansar a un equipo: si suena a todas horas y casi nunca hay nada que hacer, acabarán por ignorarla, también la que importa. La página de buenas prácticas de alertas de Prometheus propone ideas que resumimos:</p>
+
+<ul>
+  <li><strong>Alerta sobre síntomas, no sobre causas.</strong> Lo que debería despertar a alguien es el dolor visible para el usuario (errores, lentitud, indisponibilidad), no cada posible causa (CPU alta, disco al 80 %). Las causas pertenecen a los paneles de diagnóstico.</li>
+  <li><strong>Pocas alertas y sencillas.</strong> Cuantas más reglas, más difícil es mantenerlas y entender cuál se disparó y por qué.</li>
+  <li><strong>Deja margen.</strong> Un pequeño pico no debería avisar a nadie; se tolera cierta holgura para no reaccionar a fluctuaciones.</li>
+  <li><strong>Evita avisos que no pueden atenderse.</strong> Si al recibir la alerta no hay nada que hacer, no debería ser un aviso a una persona.</li>
+  <li><strong>Enlaza a un panel o consola</strong> que permita investigar a partir de la alerta.</li>
+</ul>
+
+<p>La condición de espera mínima antes de disparar es un mecanismo habitual de Prometheus para dejar margen: en las reglas de alerta existe la cláusula <code>for</code>, que exige que la condición se mantenga durante un tiempo antes de notificar (la página de funciones la menciona de pasada; su sintaxis completa es un dato general que no hemos verificado aquí). El siguiente ejemplo es ilustrativo y no se ha validado ni con <code>promtool</code> ni cargándolo en un servidor.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>yaml</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># ejemplo ilustrativo, no ejecutado ni validado
+groups:
+  - name: miapi
+    rules:
+      - alert: MiapiErroresAltos
+        expr: |
+          sum(rate(miapi_http_requests_total{estado=~"5.."}[5m]))
+          /
+          sum(rate(miapi_http_requests_total[5m])) &gt; 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Más del 2 % de las peticiones fallan desde hace 10 minutos"
+          panel: "https://ejemplo.invalid/paneles/miapi"</code></pre>
+        </div>
+
+<p>La regla dispara si la proporción de errores 5xx supera el 2 % de forma sostenida durante 10 minutos. Es un síntoma (errores que ve el usuario), se calcula con <code>rate()</code> (estable, apta para alertas) y deja margen con <code>for</code>. El enlace de la anotación apunta a un dominio de ejemplo (<code>.invalid</code>) que por convención nunca resuelve; es solo un recordatorio de que la alerta debería llevar a un panel real.</p>
+
+<h3>De la velocidad de consumo a la alerta</h3>
+
+<p>Con la aritmética de la sección anterior se puede razonar mejor el umbral. Con un SLO del 99,9 % (fallo admitido: 0,1 %), una proporción de errores del 2 % supone un gasto de 0,02 / 0,001 = 20 veces el ritmo permitido, es decir, el presupuesto de 30 días se agotaría en 30 / 20 = 1,5 días. Es un ritmo que justifica despertar a alguien. Una proporción del 0,2 % supone un gasto de solo 2 veces y agotaría el presupuesto en 15 días: no merece una llamada nocturna, pero sí un aviso no urgente a primera hora. Esta idea, que existen niveles de urgencia distintos según lo rápido que se quema el presupuesto, es la forma de reconciliar la sensibilidad y la tolerancia al ruido. Es un razonamiento propio a partir de las definiciones del capítulo; otras publicaciones de Google desarrollan estrategias concretas de alertas basadas en la velocidad de consumo, pero no se han consultado aquí y no las atribuimos.</p>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="14-un-caso-de-principio-a-fin-de-va-lento-a">Un caso de principio a fin: de «va lento» a la línea responsable</h2>
+
+<p>Para ver cómo encajan las tres señales, imaginemos un caso ficticio (todos los números son inventados). Una alerta basada en el SLI de latencia avisa de que la fracción de peticiones por debajo de 300 ms ha caído del 96 % al 81 % en los últimos 15 minutos. El SLO es del 95 %, así que se está incumpliendo.</p>
+
+<ol>
+  <li><strong>Métricas: acotar el dónde.</strong> En el panel, el desglose por ruta del histograma de duraciones muestra que el percentil 95 de casi todas las rutas es normal, pero el de <code>/pedidos/{id}/pagar</code> ha pasado de 250 ms a más de 2 s. Una consulta con <code>sum by (le, ruta)</code> permite verlo. Hemos reducido el problema de «todo el servicio» a «una ruta». Hasta aquí, las métricas han hecho su trabajo, que es decir cuánto y dónde, pero no por qué.</li>
+  <li><strong>Trazas: acotar el qué.</strong> Se abre una traza lenta de esa ruta, que se localiza buscando por el atributo de la ruta y por duración. La traza tiene un span raíz de 2,4 s (<code>Server</code>) y, entre sus hijos, un span <code>cobrar</code> de 2,1 s que contiene a su vez una llamada <code>Client</code> a la pasarela de pago. El resto de los tramos (validación, base de datos) suman unos 250 ms. El tiempo no se pierde en nuestro código ni en la base de datos: se pierde esperando a la pasarela. Pero tampoco sabemos aún por qué esa espera es tan larga.</li>
+  <li><strong>Registros: acotar el por qué.</strong> Se filtran los registros por el <code>trace_id</code> de esa traza. Aparecen tres líneas con el mismo identificador: dos avisos de «tiempo de espera agotado, reintentando» y un tercero con el error definitivo. El problema es una combinación de un tiempo de espera largo y reintentos: cada petición espera tres veces a una pasarela que está respondiendo lentamente, de ahí los 2,1 s.</li>
+</ol>
+
+<p>En tres pasos, cada uno con una señal distinta, se ha pasado de «ha bajado el porcentaje de peticiones rápidas» a «la pasarela de pago responde lento y nuestros reintentos multiplican la espera». Fíjate en lo que lo hizo posible: las métricas llevaban la etiqueta <code>ruta</code> (con valores acotados), las trazas llevaban atributos y la relación entre tramos, y los registros llevaban el identificador de la traza. Si falta cualquiera de esos tres elementos, el análisis se cae en el paso correspondiente. Esa tarea de ir saltando entre señales se parece a la del diagnóstico en capas que aplicamos en otros temas de esta serie: ante una espera larga de red, la causa puede estar en <a href="/articulos/dns-resolucion-cache-dnssec.html">la resolución de nombres</a>, en <a href="/articulos/tcp-en-la-practica-handshake-congestion-diagnostico.html">el establecimiento de la conexión TCP</a> o en <a href="/articulos/tls-13-https-certificados-hsts.html">la negociación TLS</a>, y un buen trazado separa esos tiempos en tramos distintos para no tener que adivinar.</p>
+
+<h2 id="15-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>«Con una media de latencia basta»</h3>
+
+<p>La media ocupa un solo número y esconde la cola de lentitud. El libro de Google lo señala expresamente al recomendar usar distribuciones y percentiles. Una media de 100 ms es compatible con que una de cada veinte peticiones tarde más de un segundo, y esa fracción es justo la que provoca abandonos y reclamaciones.</p>
+
+<h3>«Un contador se grafica tal cual»</h3>
+
+<p>Un contador en bruto es una línea que sube y que se desploma en cada reinicio del proceso. Lo que informa es su velocidad de cambio, obtenida con <code>rate()</code> o <code>increase()</code>, que además corrigen los reinicios. Y, a la inversa, <code>rate()</code> está pensada para contadores: aplicarla a un medidor, cuyo valor sube y baja de forma natural, da resultados sin sentido.</p>
+
+<h3>«Cuantas más etiquetas, mejor»</h3>
+
+<p>Falso, como mostró la cuenta de la cardinalidad: cada etiqueta multiplica el número de series. Una etiqueta que crece con el número de usuarios o de peticiones convierte la métrica en un problema de capacidad. Los identificadores de alta cardinalidad pertenecen a los registros y a las trazas.</p>
+
+<h3>«Promediar los percentiles de varias instancias da el percentil global»</h3>
+
+<p>No. Ni la media ni el máximo de los percentiles 99 de cada instancia es el percentil 99 de todas las peticiones juntas. Por eso los resúmenes, cuyos cuantiles se calculan en cada instancia, no se pueden agregar de forma significativa, y por eso se prefieren los histogramas, cuyos cubos sí se pueden sumar.</p>
+
+<h3>«Alertar por todo lo que pueda ir mal»</h3>
+
+<p>Una alerta por cada causa posible (CPU, disco, memoria, reinicios) produce una avalancha de avisos cuando algo realmente falla, y un ruido de fondo constante el resto del tiempo. La documentación de Prometheus recomienda alertar sobre los síntomas que sufre el usuario y dejar las causas para los paneles de diagnóstico.</p>
+
+<h3>«Si la traza no está, el sistema no es observable»</h3>
+
+<p>Las trazas aportan mucho en sistemas con varios servicios, pero, en nuestra valoración, un servicio único bien instrumentado con métricas y registros estructurados es mucho más observable que uno con trazas a medias y registros de texto libre. Conviene crecer en capas: primero métricas con pocas etiquetas y registros estructurados, después trazas, empezando por los caminos más importantes.</p>
+
+<h2 id="16-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Por dónde empiezo: métricas, registros o trazas?</h3>
+
+<p>Una recomendación razonable, que es valoración nuestra y no proviene de las fuentes, es empezar por métricas de los indicadores que el capítulo de Google cita como típicos (latencia, tasa de errores, rendimiento y disponibilidad) y por registros estructurados con un identificador de petición. Con eso ya se pueden definir SLO y alertas. Las trazas añaden valor cuando hay varios servicios y las métricas ya no bastan para saber dónde mirar.</p>
+
+<h3>¿OpenTelemetry sustituye a Prometheus?</h3>
+
+<p>No son lo mismo. Prometheus es un sistema de métricas con su modelo de datos, su lenguaje de consulta y sus reglas de alerta. OpenTelemetry define señales (trazas, métricas, registros), formas de generarlas y un Collector para recibirlas, procesarlas y exportarlas. Pueden usarse juntos: por ejemplo, las aplicaciones pueden instrumentarse con OpenTelemetry y exportar a distintos destinos. Cómo se conectan en detalle, y qué se conserva o se pierde en la conversión de métricas entre ambos modelos, es un tema que no se ha verificado en las páginas consultadas, de modo que consulta la documentación de ambos proyectos antes de decidir.</p>
+
+<h3>¿Qué diferencia hay entre una etiqueta de Prometheus y un atributo de OpenTelemetry?</h3>
+
+<p>Conceptualmente son parecidos (pares clave-valor que describen una medición), pero su coste es muy distinto. Una etiqueta de métrica de Prometheus crea una serie temporal por cada valor distinto, de modo que se almacena y se consulta de forma permanente; un atributo de un span describe una operación concreta y se guarda solo con esa traza. Por eso los atributos admiten valores de alta cardinalidad que las etiquetas no.</p>
+
+<h3>¿Por qué no basta con mirar el valor actual de un contador?</h3>
+
+<p>Porque un contador acumula desde que el proceso arrancó y se reinicia a cero cuando este se reinicia. Un valor de 5 000 no dice si fueron 5 000 errores en un minuto o en una semana. La tasa por unidad de tiempo, con <code>rate()</code>, sí lo dice, y corrige además los reinicios.</p>
+
+<h3>¿Cómo sé qué cubos poner en un histograma?</h3>
+
+<p>Piensa en tu objetivo de latencia y coloca un cubo con ese valor exacto, con algunos por debajo y por encima. La documentación sugiere, para un objetivo de 300 ms, límites como 0,1; 0,2; 0,3 y 0,45. Después revisa los datos reales: si la mayoría de las observaciones cae en un solo cubo, el histograma casi no distingue nada y conviene afinar los límites en esa zona.</p>
+
+<h3>¿Qué significa el último byte de traceparent?</h3>
+
+<p>Son las banderas de la traza. Según la especificación, el bit menos significativo es el de muestreo: con <code>01</code>, quien envía la cabecera puede haber registrado datos de la traza; con <code>00</code>, no.</p>
+
+<h3>¿Cuántos nueves necesito?</h3>
+
+<p>Los que tus usuarios necesiten y tu equipo pueda sostener, no los que suenan bien. La tabla del presupuesto muestra el coste en tiempo de cada nueve adicional. El capítulo de SLO recomienda no derivar el objetivo de lo que el sistema consigue hoy y mantenerlo sencillo; parte de una estimación honesta de lo que los usuarios perciben como aceptable y de lo que cuesta mantenerlo.</p>
+
+<h2 id="17-conclusion">Conclusión</h2>
+
+<p>La observabilidad no es una herramienta que se compra, sino una propiedad que se construye decisión a decisión: qué se mide, con qué etiquetas, con qué identificadores se enlazan las señales y qué se promete a los usuarios. Prometheus aporta un modelo de datos simple y poderoso (series definidas por nombre y etiquetas) cuya mayor trampa es también su mayor virtud: la cardinalidad. Los cuatro tipos de métrica tienen cada uno su papel, y el histograma, con cubos bien elegidos, es la herramienta adecuada para latencias en sistemas con varias instancias. OpenTelemetry aporta un vocabulario común para trazas, métricas y registros, y el estándar W3C Trace Context resuelve el problema de unir lo que cada servicio hace en una única traza con una cabecera de 55 caracteres.</p>
+
+<p>Sobre esas señales, los conceptos de SLI, SLO y presupuesto de error convierten el «funciona bien» en un número discutible, y las alertas sobre síntomas, con margen y con un enlace a un panel, evitan que el equipo se acostumbre a ignorar las notificaciones. Si tuvieras que quedarte con tres hábitos, serían estos: pensar en la cardinalidad antes de añadir una etiqueta, poner el identificador de la traza en cada línea de registro y alertar sobre lo que el usuario nota. El resto del camino, desde las consultas avanzadas hasta el muestreo de trazas, se construye sobre esos tres.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Prometheus. «Data model». <a href="https://prometheus.io/docs/concepts/data_model/" rel="noopener">https://prometheus.io/docs/concepts/data_model/</a> (consultado el 27-10-2026).</li>
+  <li>Prometheus. «Metric types». <a href="https://prometheus.io/docs/concepts/metric_types/" rel="noopener">https://prometheus.io/docs/concepts/metric_types/</a> (consultado el 27-10-2026).</li>
+  <li>Prometheus. «Metric and label naming». <a href="https://prometheus.io/docs/practices/naming/" rel="noopener">https://prometheus.io/docs/practices/naming/</a> (consultado el 27-10-2026).</li>
+  <li>Prometheus. «Histograms and summaries». <a href="https://prometheus.io/docs/practices/histograms/" rel="noopener">https://prometheus.io/docs/practices/histograms/</a> (consultado el 27-10-2026).</li>
+  <li>Prometheus. «Query functions». <a href="https://prometheus.io/docs/prometheus/latest/querying/functions/" rel="noopener">https://prometheus.io/docs/prometheus/latest/querying/functions/</a> (consultado el 27-10-2026).</li>
+  <li>Prometheus. «Alerting». <a href="https://prometheus.io/docs/practices/alerting/" rel="noopener">https://prometheus.io/docs/practices/alerting/</a> (consultado el 27-10-2026).</li>
+  <li>OpenTelemetry. «Signals». <a href="https://opentelemetry.io/docs/concepts/signals/" rel="noopener">https://opentelemetry.io/docs/concepts/signals/</a> (consultado el 27-10-2026).</li>
+  <li>OpenTelemetry. «Traces». <a href="https://opentelemetry.io/docs/concepts/signals/traces/" rel="noopener">https://opentelemetry.io/docs/concepts/signals/traces/</a> (consultado el 27-10-2026).</li>
+  <li>OpenTelemetry. «Logs». <a href="https://opentelemetry.io/docs/concepts/signals/logs/" rel="noopener">https://opentelemetry.io/docs/concepts/signals/logs/</a> (consultado el 27-10-2026).</li>
+  <li>OpenTelemetry. «Collector». <a href="https://opentelemetry.io/docs/collector/" rel="noopener">https://opentelemetry.io/docs/collector/</a> (consultado el 27-10-2026).</li>
+  <li>W3C. «Trace Context» (Recomendación W3C, nivel 1, 23 de noviembre de 2021). <a href="https://www.w3.org/TR/trace-context/" rel="noopener">https://www.w3.org/TR/trace-context/</a> (consultado el 27-10-2026).</li>
+  <li>Google. «Service Level Objectives», en <em>Site Reliability Engineering</em>. <a href="https://sre.google/sre-book/service-level-objectives/" rel="noopener">https://sre.google/sre-book/service-level-objectives/</a> (consultado el 27-10-2026).</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/kubernetes-arquitectura-interna.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[devops]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Exhaustiva: Kubernetes bajo el capó</span>
+          </a></li>
+          <li><a href="/articulos/systemd-unidades-dependencias-journald-temporizadores.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[linux]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">systemd: unidades, dependencias, journald y temporizadores</span>
+          </a></li>
+          <li><a href="/articulos/dns-resolucion-cache-dnssec.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[redes]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">DNS de extremo a extremo: resolución, caché, DNSSEC y fallos habituales</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-monitorizar-no-es-lo-mismo-que-observar" class="text-muted hover:text-accent">Monitorizar no es lo mismo que observar</a></li>
+            <li><a href="#2-metricas-con-prometheus-el-modelo-de-dat" class="text-muted hover:text-accent">Métricas con Prometheus: el modelo de datos</a></li>
+            <li><a href="#3-los-cuatro-tipos-de-metrica" class="text-muted hover:text-accent">Los cuatro tipos de métrica</a></li>
+            <li><a href="#4-nombres-y-etiquetas-las-convenciones-que" class="text-muted hover:text-accent">Nombres y etiquetas: las convenciones que ahorran problemas</a></li>
+            <li><a href="#5-instrumentar-una-aplicacion" class="text-muted hover:text-accent">Instrumentar una aplicación</a></li>
+            <li><a href="#6-promql-leer-contadores-con-rate-increase" class="text-muted hover:text-accent">PromQL: leer contadores con rate, increase e irate</a></li>
+            <li><a href="#7-histogramas-resumenes-y-el-error-de-los" class="text-muted hover:text-accent">Histogramas, resúmenes y el error de los cuantiles</a></li>
+            <li><a href="#8-registros-estructura-y-correlacion" class="text-muted hover:text-accent">Registros: estructura y correlación</a></li>
+            <li><a href="#9-trazas-seguir-una-peticion-entre-servici" class="text-muted hover:text-accent">Trazas: seguir una petición entre servicios</a></li>
+            <li><a href="#10-propagacion-de-contexto-w3c-trace-contex" class="text-muted hover:text-accent">Propagación de contexto: W3C Trace Context</a></li>
+            <li><a href="#11-el-collector-de-opentelemetry" class="text-muted hover:text-accent">El Collector de OpenTelemetry</a></li>
+            <li><a href="#12-objetivos-de-nivel-de-servicio-sli-slo-y" class="text-muted hover:text-accent">Objetivos de nivel de servicio: SLI, SLO y presupuestos de error</a></li>
+            <li><a href="#13-alertas-que-valen-la-pena" class="text-muted hover:text-accent">Alertas que valen la pena</a></li>
+            <li><a href="#14-un-caso-de-principio-a-fin-de-va-lento-a" class="text-muted hover:text-accent">Un caso de principio a fin: de «va lento» a la línea responsable</a></li>
+            <li><a href="#15-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#16-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#17-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>
