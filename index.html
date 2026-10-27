@@ -100,10 +100,112 @@
     <!-- ===== Artículos recientes ===== -->
     <section id="articulos" class="max-w-6xl mx-auto px-4 pb-16" aria-labelledby="titulo-recientes">
       <h2 id="titulo-recientes" class="text-term-muted text-sm mb-6">
-        user@devlog:~$ ls -lt <span class="text-term-green">./articulos</span> | head -6
+        user@devlog:~$ ls -lt <span class="text-term-green">./articulos</span>
       </h2>
 
       <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-term-green"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[neovim]</span>
+              <time datetime="2026-10-26">2026-10-26</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/neovim-ide-terminal.html" class="after:absolute after:inset-0">Neovim al Descubierto: El IDE Definitivo en tu Terminal</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              Configura un entorno ultraligero para C++ y Python utilizando Lua, LSP y Treesitter sin sacrificar velocidad.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 18 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-term-amber"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[linux]</span>
+              <time datetime="2026-10-25">2026-10-25</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/arch-hyprland-wayland.html" class="after:absolute after:inset-0">Arch Linux + Wayland: Dominando el Tiling con Hyprland</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              Despliega y personaliza un compositor Wayland dinámico para crear un entorno minimalista y fluido.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 15 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-purple-500"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[sysadmin]</span>
+              <time datetime="2026-10-24">2026-10-24</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/particiones-dualboot.html" class="after:absolute after:inset-0">Gestión Avanzada de Particiones en Dual-Boot</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              Eliminación de Linux, extensión de la partición de Windows y restauración del arranque con bcdboot.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 12 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-term-green"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[cpp]</span>
+              <time datetime="2026-10-23">2026-10-23</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/cpp-ncurses-terminal.html" class="after:absolute after:inset-0">C++ en la Terminal: Interfaces con Ncurses</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              Crea herramientas TUI, juegos y calculadoras vectoriales gestionando el buffer de la consola.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 20 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-term-amber"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[iot]</span>
+              <time datetime="2026-10-22">2026-10-22</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/esp32-control-motores.html" class="after:absolute after:inset-0">Control de Motores y Telemetría con ESP32</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              C++ para electrónica: RTOS, modulación PWM y drivers de potencia en arquitecturas modulares.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 18 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-purple-500"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[ai]</span>
+              <time datetime="2026-10-21">2026-10-21</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/obsidian-llm-python.html" class="after:absolute after:inset-0">Cerebro Digital Local: Obsidian + Python + LLMs</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              Automatiza la generación de notas, etiquetado e interconexión usando scripts y modelos IA de código abierto.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 16 min de lectura</p>
+          </div>
+        </article>
 
         <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
           <div class="h-1 bg-term-green"></div>
@@ -119,6 +221,23 @@
               Arquitectura, pipelines CI/CD automatizados, entornos de PRs y configuración avanzada de enrutamiento.
             </p>
             <p class="mt-4 text-xs text-term-muted">⏱ 15 min de lectura</p>
+          </div>
+        </article>
+
+        <article class="group relative flex flex-col border border-term-border bg-term-surface rounded-lg overflow-hidden hover:border-term-green transition-colors">
+          <div class="h-1 bg-term-green"></div>
+          <div class="p-5 flex flex-col flex-1">
+            <div class="flex items-center justify-between text-xs text-term-muted mb-3">
+              <span class="text-term-amber">[python]</span>
+              <time datetime="2026-10-20">2026-10-20</time>
+            </div>
+            <h3 class="text-lg font-bold text-white leading-snug group-hover:text-term-green">
+              <a href="/articulos/python-metodos-numericos.html" class="after:absolute after:inset-0">Python para Ingeniería: Optimización en Métodos Numéricos</a>
+            </h3>
+            <p class="mt-3 text-sm text-term-text/80 leading-relaxed flex-1">
+              Abandona los bucles 'for'. Usa la vectorización de NumPy sobre memoria contigua y acelera tu código entre 10 y 100 veces.
+            </p>
+            <p class="mt-4 text-xs text-term-muted">⏱ 14 min de lectura</p>
           </div>
         </article>
 

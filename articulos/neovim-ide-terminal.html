@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neovim al Descubierto: El IDE Definitivo en tu Terminal — devlog</title>
+  <meta name="description" content="Configura un entorno ultraligero para C++ y Python utilizando Lua, LSP y Treesitter sin sacrificar velocidad.">
+  <link rel="canonical" href="https://TU-DOMINIO.com/articulos/neovim-ide-terminal.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Neovim al Descubierto: El IDE Definitivo en tu Terminal">
+  <meta property="og:description" content="Configura un entorno ultraligero para C++ y Python utilizando Lua, LSP y Treesitter sin sacrificar velocidad.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/articulos/neovim-ide-terminal.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-10-26">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Neovim al Descubierto: El IDE Definitivo en tu Terminal",
+    "datePublished": "2026-10-26",
+    "dateModified": "2026-10-26",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://TU-DOMINIO.com/articulos/neovim-ide-terminal.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          colors: {
+            term: {
+              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
+              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="text-term-green font-bold tracking-tight">
+        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
+        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
+        <a href="/" class="hover:text-term-green">~</a> /
+        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
+        <span class="text-term-text">neovim-ide-terminal</span>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-term-amber mb-3">[neovim]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+          Neovim al Descubierto: El IDE Definitivo en tu Terminal
+        </h1>
+        <p class="mt-4 text-term-muted">Configura un entorno ultraligero para C++ y Python utilizando Lua, LSP y Treesitter sin sacrificar velocidad.</p>
+        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-term-text">Victor Martinez</span></span>
+          <time datetime="2026-10-26">2026-10-26</time>
+          <span>⏱ 18 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+            
+        <h2 id="1-el-paradigma-de-neovim-y-lua">1. El Paradigma de Neovim y Lua</h2>
+        <p>A diferencia de los IDEs tradicionales basados en Electron o Java que consumen gigabytes de RAM, Neovim corre dentro de la terminal y responde de forma casi instantánea. La revolución de Neovim 0.5 fue la adopción de <strong>Lua</strong> como lenguaje nativo (en la práctica, reemplazando a Vimscript para configurar), permitiendo configuraciones modulares, asíncronas y ultrarrápidas.</p>
+        
+                <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-lsp-language-server-protocol">2. LSP: Language Server Protocol</h2>
+        <p>Neovim trae un cliente LSP integrado. El LSP delega el análisis sintáctico a un servidor externo (ej. <code>clangd</code> para C/C++ y <code>pyright</code> para Python). Esto te da autocompletado inteligente, ir-a-definición y refactorización a nivel de IDE.</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>lua</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>-- init.lua (Neovim 0.11+ con el plugin nvim-lspconfig instalado)
+
+-- Configurar C++
+vim.lsp.config('clangd', {
+  cmd = { 'clangd', '--background-index', '--clang-tidy' },
+})
+
+-- Activar los servidores (Python usa la configuración por defecto de lspconfig)
+vim.lsp.enable({ 'clangd', 'pyright' })</code></pre>
+        </div>
+        <p>Esta es la API nativa desde Neovim 0.11. El clásico <code>require('lspconfig').clangd.setup{}</code> sigue apareciendo en muchas guías, pero está obsoleto. Instala antes los servidores (<code>clangd</code>, <code>pyright</code>) con Mason o con el gestor de paquetes de tu sistema.</p>
+
+        <h2 id="3-treesitter-resaltado-sintactico-estructu">3. Treesitter: Resaltado Sintáctico Estructural</h2>
+        <p>Las expresiones regulares son lentas y propensas a errores para colorear código. <strong>Treesitter</strong> construye un árbol de sintaxis abstracta (AST) en tiempo real mientras escribes. Entiende si una palabra es un método de clase, una variable local o un macro de C++, brindando un coloreado perfecto y permitiendo atajos semánticos (ej. "borrar el cuerpo de esta función entera", con el plugin <code>nvim-treesitter-textobjects</code>).</p>
+
+                <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="4-el-flujo-de-trabajo-keybinds">4. El Flujo de Trabajo (Keybinds)</h2>
+        <p>El objetivo es no tocar el ratón. Configurar la <code>&lt;Leader&gt;</code> key (usualmente espacio) es fundamental:</p>
+        <ul>
+            <li><code>&lt;leader&gt;ff</code>: Telescoping (búsqueda difusa de archivos con Telescope).</li>
+            <li><code>gd</code>: Go to Definition (navega hasta donde se declaró la variable/clase).</li>
+            <li><code>&lt;leader&gt;ca</code>: Code Actions (mostrar sugerencias del lsp para arreglar un error).</li>
+        </ul>
+        <p>Estos atajos hay que definirlos en <code>init.lua</code> (el <code>gd</code> nativo de Vim solo busca la declaración local; el de abajo usa el LSP). <code>&lt;leader&gt;ff</code> requiere el plugin Telescope. Además, Neovim 0.11+ trae atajos LSP por defecto, como <code>grn</code> (renombrar), <code>gra</code> (code action), <code>grr</code> (referencias) y <code>K</code> (documentación).</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>lua</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>vim.g.mapleader = ' '
+vim.keymap.set('n', 'gd', vim.lsp.buf.definition)
+vim.keymap.set('n', '&lt;leader&gt;ca', vim.lsp.buf.code_action)
+vim.keymap.set('n', '&lt;leader&gt;ff', require('telescope.builtin').find_files)</code></pre>
+        </div>
+        <div class="alert alert-success">
+            <strong>Arquitectura de Configuración:</strong> Nunca metas todo en un solo <code>init.lua</code>. Divide tu configuración en <code>~/.config/nvim/lua/core/</code> (atajos, opciones base) y <code>~/.config/nvim/lua/plugins/</code> (usando gestores como Lazy.nvim).
+        </div>
+        
+        
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/arch-hyprland-wayland.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[linux]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Arch Linux + Wayland: Dominando el Tiling con Hyprland</span>
+          </a></li>
+          <li><a href="/articulos/particiones-dualboot.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[sysadmin]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Gestión Avanzada de Particiones en Dual-Boot</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="text-term-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-term-border pl-4">
+            <li><a href="#1-el-paradigma-de-neovim-y-lua" class="text-term-muted hover:text-term-green">1. El Paradigma de Neovim y Lua</a></li>
+            <li><a href="#2-lsp-language-server-protocol" class="text-term-muted hover:text-term-green">2. LSP: Language Server Protocol</a></li>
+            <li><a href="#3-treesitter-resaltado-sintactico-estructu" class="text-term-muted hover:text-term-green">3. Treesitter: Resaltado Sintáctico Estructural</a></li>
+            <li><a href="#4-el-flujo-de-trabajo-keybinds" class="text-term-muted hover:text-term-green">4. El Flujo de Trabajo (Keybinds)</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-term-border mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>
