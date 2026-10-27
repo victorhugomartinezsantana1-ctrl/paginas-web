@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust: propiedad, préstamos y lifetimes explicados con sus errores — devlog</title>
+  <meta name="description" content="Cómo razona el borrow checker de Rust: propiedad y movimientos, referencias y préstamos, lifetimes y los errores del compilador más habituales, comparados con RAII en C++.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/rust-propiedad-prestamos-lifetimes.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Rust: propiedad, préstamos y lifetimes explicados con sus errores">
+  <meta property="og:description" content="Cómo razona el borrow checker de Rust: propiedad y movimientos, referencias y préstamos, lifetimes y los errores del compilador más habituales, comparados con RAII en C++.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/rust-propiedad-prestamos-lifetimes.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Rust: propiedad, préstamos y lifetimes explicados con sus errores",
+    "description": "Cómo razona el borrow checker de Rust: propiedad y movimientos, referencias y préstamos, lifetimes y los errores del compilador más habituales, comparados con RAII en C++.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 5319,
+    "keywords": "rust ownership borrowing, lifetimes, move, Rc, Arc, Mutex",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/rust-propiedad-prestamos-lifetimes.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[rust]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          Rust: propiedad, préstamos y lifetimes explicados con sus errores
+        </h1>
+        <p class="mt-4 text-muted">Cómo razona el borrow checker de Rust: propiedad y movimientos, referencias y préstamos, lifetimes y los errores del compilador más habituales, comparados con RAII en C++.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 27 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-la-idea-comprobar-la-liberacion-en-tiemp" class="text-accent hover:underline">La idea: comprobar la liberación en tiempo de compilación</a></li>
+          <li><a href="#2-propiedad-un-dueno-un-destino" class="text-accent hover:underline">Propiedad: un dueño, un destino</a></li>
+          <li><a href="#3-prestamos-usar-sin-poseer" class="text-accent hover:underline">Préstamos: usar sin poseer</a></li>
+          <li><a href="#4-lifetimes-dar-nombre-a-las-relaciones-en" class="text-accent hover:underline">Lifetimes: dar nombre a las relaciones entre vidas</a></li>
+          <li><a href="#5-los-errores-del-compilador-uno-por-uno" class="text-accent hover:underline">Los errores del compilador, uno por uno</a></li>
+          <li><a href="#6-compartir-propiedad-rc-arc-y-mutex" class="text-accent hover:underline">Compartir propiedad: Rc, Arc y Mutex</a></li>
+          <li><a href="#7-rust-y-c-frente-a-frente" class="text-accent hover:underline">Rust y C++ frente a frente</a></li>
+          <li><a href="#8-como-trabajar-con-el-borrow-checker" class="text-accent hover:underline">Cómo trabajar con el borrow checker</a></li>
+          <li><a href="#9-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#10-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#11-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>Todo lenguaje que permite programar sin recolector de basura se enfrenta al mismo dilema: alguien tiene que decidir cuándo se libera cada recurso. En C se decide a mano, con los riesgos que eso conlleva. En C++ moderno se decide con disciplina: RAII, punteros inteligentes y reglas de cero y de cinco, como vimos en nuestro artículo sobre <a href="/articulos/cpp-moderno-raii-movimiento-punteros-inteligentes.html">C++ moderno</a>, donde el compilador ayuda pero no obliga. Rust toma una tercera vía: convierte esa disciplina en un conjunto de reglas que el compilador <em>comprueba antes de generar el programa</em>. Si el código viola una regla, no compila. Esas reglas son la propiedad (<em>ownership</em>), los préstamos (<em>borrowing</em>) y los tiempos de vida (<em>lifetimes</em>), y el componente que las verifica se conoce como <em>borrow checker</em>.</p>
+
+<p>El precio es una curva de aprendizaje con fama de empinada, y el motivo casi siempre es el mismo: se intenta escribir código pensando en otro lenguaje y el compilador se niega. Este artículo propone leer esos rechazos como lo que son, explicaciones de qué regla se rompió. Recorremos las tres ideas con el libro oficial del lenguaje (<em>The Rust Programming Language</em>) y con el índice de errores del compilador, y damos especial atención a los errores más frecuentes: qué código los provoca, qué significan y cómo se resuelven. Una advertencia de método importante, que aquí es más estricta que en otros artículos de la serie: <strong>el equipo de redacción no tiene <code>rustc</code> ni <code>cargo</code></strong>, de modo que ningún fragmento de código de este texto se ha compilado. Los fragmentos siguen los patrones de las páginas oficiales y los marcamos como no compilados aquí; de los mensajes del compilador solo reproducimos los titulares y códigos que esas páginas documentan, y no mostramos salidas completas ni inventamos ninguna. Si quieres comprobar algo, cópialo en tu propio entorno y compara. Las fuentes se consultaron el 27 de octubre de 2026.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Tres reglas de propiedad: cada valor tiene un dueño, solo puede haber uno a la vez y, cuando el dueño sale del ámbito, el valor se libera (<code>drop</code>).</li>
+    <li>Asignar un valor que gestiona memoria en el montículo (<code>let s2 = s1;</code>) lo <strong>mueve</strong>: <code>s1</code> deja de ser válida, y usarla produce <code>error[E0382]: borrow of moved value</code>.</li>
+    <li>Las referencias permiten usar un valor sin tomar su propiedad (préstamo). En cada momento puede haber <strong>o bien una referencia mutable o bien cualquier número de referencias inmutables</strong>, y las referencias deben ser siempre válidas.</li>
+    <li>El alcance de una referencia termina en su <strong>último uso</strong>, no al cerrar el bloque, lo que hace aceptable mucho código que parece conflictivo.</li>
+    <li>Los lifetimes no cambian cuánto vive nada: describen cómo se relacionan las vidas de varias referencias para que el compilador pueda verificar que no hay referencias colgantes, y no cuestan nada en tiempo de ejecución.</li>
+    <li>Para compartir propiedad se usa <code>Rc&lt;T&gt;</code> en un solo hilo y <code>Arc&lt;T&gt;</code> entre hilos; para mutar entre hilos, <code>Mutex&lt;T&gt;</code>. El compilador rechaza enviar un <code>Rc</code> a otro hilo.</li>
+  </ul>
+</div>
+
+<h2 id="1-la-idea-comprobar-la-liberacion-en-tiemp">La idea: comprobar la liberación en tiempo de compilación</h2>
+
+<p>Conviene situar a Rust frente a los enfoques que ya conocemos. Python libera por conteo de referencias y recolector de ciclos (lo medimos en el artículo sobre <a href="/articulos/python-memoria-referencias-recolector-basura.html">la memoria en Python</a>): cómodo, con un coste en tiempo de ejecución y sin garantías sobre el momento exacto de la liberación. C++ libera de forma determinista con destructores, pero nada impide copiar un puntero crudo y usarlo después de liberado. Rust libera también de forma determinista, y además <em>impide en compilación</em> los usos de un valor que ya no existe. La mayor parte del trabajo se hace al compilar, y esa es la razón por la que, según el propio libro, el análisis de los tiempos de vida no afecta al rendimiento en ejecución: son anotaciones que el compilador verifica y descarta.</p>
+
+<p>Este diseño no es gratuito: hay programas correctos que el compilador, que debe ser conservador, rechaza, y se aprende a reestructurarlos. A cambio, un programa que compila queda libre, dentro del código seguro del lenguaje, de las referencias colgantes y de las carreras de datos, que el libro destaca como errores que el compilador previene. (La frase «dentro del código seguro» es una precisión nuestra: el libro de la sección consultada no trata el bloque <code>unsafe</code>.)</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-propiedad-un-dueno-un-destino">Propiedad: un dueño, un destino</h2>
+
+<p>El primer capítulo de la sección de propiedad del libro enuncia tres reglas que resumen todo el sistema:</p>
+
+<ol>
+  <li>Cada valor en Rust tiene un <em>dueño</em>.</li>
+  <li>Solo puede haber un dueño a la vez.</li>
+  <li>Cuando el dueño sale del ámbito, el valor se libera (<em>drop</em>).</li>
+</ol>
+
+<p>Para entender por qué importa, hace falta recordar la diferencia entre la pila y el montículo, que el libro resume así: la pila guarda valores en orden de último en entrar, primero en salir, y los datos deben tener un tamaño conocido y fijo; el montículo guarda datos de tamaño desconocido o variable, y el asignador devuelve un puntero que se guarda en la pila. Meter datos en la pila es más rápido que asignar en el montículo, y acceder al montículo es, en general, más lento porque hay que seguir el puntero. La propiedad es, en esencia, el mecanismo para saber quién debe liberar lo que hay en el montículo.</p>
+
+<h3>Ámbito y liberación automática</h3>
+
+<p>Un literal de cadena está incrustado en el programa y es inmutable; un <code>String</code>, en cambio, gestiona datos del montículo y puede crecer. Cuando la variable que posee un <code>String</code> sale del ámbito, Rust devuelve la memoria automáticamente: el libro dice que Rust llama a <code>drop</code> en la llave de cierre. Si has leído nuestro artículo de C++, la similitud es evidente: es el mismo momento en que se ejecutan los destructores de los objetos locales en RAII (donde medimos que se liberan en orden inverso al de creación). La diferencia es que en Rust ese comportamiento no es un patrón de diseño que hay que seguir con disciplina, sino la regla del lenguaje para todos los valores.</p>
+
+<h3>Mover: la copia superficial que invalida el original</h3>
+
+<p>Veamos qué ocurre al asignar una variable que posee memoria del montículo a otra:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+let s1 = String::from("hello");
+let s2 = s1;
+println!("{s1}, world!");     // error</code></pre>
+        </div>
+
+<p>El libro explica que, con <code>let s2 = s1;</code>, se copian los datos de la pila (el puntero, la longitud y la capacidad), pero no los datos del montículo. Si Rust dejara entonces las dos variables como válidas, al salir del ámbito las dos intentarían liberar la misma memoria, una doble liberación. Para evitarlo, Rust <strong>invalida <code>s1</code></strong> tras la asignación, y a esa operación la llama <em>mover</em>. El uso posterior de <code>s1</code> no compila, y el compilador lo señala con un titular que la página documenta: <code>error[E0382]: borrow of moved value: `s1`</code>. El mensaje habla de «préstamo de un valor movido» porque <code>println!</code> toma prestada la variable para leerla, y el valor ya no está ahí.</p>
+
+<p>Es un contraste útil con lo que medimos en C++. En nuestro laboratorio, un objeto movido (<code>a</code> después de <code>Buffer c = std::move(a);</code>) quedaba en un estado «válido pero vacío» que el programa podía seguir usando, con el riesgo de suponer su contenido. En Rust, usar una variable movida es un error de compilación, de modo que la categoría de fallo «usé algo que ya moví» desaparece. (Es una comparación nuestra entre los dos lenguajes, apoyada en nuestras medidas de C++ y en la página citada de Rust.)</p>
+
+<p>El libro añade una observación de diseño: Rust nunca hace copias profundas de forma automática, así que cualquier copia automática se puede suponer barata. Cuando se quiere una copia profunda, hay que pedirla con <code>clone()</code>, que copia también los datos del montículo:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+let s1 = String::from("hello");
+let s2 = s1.clone();
+println!("s1 = {s1}, s2 = {s2}");</code></pre>
+        </div>
+
+<p>La página señala que una llamada a <code>clone</code> es una señal visual de que se está ejecutando código potencialmente costoso: se puede buscar en el código para localizar las copias.</p>
+
+<h3>Los tipos Copy</h3>
+
+<p>Hay una excepción natural: los tipos cuyos valores viven enteros en la pila no necesitan moverse, porque copiarlos es trivial. Los tipos que implementan el rasgo <code>Copy</code> se duplican en la asignación en lugar de moverse, y el original sigue siendo válido. El libro enumera los tipos <code>Copy</code>: todos los enteros (como <code>u32</code>), <code>bool</code>, todos los flotantes (como <code>f64</code>), <code>char</code> y las tuplas cuyos elementos son todos <code>Copy</code> (<code>(i32, i32)</code> lo es; <code>(i32, String)</code> no). Una restricción importante: un tipo no puede ser <code>Copy</code> si él o alguna de sus partes implementa <code>Drop</code>, porque duplicar un valor con un destructor significaría liberarlo dos veces. La página no muestra cómo implementar <code>Copy</code> o <code>Drop</code> en tipos propios; lo remite al apéndice C.</p>
+
+<h3>Propiedad y funciones</h3>
+
+<p>Pasar un valor a una función se comporta como asignarlo: lo mueve o lo copia, según el tipo. Un entero sigue siendo utilizable después de pasarlo; un <code>String</code>, no. Y devolver un valor desde una función transfiere la propiedad al llamante. El libro muestra el problema práctico: si una función solo quiere <em>leer</em> un <code>String</code>, tendría que devolverlo, junto con el resultado, en una tupla para que el llamante lo recupere, algo que el libro califica de «demasiada ceremonia». Esa incomodidad es la motivación de las referencias.</p>
+
+<h2 id="3-prestamos-usar-sin-poseer">Préstamos: usar sin poseer</h2>
+
+<p>Una <em>referencia</em> es, según el libro, parecida a un puntero: una dirección que se puede seguir para llegar a datos que pertenecen a otra variable. A diferencia de un puntero crudo, se garantiza que apunta a un valor válido de su tipo mientras la referencia exista. Crear una referencia con <code>&amp;</code> se llama <em>tomar prestado</em> (<em>borrowing</em>), y la palabra importa: como no eres el dueño, debes devolverlo al terminar. Una función que recibe <code>s: &amp;String</code> puede leer el valor sin tomar su propiedad, y cuando <code>s</code> sale del ámbito el <code>String</code> no se libera, porque su dueño sigue siendo otro.</p>
+
+<h3>Inmutables por defecto, mutables con permiso</h3>
+
+<p>Las referencias son inmutables por defecto: intentar modificar un valor a través de un <code>&amp;String</code> es un error (el libro cita el código E0596). Para modificar hay que pedir una <em>referencia mutable</em> con <code>&amp;mut</code>, y la variable original debe haberse declarado <code>mut</code>:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+fn main() {
+    let mut s = String::from("hello");
+    change(&amp;mut s);
+}
+
+fn change(some_string: &amp;mut String) {
+    some_string.push_str(", world");
+}</code></pre>
+        </div>
+
+<h3>La regla central: o una mutable o varias inmutables</h3>
+
+<p>Aquí aparece la restricción que más sorprende. El libro la formula de esta manera: en cada momento puedes tener <em>o bien</em> una referencia mutable <em>o bien</em> cualquier número de referencias inmutables. Dos consecuencias concretas, con sus errores documentados:</p>
+
+<ul>
+  <li><strong>Dos referencias mutables simultáneas al mismo valor</strong> producen el error E0499, cuyo titular es «cannot borrow `s` as mutable more than once at a time».</li>
+  <li><strong>Mezclar una referencia mutable con referencias inmutables aún en uso</strong> produce el error E0502, con el titular «cannot borrow `s` as mutable because it is also borrowed as immutable».</li>
+</ul>
+
+<p>¿Por qué esta restricción? El libro responde con la definición de una <em>carrera de datos</em> (<em>data race</em>), que ocurre cuando se dan tres condiciones a la vez: dos o más punteros acceden a los mismos datos al mismo tiempo, al menos uno de ellos escribe, y no hay ningún mecanismo que sincronice los accesos. Las reglas de préstamo hacen imposible, <em>por construcción</em>, que se den la primera y la segunda juntas (si hay un escritor, es el único), de modo que no puede haber carreras de datos. Esa es la afirmación del libro: Rust previene las carreras de datos en tiempo de compilación. Es el mismo problema que en el artículo sobre <a href="/articulos/python-asyncio-bucle-eventos-corrutinas.html">asyncio</a> se evita por otra vía (un solo hilo y cooperación), y que en C++ se deja a la disciplina del programador y a las herramientas de análisis.</p>
+
+<h3>El alcance de una referencia termina en su último uso</h3>
+
+<p>Un detalle que facilita mucho la vida: según el libro, el alcance de una referencia empieza donde se introduce y continúa hasta la última vez que se usa. Por tanto, este código compila aunque a primera vista parezca mezclar referencias inmutables y mutables:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+let r1 = &amp;s;
+let r2 = &amp;s;
+println!("{r1} and {r2}");
+// r1 y r2 no se usan más a partir de aquí
+let r3 = &amp;mut s;           // sin problema
+println!("{r3}");</code></pre>
+        </div>
+
+<p>Las dos referencias inmutables dejan de usarse antes de crear la mutable, y el compilador lo sabe. Esta precisión (que el comportamiento se conoce en la jerga del proyecto como <em>non-lexical lifetimes</em>, un nombre que la página consultada no utiliza) significa que, a menudo, un error de préstamo se resuelve simplemente cambiando el orden de las líneas o acortando el uso de una referencia, sin tocar la lógica.</p>
+
+<h3>Referencias colgantes</h3>
+
+<p>El tercer riesgo clásico es devolver una referencia a algo que ya no existe. El libro lo ilustra con una función <code>dangle</code> que crea un <code>String</code> local y devuelve una referencia a él:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+fn dangle() -&gt; &amp;String {
+    let s = String::from("hello");
+    &amp;s
+}   // aquí s sale del ámbito y se libera: la referencia apuntaría a memoria liberada</code></pre>
+        </div>
+
+<p>El compilador lo rechaza con el error E0106, «missing lifetime specifier», y la explicación clave de la página es que el tipo de retorno contiene un valor prestado, pero no hay ningún valor del que pedirlo prestado. La solución es devolver el valor entero: <code>fn no_dangle() -&gt; String</code>. Según el libro, la propiedad se mueve fuera y no se libera nada. Es el caso en que un puntero crudo en C o C++ compilaría sin quejarse y produciría un fallo en ejecución; en Rust, el fallo ocurre en el ordenador del programador y con un mensaje.</p>
+
+<h2 id="4-lifetimes-dar-nombre-a-las-relaciones-en">Lifetimes: dar nombre a las relaciones entre vidas</h2>
+
+<p>Los tiempos de vida (<em>lifetimes</em>) son la parte del sistema que más inquieta, y el libro empieza deshaciendo el misterio: su objetivo principal es evitar las referencias colgantes. El ejemplo básico declara una variable <code>r</code>, introduce un ámbito interior donde se declara <code>x</code>, asigna <code>r = &amp;x;</code> y, al salir del ámbito, usa <code>r</code>. El compilador lo rechaza con el error E0597, cuyo titular es «`x` does not live long enough». El <em>borrow checker</em> llega a esa conclusión comparando los ámbitos (los tiempos de vida) de las variables: la referencia <code>r</code> vive más que el valor al que apunta.</p>
+
+<h3>La sintaxis de las anotaciones</h3>
+
+<p>Los parámetros de lifetime empiezan con un apóstrofo y suelen ser cortos, como <code>'a</code>, y se colocan detrás del <code>&amp;</code>: <code>&amp;i32</code> es una referencia, <code>&amp;'a i32</code> una referencia con lifetime explícito y <code>&amp;'a mut i32</code> una referencia mutable con lifetime explícito. El libro insiste en un punto que evita malentendidos: <strong>las anotaciones no cambian cuánto vive ninguna referencia</strong>; describen cómo se relacionan los tiempos de vida de varias referencias entre sí.</p>
+
+<h3>Por qué el compilador pide anotaciones: la función longest</h3>
+
+<p>El ejemplo clásico es una función que devuelve la más larga de dos cadenas prestadas. Escrita sin anotaciones, <code>fn longest(x: &amp;str, y: &amp;str) -&gt; &amp;str</code> falla con E0106 («missing lifetime specifier»), porque el compilador no puede saber si la referencia devuelta viene de <code>x</code> o de <code>y</code>, y de eso depende cuánto tiempo es válida. La solución es declarar un lifetime genérico compartido:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+fn longest&lt;'a&gt;(x: &amp;'a str, y: &amp;'a str) -&gt; &amp;'a str {
+    if x.len() &gt; y.len() { x } else { y }
+}</code></pre>
+        </div>
+
+<p>La firma significa que la referencia devuelta es válida mientras lo sean <em>las dos</em> referencias de entrada: en la práctica, durante el menor de los dos tiempos de vida. El libro muestra que, si se usa el resultado después de que haya terminado el ámbito de la cadena de vida más corta, el código se rechaza. Y añade un matiz: cuando una función devuelve una referencia a una variable local, los lifetimes no lo arreglan; la mejor solución es devolver un tipo con propiedad (como en <code>no_dangle</code>).</p>
+
+<h3>Lifetimes en estructuras</h3>
+
+<p>Una estructura que guarda una referencia necesita anotar su lifetime, para que ninguna instancia pueda sobrevivir al dato que toma prestado:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>rust</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>// Patrón del libro oficial; no compilado aquí
+struct ImportantExcerpt&lt;'a&gt; {
+    part: &amp;'a str,
+}</code></pre>
+        </div>
+
+<h3>La elisión: por qué casi nunca los escribes</h3>
+
+<p>Si cada función con referencias necesitara anotaciones, el código sería insoportable. El compilador aplica tres reglas, que el libro llama <em>reglas de elisión de lifetimes</em>, para inferirlos cuando el patrón es evidente:</p>
+
+<ol>
+  <li>Cada parámetro que es una referencia recibe su propio lifetime de entrada.</li>
+  <li>Si hay exactamente un lifetime de entrada, se asigna a todos los lifetimes de salida.</li>
+  <li>Si uno de los parámetros es <code>&amp;self</code> o <code>&amp;mut self</code>, su lifetime se asigna a todos los de salida.</li>
+</ol>
+
+<p>Si tras aplicar las reglas queda ambigüedad (como en <code>longest</code>, con dos entradas y una salida), el compilador pide anotaciones explícitas. El libro usa <code>first_word</code> como ejemplo de una función que compila sin ninguna anotación gracias a esas reglas. La terminología: los lifetimes de los parámetros se llaman «de entrada» y los de los valores devueltos, «de salida».</p>
+
+<h3>'static y la tentación de acallar el error</h3>
+
+<p>Existe un lifetime especial, <code>'static</code>, que significa que la referencia puede vivir durante todo el programa. Los literales de cadena lo tienen, porque su texto está almacenado en el binario. La advertencia del libro es práctica: cuando un mensaje de error sugiere usar <code>'static</code>, casi siempre es síntoma de una referencia colgante o de un desajuste de lifetimes, y usarlo solo para silenciar el error no lo arregla; hay que resolver el problema real.</p>
+
+<h2 id="5-los-errores-del-compilador-uno-por-uno">Los errores del compilador, uno por uno</h2>
+
+<p>Los mensajes de Rust son famosos por su utilidad, y la mejor forma de aprender el sistema es reconocer los errores frecuentes y saber qué regla expresa cada uno. La tabla siguiente reúne los que hemos visto en las páginas oficiales, con el significado que éstas les dan y la corrección que sugieren. El texto de los titulares es el que documentan las páginas; las columnas de «causa típica» y «salida» son una síntesis nuestra.</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Código y titular</th><th>Qué regla se ha roto</th><th>Causa típica</th><th>Salidas habituales</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>E0382: borrow of moved value</td><td>Uso de un valor tras moverlo</td><td>Asignar o pasar un <code>String</code>/<code>Vec</code> y seguir usando el original</td><td>Pasar una referencia (<code>&amp;</code>) en lugar del valor; <code>clone()</code> si de verdad hacen falta dos copias; devolver el valor desde la función</td></tr>
+    <tr><td>E0499: cannot borrow as mutable more than once at a time</td><td>Dos referencias mutables vivas a la vez</td><td>Guardar un <code>&amp;mut</code> y pedir otro antes de dejar de usar el primero</td><td>Acortar el uso del primero; separar en ámbitos; reestructurar los datos</td></tr>
+    <tr><td>E0502: cannot borrow as mutable because it is also borrowed as immutable</td><td>Mutable mezclada con inmutables vivas</td><td>Leer con <code>&amp;</code>, modificar con <code>&amp;mut</code> mientras la lectura aún se va a usar</td><td>Terminar de usar las lecturas antes de modificar (el alcance acaba en el último uso)</td></tr>
+    <tr><td>E0505: a value was moved out while it was still borrowed</td><td>Mover mientras hay préstamos vivos</td><td>Mover el valor a una función teniendo una referencia que se usa después</td><td>No mover (pasar por referencia); liberar el préstamo antes; hacer el tipo <code>Copy</code> (opciones de la página)</td></tr>
+    <tr><td>E0507: a borrowed value was moved out</td><td>Mover algo a lo que solo se tiene acceso prestado</td><td>Llamar a un método que toma <code>self</code> por valor a través de una referencia</td><td>Cambiar el método a <code>&amp;self</code>; recuperar la propiedad (<code>into_inner</code> de un <code>RefCell</code>); <code>mem::replace</code>; <code>Copy</code> (opciones de la página)</td></tr>
+    <tr><td>E0373: a captured variable in a closure may not live long enough</td><td>Una clausura que captura por referencia puede sobrevivir a la variable</td><td>Pasar a <code>thread::spawn</code> una clausura que toma prestadas variables locales</td><td>Clausura con <code>move</code>, que mueve o copia los datos dentro</td></tr>
+    <tr><td>E0597: `x` does not live long enough</td><td>Referencia que sobrevive a su valor</td><td>Asignar una referencia a una variable de un ámbito interior y usarla fuera</td><td>Ampliar el ámbito del valor o devolver/guardar un valor con propiedad</td></tr>
+    <tr><td>E0106: missing lifetime specifier</td><td>No está claro de dónde viene una referencia devuelta</td><td>Función con varias referencias de entrada y una de salida, o devolver una referencia a un local</td><td>Anotar lifetimes (<code>'a</code>); devolver un valor con propiedad</td></tr>
+    <tr><td>E0596 (código citado por el libro)</td><td>Modificar a través de una referencia inmutable</td><td>Llamar a <code>push_str</code> sobre un <code>&amp;String</code></td><td>Usar <code>&amp;mut</code> y declarar la variable <code>mut</code></td></tr>
+  </tbody>
+</table></div>
+
+<h3>Un ejemplo de lectura: E0373 y los hilos</h3>
+
+<p>El índice de errores explica E0373 con un caso de <code>thread::spawn</code>. Una clausura captura por referencia las variables locales de forma predeterminada; si la clausura se ejecuta en otro hilo, la función que la creó puede terminar antes y la referencia quedaría apuntando a un marco de pila inexistente. La página aclara incluso que llamar a <code>join()</code> dentro de la función no basta, porque el compilador no puede demostrar que el acceso sea seguro. La corrección es la palabra clave <code>move</code>: la clausura se queda con los datos (los mueve, o los copia si pueden copiarse) y, como ya es su dueña, desaparece el riesgo. La página lo ilustra con una clausura devuelta en una caja (<code>Box::new(move |y| x + y)</code>) y no incluye un ejemplo corregido de <code>thread::spawn</code>, de modo que no lo reproducimos. Lo importante es el patrón mental: <strong>si algo va a vivir más que el ámbito que lo crea, tiene que ser dueño de sus datos</strong>.</p>
+
+<h2 id="6-compartir-propiedad-rc-arc-y-mutex">Compartir propiedad: Rc, Arc y Mutex</h2>
+
+<p>Las reglas de propiedad dicen «un dueño», pero hay estructuras en las que varios elementos necesitan poseer el mismo dato, como un grafo en el que varias aristas apuntan al mismo nodo. Para esos casos la biblioteca estándar ofrece punteros con conteo de referencias, y el libro presenta primero el de un solo hilo.</p>
+
+<h3>Rc&lt;T&gt;: varios dueños, un solo hilo</h3>
+
+<p><code>Rc&lt;T&gt;</code> (<em>reference counting</em>) permite que un valor tenga varios dueños: lleva la cuenta de cuántas referencias existen y libera el valor cuando no queda ninguna. Hay un límite que el libro subraya: es solo para escenarios de un solo hilo. Clonar un <code>Rc</code> no copia los datos, solo incrementa el contador, y por eso es barato; el libro prefiere escribir <code>Rc::clone(&amp;a)</code> en lugar de <code>a.clone()</code> para que, al buscar problemas de rendimiento, las copias profundas se distingan a simple vista de las que solo suben un contador. La función <code>Rc::strong_count</code> devuelve el contador (el ejemplo de la página lo muestra pasando de 1 a 2 y a 3 al clonar, y bajando cuando un valor del ámbito interior desaparece, gracias a <code>Drop</code>), y su nombre se debe a que existe también un contador débil (<code>weak_count</code>).</p>
+
+<p>Lo que <code>Rc&lt;T&gt;</code> da es solo <em>lectura compartida</em>: permitir varias referencias mutables rompería las reglas de préstamo y abriría la puerta a carreras de datos e inconsistencias. El libro señala que el patrón de mutabilidad interior y <code>RefCell&lt;T&gt;</code>, combinados con <code>Rc&lt;T&gt;</code>, resuelven esa restricción; la comprobación de los préstamos de un <code>RefCell</code> se pasa a tiempo de ejecución, un dato general que no hemos verificado en las páginas consultadas. La página de <code>Rc</code> menciona también los ciclos de referencias y el tipo <code>Weak&lt;T&gt;</code>, pero solo enlaza a otra sección; no los desarrolla, y no lo hacemos tampoco aquí. La analogía con C++ es directa: <code>Rc</code> se corresponde con un <code>shared_ptr</code> de un solo hilo, y <code>Weak</code> con <code>weak_ptr</code>; en nuestro laboratorio vimos que, con <code>shared_ptr</code>, un ciclo de dos nodos dejó 0 de 2 destructores ejecutados, y que un enlace débil de vuelta lo evitó.</p>
+
+<h3>Arc&lt;T&gt;: compartir entre hilos</h3>
+
+<p>Para varios hilos, el compilador no deja usar <code>Rc</code>: si se intenta enviar un <code>Rc&lt;Mutex&lt;i32&gt;&gt;</code> a <code>thread::spawn</code>, falla con un error cuyo contenido es que ese tipo «no puede enviarse entre hilos de forma segura», porque no implementa el rasgo <code>Send</code>. El motivo, según el libro, es que <code>Rc&lt;T&gt;</code> actualiza su contador sin primitivas de concurrencia, de modo que cambios simultáneos podrían producir cuentas erróneas, con fugas de memoria o con un valor liberado antes de tiempo. La alternativa es <code>Arc&lt;T&gt;</code>, la versión atómica: tiene la misma API, de modo que el arreglo es cambiar la línea <code>use</code> y las llamadas a <code>new</code> y <code>clone</code>. El libro explica por qué los tipos no son atómicos por defecto: la seguridad entre hilos tiene un coste de rendimiento que solo se quiere pagar cuando hace falta. Es la misma historia que en C++: cppreference documenta que los contadores de <code>shared_ptr</code> se incrementan con operaciones atómicas, y nuestro laboratorio midió su tamaño de 16 bytes, el doble que un <code>unique_ptr</code>.</p>
+
+<p>El punto notable es que en Rust la elección entre <code>Rc</code> y <code>Arc</code> no es una recomendación sino una comprobación: equivocarse de tipo es un error de compilación, y no una carrera de datos que aparece en producción. El libro dice que el rasgo <code>Send</code> es el que garantiza que los tipos usados con hilos están pensados para el uso concurrente, y deja su explicación completa y la de <code>Sync</code> para la sección siguiente, que no hemos consultado; por eso no las definimos aquí.</p>
+
+<h3>Mutex&lt;T&gt;: mutar con exclusión mutua</h3>
+
+<p>Compartir lectura entre hilos con <code>Arc</code> es seguro, pero para modificar hace falta un cerrojo. <code>Mutex&lt;T&gt;</code> (de <em>mutual exclusion</em>) permite que solo un hilo acceda a sus datos a la vez. Un hilo llama a <code>lock()</code> para adquirir el cerrojo, y la llamada bloquea hasta que le toca. Lo que devuelve (dentro de un <code>LockResult</code> que el ejemplo del libro resuelve con <code>unwrap</code>) es un <code>MutexGuard</code>, que implementa <code>Deref</code> para llegar al dato interior y <code>Drop</code> para liberar el cerrojo al salir del ámbito. Es RAII aplicado a un cerrojo: el mismo patrón que en C++ cppreference contrapone al uso manual de <code>lock()</code>/<code>unlock()</code> con <code>std::lock_guard</code>. Aquí el desbloqueo es automático al salir del ámbito del guardián, de modo que no hay ninguna llamada de desbloqueo que olvidar.</p>
+
+<p>El libro advierte de que Rust no impide todos los errores lógicos con <code>Mutex</code>: un <em>interbloqueo</em> (<em>deadlock</em>) ocurre cuando dos hilos retienen cada uno un cerrojo y esperan para siempre al otro. El compilador garantiza la ausencia de carreras de datos; no garantiza la ausencia de bloqueos. Un <code>Mutex</code> proporciona además <em>mutabilidad interior</em>: el contador puede ser inmutable y aun así su contenido modificarse mediante <code>lock()</code>, del mismo modo que <code>RefCell</code> con <code>Rc</code>.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="7-rust-y-c-frente-a-frente">Rust y C++ frente a frente</h2>
+
+<p>Con los dos artículos delante (este y el de C++ moderno) se puede hacer una comparación honesta. Es una síntesis nuestra, con los datos de Rust procedentes del libro y los de C++ de cppreference y de nuestro laboratorio:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Cuestión</th><th>C++ (nuestro laboratorio)</th><th>Rust (libro oficial)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Liberación al salir del ámbito</td><td>RAII: destructores en orden inverso (C, B, A)</td><td><code>drop</code> automático al cerrar la llave</td></tr>
+    <tr><td>Un único dueño</td><td><code>unique_ptr</code>: copiar es un error de compilación; hay que mover</td><td>Todo valor tiene un dueño; asignar mueve por defecto</td></tr>
+    <tr><td>Usar tras mover</td><td>Posible; objeto estándar en estado válido pero no especificado</td><td>Error de compilación (E0382)</td></tr>
+    <tr><td>Copias</td><td>Silenciosas si no hay <code>noexcept</code> o con <code>const</code> (vistos en el laboratorio)</td><td>Nunca automáticas para tipos con memoria del montículo; <code>clone()</code> explícito</td></tr>
+    <tr><td>Propiedad compartida</td><td><code>shared_ptr</code> (contadores atómicos), <code>weak_ptr</code></td><td><code>Rc</code> (un hilo) o <code>Arc</code> (varios), con <code>Weak</code></td></tr>
+    <tr><td>Referencias colgantes</td><td>Las previene la disciplina (R.37); el compilador no siempre</td><td>Las impide el <em>borrow checker</em> (E0597, E0106)</td></tr>
+    <tr><td>Carreras de datos</td><td>Responsabilidad del programador y de las herramientas</td><td>Prevenidas en compilación por las reglas de préstamo</td></tr>
+    <tr><td>Coste de las comprobaciones</td><td>Contadores atómicos y copias según el caso</td><td>Los lifetimes no cuestan nada en ejecución</td></tr>
+  </tbody>
+</table></div>
+
+<p>La conclusión práctica no es que un lenguaje «gane»: son compromisos distintos. C++ ofrece las herramientas y confía en el programador; Rust impone las reglas y rechaza lo que no puede verificar, incluidos algunos programas correctos. Para un análisis centrado en sistemas embebidos, con sus restricciones de memoria y de herramientas, remitimos al artículo <a href="/articulos/rust-vs-cpp-sistemas-embebidos.html">Rust frente a C++ en sistemas embebidos</a>; este artículo no mide rendimiento ni tamaño de binarios, así que no hace ninguna afirmación en ese terreno.</p>
+
+<h2 id="8-como-trabajar-con-el-borrow-checker">Cómo trabajar con el borrow checker</h2>
+
+<p>Quien llega a Rust desde otro lenguaje suele pasar por una fase de lucha con el compilador. Estos hábitos, que son consejos nuestros derivados de las reglas anteriores (no citas de las fuentes), la acortan:</p>
+
+<ol>
+  <li><strong>Lee el error entero.</strong> El código (E0382, E0499...) identifica la regla y el índice de errores de Rust tiene una página por código con un ejemplo mínimo y las correcciones; es la mejor documentación para ese mensaje concreto.</li>
+  <li><strong>Pregúntate quién debe ser el dueño.</strong> Casi todos los errores de movimiento se resuelven decidiendo con claridad qué parte del programa posee el dato y pasando referencias (<code>&amp;</code>) a quien solo necesita leerlo.</li>
+  <li><strong>Devuelve valores con propiedad en lugar de referencias a locales.</strong> Es la corrección del libro para <code>dangle</code>, y más sencilla que cualquier anotación de lifetimes.</li>
+  <li><strong>Acorta el uso de las referencias.</strong> Como el alcance acaba en el último uso, a menudo basta con reordenar las líneas o con terminar de leer antes de modificar.</li>
+  <li><strong><code>clone()</code> conscientemente.</strong> Es la salida legítima cuando de verdad necesitas dos copias, pero un <code>clone()</code> puesto «para que compile» oculta un problema de diseño y cuesta tiempo y memoria. El libro lo describe como una señal de código potencialmente caro.</li>
+  <li><strong>No uses <code>'static</code> para callar al compilador.</strong> La advertencia es del propio libro.</li>
+  <li><strong>Para hilos, piensa en <code>move</code> y <code>Arc</code>.</strong> Si una clausura va a vivir más que su ámbito, que sea dueña de lo que usa (E0373); si varios hilos comparten datos, <code>Arc</code>, y <code>Mutex</code> si hay que modificarlos.</li>
+  <li><strong>Reestructura antes de multiplicar los punteros contados.</strong> Un diseño con <code>Rc&lt;RefCell&lt;...&gt;&gt;</code> por todas partes suele indicar que se está imitando un diseño de otro lenguaje; a veces es lo correcto (un grafo), pero conviene saber por qué.</li>
+</ol>
+
+<h2 id="9-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>«El <em>borrow checker</em> hace que el programa sea lento»</h3>
+
+<p>Las comprobaciones se hacen en compilación. El libro afirma que el análisis de los tiempos de vida no afecta al rendimiento en ejecución. Otra cosa es el coste de usar <code>Rc</code> o <code>Arc</code>, que sí incrementan contadores (atómicos en el segundo caso) al clonar.</p>
+
+<h3>«Los lifetimes alargan la vida de las referencias»</h3>
+
+<p>No: las anotaciones describen relaciones, no cambian cuánto vive nada. Si un valor muere antes de lo necesario, la solución es cambiar quién lo posee, no anotar.</p>
+
+<h3>«Si el compilador lo rechaza, el programa estaba mal»</h3>
+
+<p>No necesariamente: el compilador es conservador y rechaza lo que no puede demostrar seguro. Por eso a veces hay que reestructurar código correcto. Y al revés: un programa que compila queda libre de las clases de error que el sistema previene (referencias colgantes y carreras de datos en código seguro).</p>
+
+<h3>«<code>clone()</code> es la solución para todo»</h3>
+
+<p>Resuelve el error de movimiento, pero la página de errores de E0505 y E0507 propone antes otras salidas (referencias, acortar préstamos, <code>Copy</code>, <code>into_inner</code>, <code>mem::replace</code>). Clonar sin necesidad cuesta, y puede ocultar el problema real.</p>
+
+<h3>«Con <code>Mutex</code> no puede haber errores de concurrencia»</h3>
+
+<p>Desaparecen las carreras de datos en código seguro, pero los interbloqueos siguen siendo posibles, como advierte el libro.</p>
+
+<h3>«Un <code>&amp;mut</code> es como un puntero que puedo copiar»</h3>
+
+<p>Solo puede existir una referencia mutable viva a la vez, y no puede coexistir con referencias inmutables en uso: es la regla central.</p>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="10-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Por qué <code>let s2 = s1;</code> invalida <code>s1</code> si es solo copiar un puntero?</h3>
+
+<p>Porque, si ambas siguieran válidas, al salir del ámbito las dos intentarían liberar la misma memoria. Esa doble liberación es lo que el libro dice que se evita invalidando la primera variable. Con un entero (<code>Copy</code>), no hay problema porque el dato vive entero en la pila y copiarlo es trivial.</p>
+
+<h3>¿Qué diferencia hay entre mover y clonar?</h3>
+
+<p>Mover transfiere la propiedad y deja inválido el original; es barato (copia solo los datos de la pila). Clonar crea una copia independiente de los datos del montículo; es costoso y explícito.</p>
+
+<h3>¿Cuándo necesito anotar lifetimes?</h3>
+
+<p>Cuando una función devuelve una referencia y las reglas de elisión no bastan para saber de qué entrada viene (varios parámetros de referencia, sin <code>&amp;self</code>), y cuando una estructura guarda referencias. En el resto de casos, el compilador los infiere.</p>
+
+<h3>¿Qué es <code>'static</code>?</h3>
+
+<p>Un lifetime que significa «puede vivir todo el programa». Los literales de cadena lo tienen. Como regla, el libro desaconseja usarlo para acallar errores.</p>
+
+<h3>¿Puedo tener varias referencias mutables si están en ámbitos distintos?</h3>
+
+<p>Sí, mientras no se solapen: el libro lo ilustra con bloques separados. Lo que no se permite es que existan a la vez.</p>
+
+<h3>¿Debo usar <code>Rc</code> o <code>Arc</code>?</h3>
+
+<p><code>Rc</code> si todo ocurre en un solo hilo; <code>Arc</code> si el dato se comparte entre hilos. El compilador te lo exige: un <code>Rc</code> no puede enviarse a otro hilo. Para modificar datos compartidos entre hilos, <code>Arc&lt;Mutex&lt;T&gt;&gt;</code> es el patrón que muestra el libro.</p>
+
+<h3>¿Estas reglas valen también para <code>unsafe</code>?</h3>
+
+<p>Las páginas consultadas no tratan el bloque <code>unsafe</code>, de modo que no afirmamos nada sobre él. Todo lo anterior se refiere al código seguro habitual.</p>
+
+<h2 id="11-conclusion">Conclusión</h2>
+
+<p>Rust condensa la gestión de recursos en tres ideas que se pueden decir en una frase cada una. La propiedad: un valor, un dueño, y se libera cuando el dueño se va. Los préstamos: puedes usar sin poseer, con una sola mutable o muchas inmutables, y siempre válidas. Los lifetimes: cuando el compilador no puede deducir cuánto vive una referencia, se lo dices, sin que eso cambie lo que vive. De ellas salen los errores que parecían arbitrarios (E0382, E0499, E0502, E0106, E0597...), que se entienden como violaciones de una de esas reglas, y las herramientas para compartir con seguridad (<code>Rc</code>, <code>Arc</code>, <code>Mutex</code>), que el compilador exige usar con el tipo correcto.</p>
+
+<p>Si vienes de C++, la lectura más útil es esta: Rust es en gran medida las reglas de RAII y movimiento que estudiamos en el artículo anterior, convertidas en obligatorias y comprobadas en compilación. Eso elimina categorías enteras de fallo, como usar un valor movido, y tiene un precio, el de reestructurar el código para satisfacer al compilador. Si vienes de Python, la diferencia es la contraria: la liberación no la decide un recolector en ejecución sino el compilador en tiempo de compilación. En ambos casos, el consejo es el mismo: lee el código de error, busca su página en el índice y pregúntate quién debe ser el dueño. Y como en el resto de esta serie, comprueba por tu cuenta lo que aquí no hemos podido ejecutar: este artículo es una guía de lectura de la documentación oficial, no un banco de pruebas.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Klabnik, S. y Nichols, C. (con la comunidad de Rust). «What Is Ownership?», en <em>The Rust Programming Language</em>, cap. 4.1. <a href="https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html" rel="noopener">https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html</a> (consultado el 27-10-2026).</li>
+  <li>«References and Borrowing», <em>The Rust Programming Language</em>, cap. 4.2. <a href="https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html" rel="noopener">https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html</a> (consultado el 27-10-2026).</li>
+  <li>«Validating References with Lifetimes», <em>The Rust Programming Language</em>, cap. 10.3. <a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html" rel="noopener">https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html</a> (consultado el 27-10-2026).</li>
+  <li>«Shared-State Concurrency», <em>The Rust Programming Language</em>, cap. 16.3. <a href="https://doc.rust-lang.org/book/ch16-03-shared-state.html" rel="noopener">https://doc.rust-lang.org/book/ch16-03-shared-state.html</a> (consultado el 27-10-2026).</li>
+  <li>«Rc&lt;T&gt;, the Reference Counted Smart Pointer», <em>The Rust Programming Language</em>, cap. 15.4. <a href="https://doc.rust-lang.org/book/ch15-04-rc.html" rel="noopener">https://doc.rust-lang.org/book/ch15-04-rc.html</a> (consultado el 27-10-2026).</li>
+  <li>The Rust Project. «Rust Compiler Error Index»: E0505, E0507 y E0373. <a href="https://doc.rust-lang.org/error_codes/E0505.html" rel="noopener">https://doc.rust-lang.org/error_codes/E0505.html</a>, <a href="https://doc.rust-lang.org/error_codes/E0507.html" rel="noopener">https://doc.rust-lang.org/error_codes/E0507.html</a> y <a href="https://doc.rust-lang.org/error_codes/E0373.html" rel="noopener">https://doc.rust-lang.org/error_codes/E0373.html</a> (consultados el 27-10-2026).</li>
+  <li>Equipo editorial. «Laboratorio de C++ moderno» (usado para las comparaciones con C++). Archivo <code>editorial/fuentes/lab_cpp.md</code> del repositorio del sitio; ejecutado el 27-10-2026.</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/rust-vs-cpp-sistemas-embebidos.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[hardware]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Exhaustiva: Rust vs C++ en Sistemas Embebidos y ESP32</span>
+          </a></li>
+          <li><a href="/articulos/cpp-moderno-raii-movimiento-punteros-inteligentes.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[c++]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">C++ moderno: RAII, semántica de movimiento y punteros inteligentes</span>
+          </a></li>
+          <li><a href="/articulos/python-memoria-referencias-recolector-basura.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[python]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Memoria en Python: referencias, recolector de basura y cómo medirla</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-la-idea-comprobar-la-liberacion-en-tiemp" class="text-muted hover:text-accent">La idea: comprobar la liberación en tiempo de compilación</a></li>
+            <li><a href="#2-propiedad-un-dueno-un-destino" class="text-muted hover:text-accent">Propiedad: un dueño, un destino</a></li>
+            <li><a href="#3-prestamos-usar-sin-poseer" class="text-muted hover:text-accent">Préstamos: usar sin poseer</a></li>
+            <li><a href="#4-lifetimes-dar-nombre-a-las-relaciones-en" class="text-muted hover:text-accent">Lifetimes: dar nombre a las relaciones entre vidas</a></li>
+            <li><a href="#5-los-errores-del-compilador-uno-por-uno" class="text-muted hover:text-accent">Los errores del compilador, uno por uno</a></li>
+            <li><a href="#6-compartir-propiedad-rc-arc-y-mutex" class="text-muted hover:text-accent">Compartir propiedad: Rc, Arc y Mutex</a></li>
+            <li><a href="#7-rust-y-c-frente-a-frente" class="text-muted hover:text-accent">Rust y C++ frente a frente</a></li>
+            <li><a href="#8-como-trabajar-con-el-borrow-checker" class="text-muted hover:text-accent">Cómo trabajar con el borrow checker</a></li>
+            <li><a href="#9-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#10-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#11-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

@@ -1,0 +1,435 @@
+<p>Un programa de Python que ayer consumía 200 MB hoy consume 2 GB, y nadie ha tocado la parte «de memoria» del código, porque en Python casi nunca se toca: se crean objetos y desaparecen solos. Esa comodidad es real, pero también es una abstracción con costes que se pueden medir y con trampas que se pueden entender. Un entero ocupa 28 bytes, no 4 ni 8. Una lista de un millón de números se come decenas de megabytes mientras que un generador que produce los mismos valores apenas ocupa unos kilobytes. Un objeto sencillo con tres atributos puede pesar un 60 % más de lo necesario. Y ciertos objetos no se liberan cuando crees que deberían, o se liberan en un momento distinto del que supones.</p>
+
+<p>En este artículo recorremos cómo gestiona la memoria CPython, la implementación de referencia de Python: el conteo de referencias, el recolector de ciclos, cuánto ocupa cada cosa, qué hace <code>__slots__</code> y cómo localizar con <code>tracemalloc</code> la línea de código que retiene memoria. Una advertencia de método: como en el artículo sobre <a href="/articulos/python-asyncio-bucle-eventos-corrutinas.html">asyncio</a>, <strong>todas las medidas que verás se ejecutaron de verdad</strong> en Python 3.14.2, en una compilación estándar de 64 bits sobre Windows 11. El script completo y sus salidas están guardados en el repositorio del sitio (<code>editorial/fuentes/lab_memoria.md</code>). Los tamaños en bytes son <em>detalles de implementación</em> de CPython: valen para esta versión y plataforma, pueden cambiar en otras y no deben tratarse como una promesa. Lo que se atribuye a la documentación procede de las páginas oficiales citadas al final, consultadas el 27 de octubre de 2026. Si trabajas con cálculo científico, lo que aquí se explica complementa lo visto en el artículo sobre <a href="/articulos/python-metodos-numericos.html">métodos numéricos en Python</a>.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>CPython libera la mayoría de los objetos <strong>en el instante en que su conteo de referencias llega a cero</strong>; el recolector de basura solo existe para los ciclos, que el conteo no puede resolver.</li>
+    <li>En nuestra medida, un ciclo de dos objetos sobrevivió a <code>del</code> y solo desapareció tras <code>gc.collect()</code>, que devolvió 2.</li>
+    <li>Los tamaños no son los que se suponen: un entero pequeño ocupa 28 bytes, una cadena vacía 41, una lista vacía 56 y un diccionario vacío 64 (medido en esta compilación).</li>
+    <li><code>sys.getsizeof()</code> solo mide el objeto, no lo que referencia: una lista de 10 listas de 1.000 enteros dio 184 bytes, mientras sus sublistas sumaban 80.560.</li>
+    <li>Con <code>__slots__</code>, 100.000 objetos de tres atributos pasaron de 104 a 64 bytes por objeto (un 38 % menos); a cambio no admiten atributos nuevos ni referencias débiles por defecto.</li>
+    <li>Sumar un millón de cuadrados con una lista tuvo un pico de 38,6 MiB; con un generador, de 3,7 KiB.</li>
+    <li><code>tracemalloc</code> compara dos fotografías de la memoria y señala la línea exacta que retiene bloques: en el ejemplo, +50.000 bloques en una sola línea.</li>
+  </ul>
+</div>
+
+<h2>Qué es «la memoria» de un programa Python</h2>
+
+<p>Para razonar sobre la memoria conviene fijar el vocabulario. En Python, todo valor es un <em>objeto</em> (un entero, una cadena, una lista, una instancia de tu clase), y las variables no contienen objetos: son <em>nombres que apuntan</em> a objetos. Es una descripción general del modelo del lenguaje, no una cita concreta, pero explica casi todo lo que sigue. Cuando escribes <code>y = x</code> no copias nada: haces que dos nombres apunten al mismo objeto. Cuando escribes <code>x = []</code>, se crea un objeto lista y <code>x</code> apunta a él.</p>
+
+<p>¿Dónde viven esos objetos? La documentación de la API de C lo resume así: la gestión de memoria de Python se basa en un montón privado que contiene todos los objetos y estructuras de datos, y la gestiona internamente el <em>gestor de memoria de Python</em>. Para los objetos pequeños, CPython incorpora un asignador especializado, <code>pymalloc</code>, optimizado según la documentación para objetos de hasta 512 bytes y vida corta. Trabaja con bloques grandes llamados arenas (de 1 MiB en plataformas de 64 bits, según la página) y, para peticiones mayores de 512 bytes, delega en el asignador general del sistema. No necesitas manejar nada de esto directamente, pero explica dos hechos que verás en los experimentos: que muchos objetos pequeños comparten bloques ya reservados, y que la memoria que Python libera no siempre se devuelve de inmediato al sistema operativo (esta última es una consecuencia general de cualquier asignador por arenas, que no hemos medido aquí).</p>
+
+<h2>Conteo de referencias: la primera línea de defensa</h2>
+
+<p>CPython lleva, dentro de cada objeto, un contador de cuántas referencias apuntan a él. Cada vez que un nuevo nombre, un elemento de lista o un atributo apunta al objeto, el contador sube; cada vez que deja de apuntar, baja. Cuando llega a cero, el objeto se libera en ese mismo momento. La documentación del modelo de datos describe el esquema con una frase: CPython usa actualmente un esquema de conteo de referencias con detección diferida (y opcional) de basura enlazada cíclicamente, que recoge la mayoría de los objetos tan pronto como se vuelven inalcanzables, pero que no garantiza recoger la basura que contiene referencias circulares.</p>
+
+<p>Podemos observar el contador con <code>sys.getrefcount()</code>. Lo hicimos con una lista recién creada:</p>
+
+<pre data-lang="python"><code>x = []
+print("getrefcount([]) recién creada:", sys.getrefcount(x))
+y = x
+print("tras y = x:", sys.getrefcount(x))
+lista_de_listas = [x, x]
+print("tras meterla dos veces en otra lista:", sys.getrefcount(x))
+del y, lista_de_listas
+print("tras borrar y y la otra lista:", sys.getrefcount(x))</code></pre>
+
+<pre data-lang="text"><code>getrefcount([]) recién creada: 2
+tras y = x: 3
+tras meterla dos veces en otra lista: 5
+tras borrar y y la otra lista: 2</code></pre>
+
+<p>La primera cifra sorprende a casi todo el mundo: una lista a la que solo apunta <code>x</code> da 2, no 1. La documentación lo explica: el valor devuelto suele ser uno mayor de lo esperado porque incluye la referencia temporal que supone pasar el objeto como argumento a <code>getrefcount()</code>. Las demás cifras siguen la cuenta con precisión: <code>y = x</code> suma una referencia (3); meter la lista dos veces en otra suma otras dos (5, que son <code>x</code>, <code>y</code>, dos huecos de la lista y el argumento temporal); y al borrar <code>y</code> y la lista contenedora, el contador vuelve a 2.</p>
+
+<h3>Objetos inmortales: cuando el contador ya no cuenta</h3>
+
+<p>Un detalle moderno que desconcierta: pregunta por el contador de <code>None</code> o del entero 0. Nuestra salida:</p>
+
+<pre data-lang="text"><code>getrefcount(None): 3221225472
+getrefcount(0): 3221225472
+getrefcount(10**6 + k): 1
+¿None es inmortal? sys._is_immortal(None): True
+¿[] es inmortal? sys._is_immortal(x): False</code></pre>
+
+<p>Según la documentación, desde Python 3.12 existen objetos <em>inmortales</em>, que tienen un recuento muy alto que no refleja el número real de referencias; por eso la página advierte de que no se debe confiar en el valor devuelto salvo si es 0 o 1. La función <code>sys._is_immortal()</code>, que la página documenta como un detalle de CPython añadido en 3.14, los identifica. El número exacto que vimos (3.221.225.472, que es 3 × 2<sup>30</sup>) es un detalle de esta compilación y no una constante que debas usar. Fíjate también en la tercera línea: el entero <code>10**6 + len(x)</code> es un valor temporal sin ningún nombre, y su único referente es el propio argumento: de ahí el 1.</p>
+
+<h3>Liberación inmediata y el método __del__</h3>
+
+<p>La consecuencia de contar referencias es que la liberación es <em>determinista</em> en el caso común: ocurre en el momento en que desaparece la última referencia. Lo comprobamos con una clase cuyo método <code>__del__</code> imprime un mensaje:</p>
+
+<pre data-lang="python"><code>class Ruidoso:
+    def __init__(self, nombre):
+        self.nombre = nombre
+    def __del__(self):
+        print(f"  __del__ de {self.nombre}")
+
+r1 = Ruidoso("r1")
+del r1                     # aparece "__del__ de r1" aquí mismo
+r2 = Ruidoso("r2")
+r3 = r2
+del r2                     # el objeto sigue vivo: queda r3
+del r3                     # ahora sí: aparece "__del__ de r2"</code></pre>
+
+<p>La salida confirmó el orden: el mensaje de <code>r1</code> apareció inmediatamente al hacer <code>del</code>; el de <code>r2</code> no apareció al borrar <code>r2</code> (todavía había otra referencia) sino al borrar <code>r3</code>. La documentación precisa un malentendido muy extendido: <code>del x</code> no llama directamente a <code>x.__del__()</code>; solo decrementa el contador, y el finalizador se ejecuta cuando el contador llega a cero.</p>
+
+<p>Sin embargo, la misma página del modelo de datos es cautelosa sobre <code>__del__</code>, y conviene seguir su consejo: no está garantizado que se llame a los finalizadores de los objetos que aún existen cuando el intérprete termina; las excepciones que se produzcan dentro de <code>__del__</code> se ignoran (se imprime un aviso en <code>sys.stderr</code>); puede ejecutarse desde cualquier hilo; y durante el cierre del intérprete las variables globales pueden estar ya borradas. La documentación ofrece <code>weakref.finalize</code> como forma directa de registrar una función de limpieza que se ejecute cuando el objeto sea recogido. Y da una regla práctica que merece repetirse: no dependas de la finalización inmediata de los objetos (y cierra siempre los archivos de forma explícita, con <code>with</code>, en lugar de esperar a que desaparezcan).</p>
+
+<h2>Ciclos y el recolector de basura</h2>
+
+<p>El conteo de referencias tiene un punto ciego. Si el objeto A apunta a B y B apunta a A, cada uno mantiene al otro con vida, aunque el resto del programa ya no pueda alcanzar a ninguno de los dos: sus contadores nunca llegan a cero. La documentación del modelo de datos lo dice así: un ciclo de referencias puede impedir que el contador de un objeto llegue a cero, y en ese caso el ciclo será detectado y eliminado más tarde por el recolector cíclico. El módulo <code>gc</code> es la interfaz con ese recolector, y la documentación lo presenta como un complemento del conteo de referencias.</p>
+
+<p>Provocamos un ciclo a propósito. Dos nodos que se apuntan entre sí, una referencia débil (<code>weakref</code>) para saber si el objeto sigue vivo sin mantenerlo con vida, y después <code>del</code> de las dos variables:</p>
+
+<pre data-lang="python"><code>class Nodo:
+    def __init__(self):
+        self.otro = None
+
+gc.collect()
+a, b = Nodo(), Nodo()
+a.otro, b.otro = b, a
+ref_a = weakref.ref(a)
+del a, b
+print("tras del a, b (hay ciclo): ¿sigue vivo? ->", ref_a() is not None)
+recogidos = gc.collect()
+print("gc.collect() devolvió:", recogidos)
+print("tras gc.collect(): ¿sigue vivo? ->", ref_a() is not None)</code></pre>
+
+<pre data-lang="text"><code>tras del a, b (hay ciclo): ¿sigue vivo? -> True
+gc.collect() devolvió: 2
+tras gc.collect(): ¿sigue vivo? -> False</code></pre>
+
+<p>El resultado es la demostración práctica de la teoría: el ciclo sobrevive al <code>del</code> (los dos objetos siguen vivos aunque nadie los alcance), y desaparece con <code>gc.collect()</code>, que según la documentación devuelve la suma de los objetos recogidos y de los no recogibles: aquí, 2, los dos nodos. Este experimento también ilustra por qué en un programa real los ciclos son más difíciles de ver que fugas «clásicas»: un objeto que se guarda a sí mismo como callback, una estructura de árbol con enlace al padre, una excepción cuya traza referencia las variables locales. Cualquier estructura en la que los hijos apunten a los padres, y los padres a los hijos, forma un ciclo.</p>
+
+<h3>Generaciones y umbrales</h3>
+
+<p>El recolector no examina toda la memoria cada vez. Según la documentación, clasifica los objetos en tres generaciones: los nuevos entran en la generación 0 y, cuando sobreviven a una recolección, pasan a la siguiente. La idea de fondo, que es general del diseño de estos recolectores, es que la mayoría de los objetos mueren jóvenes, así que conviene examinar con más frecuencia los nuevos que los antiguos. Los umbrales controlan cuándo se dispara el trabajo. La página describe dos: cuando el número de asignaciones menos el de liberaciones supera <code>threshold0</code>, se inicia una recolección; y si la generación 0 se ha examinado más de <code>threshold1</code> veces desde la última vez que se examinó la generación 1, se examina también esta. Poner <code>threshold0</code> a cero desactiva la recolección automática.</p>
+
+<p>Los valores de la página importan porque cambian entre versiones, y lo observamos en directo:</p>
+
+<pre data-lang="text"><code>gc.isenabled(): True
+gc.get_threshold(): (2000, 10, 0)
+gc.get_count(): (2, 0, 0)
+generación 0: collections=0, collected=0, uncollectable=0
+generación 1: collections=0, collected=0, uncollectable=0
+generación 2: collections=2, collected=147, uncollectable=0</code></pre>
+
+<p>En Python 3.14.2, <code>gc.get_threshold()</code> devolvió <code>(2000, 10, 0)</code>. El tercer valor, 0, no es un descuido: la documentación indica que en 3.14 <code>threshold2</code> se ignora, y que en 3.14.5 se restaura el comportamiento de 3.13, de modo que en una versión de mantenimiento posterior el valor y su significado pueden ser distintos. Es un buen recordatorio de que estos parámetros son detalles de implementación. Las estadísticas por generación (<code>gc.get_stats()</code>) muestran recolecciones, objetos recogidos y objetos no recogibles desde el arranque; las 2 colecciones y los 147 objetos de la generación 2 en nuestra salida son las de las dos llamadas a <code>gc.collect()</code> que hicimos nosotros en el script, no las de un funcionamiento automático.</p>
+
+<h3>Otras herramientas del módulo gc</h3>
+
+<ul>
+  <li><strong><code>gc.disable()</code></strong>: desactiva la recolección automática. La documentación solo lo plantea condicionalmente: puedes desactivar el recolector si estás seguro de que tu programa no crea ciclos. No hay una advertencia más fuerte en la página, pero la lógica de este artículo la sugiere: un programa que crea ciclos y desactiva el recolector pierde memoria.</li>
+  <li><strong><code>gc.freeze()</code></strong>: mueve todos los objetos rastreados a una generación permanente y los ignora en las recolecciones futuras. Según la documentación se pensó, sobre todo, para reducir la copia por escritura (<em>copy-on-write</em>) cuando se bifurca un proceso sin ejecutar otro programa.</li>
+  <li><strong><code>gc.DEBUG_SAVEALL</code></strong>: guarda en <code>gc.garbage</code> los objetos inalcanzables en lugar de liberarlos, una ayuda para depurar fugas.</li>
+  <li><strong><code>gc.garbage</code></strong>: contiene los objetos inalcanzables que no se pudieron liberar; la página indica que debería estar vacía casi siempre, salvo tipos de extensiones en C con un campo concreto. Desde Python 3.4 (PEP 442), los objetos con <code>__del__</code> dejaron de acabar ahí.</li>
+  <li><strong><code>gc.callbacks</code></strong>: una lista de funciones a las que se llama antes y después de cada recolección, con una fase (<code>"start"</code> o <code>"stop"</code>) y un diccionario de información. Es la forma de medir cuánto trabaja el recolector en tu programa.</li>
+</ul>
+
+<h2>Cuánto ocupa cada cosa</h2>
+
+<p>La función <code>sys.getsizeof()</code> devuelve el tamaño de un objeto en bytes. La documentación hace dos precisiones imprescindibles: solo cuenta el consumo directamente atribuible al objeto, no el de los objetos a los que referencia; y suma una sobrecarga adicional del recolector si el objeto está gestionado por él. Con esas reservas, medimos una serie de objetos básicos:</p>
+
+<table>
+  <thead>
+    <tr><th>Objeto</th><th>Bytes (<code>getsizeof</code>)</th><th>Objeto</th><th>Bytes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>0</code> y <code>1</code></td><td>28</td><td><code>[]</code></td><td>56</td></tr>
+    <tr><td><code>2**30</code></td><td>32</td><td><code>[0]*1000</code></td><td>8.056</td></tr>
+    <tr><td><code>2**100</code></td><td>40</td><td><code>()</code></td><td>48</td></tr>
+    <tr><td><code>1.5</code></td><td>24</td><td><code>(0,)*1000</code></td><td>8.048</td></tr>
+    <tr><td><code>''</code></td><td>41</td><td><code>{}</code></td><td>64</td></tr>
+    <tr><td><code>'a'</code></td><td>42</td><td><code>set()</code></td><td>216</td></tr>
+    <tr><td><code>'a'*1000</code></td><td>1.041</td><td><code>bytes(1000)</code></td><td>1.033</td></tr>
+    <tr><td><code>object()</code></td><td>16</td><td></td><td></td></tr>
+  </tbody>
+</table>
+
+<p>Varias lecciones salen de la tabla. Los enteros de Python no tienen un tamaño fijo: 28 bytes para los pequeños y más para los grandes (32 para 2<sup>30</sup>, 40 para 2<sup>100</sup>), lo que refleja que Python maneja enteros de precisión arbitraria y que el tamaño crece con la magnitud. Una cadena vacía ya cuesta 41 bytes y cada carácter de una cadena de caracteres simples añade uno (1.041 para mil caracteres: 41 + 1.000). Una lista de mil elementos ocupa 8.056 bytes, es decir, 56 de cabecera más 8 por elemento: cada hueco es un <em>puntero</em> de 8 bytes en esta plataforma de 64 bits, no el valor en sí. Y una colección vacía no es gratis: un conjunto vacío son 216 bytes, mucho más que una lista vacía, algo que importa si tienes millones de conjuntos pequeños.</p>
+
+<h3>getsizeof no cuenta lo que hay dentro</h3>
+
+<p>La segunda precisión de la documentación (que solo cuenta el objeto, no los referenciados) es la fuente de errores de medición más habitual. Lo demostramos con una lista que contiene diez listas de mil enteros cada una:</p>
+
+<pre data-lang="python"><code>lista = [list(range(1000)) for _ in range(10)]
+print(sys.getsizeof(lista))                       # 184
+print(sum(sys.getsizeof(s) for s in lista))       # 80560</code></pre>
+
+<p>La lista exterior solo ocupa 184 bytes (56 de cabecera más 16 huecos de 8 bytes, un margen de reserva que explicamos en la sección siguiente), mientras que las diez sublistas suman 80.560 bytes, y esa cifra todavía no incluye los propios enteros, que son otros objetos. Quien «mide» una estructura con <code>getsizeof()</code> sin recorrerla obtiene una cifra más de 400 veces menor que el consumo de las sublistas, y aún más lejos del total real. La documentación remite a una receta recursiva publicada aparte, para calcular el tamaño de un contenedor y su contenido; no la reproducimos aquí. Para medir el consumo total de una sección del programa, el instrumento adecuado es <code>tracemalloc</code>, que veremos enseguida.</p>
+
+<h2>Cómo crecen las listas: la sobreasignación</h2>
+
+<p>Cuando se añaden elementos a una lista con <code>append()</code>, Python no pide memoria elemento a elemento: reserva de más para no tener que redimensionar en cada inserción. Lo observamos midiendo el tamaño a medida que crece:</p>
+
+<pre data-lang="text"><code>len=0: 56 bytes
+len=1: 88 bytes (+32)
+len=5: 120 bytes (+32)
+len=9: 184 bytes (+64)
+len=17: 248 bytes (+64)
+len=25: 312 bytes (+64)
+len=33: 376 bytes (+64)</code></pre>
+
+<p>Leámoslo con la aritmética de antes: 56 bytes de cabecera más 8 por hueco. Con el primer elemento el tamaño salta a 88, es decir, 32 bytes más: espacio para 4 elementos. Con el quinto salta a 120 (8 huecos), con el noveno a 184 (16 huecos), con el decimoséptimo a 248 (24), luego 312 (32) y 376 (40). La lista reserva por adelantado y rellena los huecos, y solo vuelve a pedir memoria cuando se llenan. Es el mecanismo que hace que <code>append</code> sea barato de forma amortizada (un hecho general sobre estas estructuras que no procede de la documentación consultada). Las cifras concretas son un detalle de CPython en esta versión; lo importante es el patrón: <strong>el tamaño de una lista no coincide con el de sus elementos</strong>, tiene margen, y una lista construida a base de <code>append</code> ocupa algo más que una creada de golpe con el mismo contenido.</p>
+
+<h2>__slots__: instancias más pequeñas</h2>
+
+<p>Cada instancia de una clase normal tiene un diccionario para guardar sus atributos. Es flexible (puedes añadir atributos en cualquier momento) y costoso. La declaración <code>__slots__</code> permite renunciar a esa flexibilidad. Según la documentación del modelo de datos, <code>__slots__</code> deja declarar explícitamente los miembros de datos y negar la creación de <code>__dict__</code> y <code>__weakref__</code> (salvo que se declaren o los herede una clase base); y afirma que el espacio ahorrado respecto al diccionario puede ser significativo, y que la velocidad de búsqueda de atributos también puede mejorar sensiblemente. Esta última afirmación no la hemos medido, y por eso solo medimos el espacio.</p>
+
+<p>Definimos dos clases idénticas salvo por la declaración de slots, creamos 100.000 instancias de cada una y medimos la memoria con <code>tracemalloc</code>:</p>
+
+<pre data-lang="python"><code>class Normal:
+    def __init__(self, a, b, c):
+        self.a, self.b, self.c = a, b, c
+
+class ConSlots:
+    __slots__ = ("a", "b", "c")
+    def __init__(self, a, b, c):
+        self.a, self.b, self.c = a, b, c</code></pre>
+
+<pre data-lang="text"><code>  Normal: 10,161 KiB para 100,000 objetos = 104 bytes por objeto (incluye la lista que los contiene)
+ConSlots: 6,251 KiB para 100,000 objetos = 64 bytes por objeto (incluye la lista que los contiene)</code></pre>
+
+<p>Un 38 % menos: de 104 a 64 bytes por objeto (en ambos casos incluidos los 8 bytes que ocupa la entrada de cada objeto en la lista que los contiene). Con cien mil objetos, la diferencia son unos 3,8 MiB; con diez millones, unos 380 MiB. Los enteros 1, 2 y 3 no aportan nada porque son objetos pequeños compartidos, de modo que la diferencia es pura estructura del objeto.</p>
+
+<h3>Una trampa de medición: acceder a __dict__ lo crea</h3>
+
+<p>Al medir encontramos un detalle instructivo. La suma <code>sys.getsizeof(obj) + sys.getsizeof(obj.__dict__)</code> da 48 + 96 = 144 bytes para una instancia normal, bastante más que los 104 bytes por objeto que mide <code>tracemalloc</code>. Para entender la discrepancia, repetimos la medida de los 100.000 objetos normales antes y después de acceder a <code>__dict__</code> de cada uno:</p>
+
+<pre data-lang="text"><code>antes de tocar __dict__: 104 bytes por objeto
+tras acceder a __dict__ de cada uno: 168 bytes por objeto</code></pre>
+
+<p>Acceder al diccionario hizo que cada objeto pasara de 104 a 168 bytes, 64 más. La medida sugiere (es una inferencia nuestra, que no hemos contrastado con la documentación) que en esta versión de CPython los atributos de una instancia pueden guardarse sin crear de inmediato un diccionario, y que este se crea cuando alguien lo solicita. Lo relevante para tu práctica es la advertencia metodológica: <strong>el acto de medir puede alterar lo que se mide</strong>. Para comparar el consumo de dos diseños, mide con una herramienta que observe el programa en funcionamiento normal (como <code>tracemalloc</code>) en lugar de sumar tamaños de objetos que has tenido que provocar.</p>
+
+<h3>El precio de renunciar al diccionario</h3>
+
+<p>La documentación enumera las condiciones de uso de <code>__slots__</code>, y las comprobamos:</p>
+
+<pre data-lang="text"><code>¿ConSlots tiene __dict__? False
+asignar atributo nuevo a ConSlots -> AttributeError - 'ConSlots' object has no attribute 'd' and no __dict__ for setting new attributes
+weakref.ref(ConSlots) -> TypeError - cannot create weak reference to 'ConSlots' object</code></pre>
+
+<ul>
+  <li><strong>No se pueden añadir atributos nuevos</strong>: asignar uno no declarado produce <code>AttributeError</code>. Para admitirlos hay que incluir <code>'__dict__'</code> en la secuencia de slots, con lo que se pierde buena parte del ahorro.</li>
+  <li><strong>No hay referencias débiles</strong> por defecto: la clase no soporta <code>weakref</code> salvo que se incluya <code>'__weakref__'</code> en los slots, como indica la documentación.</li>
+  <li><strong>Los valores por defecto no pueden ser variables de clase</strong> con el mismo nombre del slot: la documentación advierte de que el atributo de clase sobrescribiría el descriptor de la asignación.</li>
+  <li><strong>La herencia exige cuidado</strong>: una subclase de una clase sin <code>__slots__</code> tendrá <code>__dict__</code> y <code>__weakref__</code> igualmente, y una subclase solo ahorra espacio si también declara <code>__slots__</code> (con los atributos adicionales). La herencia múltiple con varios padres con slots no vacíos produce <code>TypeError</code>.</li>
+</ul>
+
+<p>Nuestra recomendación (opinión, no cita) es usarlo con criterio: cuando creas millones de instancias de la misma clase con atributos fijos (puntos, registros, nodos de una estructura), el ahorro es notable y las restricciones no molestan. Para clases que se instancian pocas veces, la ganancia es irrelevante y las restricciones son un coste.</p>
+
+<h2>Listas frente a generadores</h2>
+
+<p>La forma más rentable de ahorrar memoria casi nunca es optimizar un tipo de dato, sino dejar de guardar cosas que no hace falta guardar. Un ejemplo clásico: sumar los cuadrados de los números del 0 al 999.999. Con una lista de comprensión se construye la lista entera en memoria y luego se suma; con una expresión generadora, los valores se producen uno a uno y se descartan. Medimos el pico de memoria de cada variante con <code>tracemalloc</code>:</p>
+
+<pre data-lang="python"><code>r1 = sum([i * i for i in range(1_000_000)])     # lista completa en memoria
+r2 = sum(i * i for i in range(1_000_000))       # un valor cada vez</code></pre>
+
+<pre data-lang="text"><code>mismo resultado: True
+pico con lista    : 38.6 MiB
+pico con generador: 3.7 KiB</code></pre>
+
+<p>Mismo resultado, y una diferencia de más de 10.000 veces en el pico de memoria: 38,6 MiB frente a 3,7 KiB. La lista guarda un millón de punteros (unos 8 MB) y, además, un millón de objetos enteros. El generador solo mantiene el elemento actual. La regla es sencilla: si solo vas a recorrer los datos una vez, no los guardes. Con matices: un generador no admite acceso por índice ni se puede recorrer dos veces (la segunda vez está vacío), y las cifras exactas dependen de la versión y de cómo se mida.</p>
+
+<h2>Internado de cadenas</h2>
+
+<p>Las cadenas son inmutables, así que Python puede compartir una sola copia de una cadena igual. Esa compartición se llama <em>internado</em>. La documentación de <code>sys.intern()</code> dice que introduce la cadena en la tabla de cadenas internadas y devuelve la cadena internada, que es la misma cadena o una copia. Lo vimos con dos cadenas iguales construidas en tiempo de ejecución:</p>
+
+<pre data-lang="text"><code>iguales por valor: True | misma identidad: False
+tras sys.intern -> misma identidad: True</code></pre>
+
+<p>Dos cadenas con el mismo contenido pueden ser dos objetos distintos (<code>==</code> es verdadero pero <code>is</code> es falso), y después de internarlas pasan a ser el mismo objeto. Para programas que mantienen millones de cadenas repetidas (por ejemplo, nombres de campo en registros leídos de un archivo), internarlas puede ahorrar memoria, pero es una optimización de nicho que no hemos medido en este caso; y recuerda que la comparación de contenido se hace con <code>==</code>, nunca con <code>is</code>.</p>
+
+<h2>tracemalloc: encontrar quién retiene la memoria</h2>
+
+<p>Cuando un programa consume más de la cuenta, la pregunta es: ¿qué línea de código reservó esa memoria? <code>tracemalloc</code> la responde. La documentación lo describe como una herramienta de depuración para rastrear los bloques de memoria asignados por Python, con tres capacidades: mostrar la traza de dónde se asignó un objeto, dar estadísticas de bloques por archivo y por línea (tamaño total, número y tamaño medio), y calcular las diferencias entre dos fotografías para detectar fugas.</p>
+
+<h3>Cómo se usa</h3>
+
+<ol>
+  <li><strong>Empezar a rastrear.</strong> Con <code>tracemalloc.start()</code> en el código, o desde el arranque con la variable <code>PYTHONTRACEMALLOC=1</code> o la opción <code>-X tracemalloc</code>. Por defecto, cada bloque guarda solo el último fotograma de la pila; se pueden guardar más con <code>start(nframe)</code>, a costa de más memoria y CPU, como advierte la documentación.</li>
+  <li><strong>Tomar una fotografía</strong> con <code>take_snapshot()</code>. Importante: no incluye los bloques asignados <em>antes</em> de iniciar el rastreo.</li>
+  <li><strong>Consultarla</strong> con <code>statistics('lineno')</code> (o <code>'filename'</code>, <code>'traceback'</code>), que ordena los resultados del mayor al menor.</li>
+  <li><strong>Comparar dos fotografías</strong> con <code>compare_to(anterior, 'lineno')</code> para ver qué creció entre ambas.</li>
+</ol>
+
+<p>También hay medidas globales: <code>get_traced_memory()</code> devuelve el tamaño actual y el pico, y <code>reset_peak()</code> (desde la 3.9) reinicia el pico al valor actual sin borrar las trazas, lo que permite medir el pico de una sección concreta (es lo que usamos para comparar listas y generadores).</p>
+
+<h3>Un caso: una fuga de memoria de manual</h3>
+
+<p>Escribimos una función que guarda cadenas en una lista global y nunca las libera, la ejecutamos una vez con 1.000 elementos, tomamos una fotografía, la ejecutamos con 50.000 más y tomamos otra:</p>
+
+<pre data-lang="python"><code>guardado = []
+
+def procesa(n):
+    for i in range(n):
+        guardado.append("registro-" + str(i) * 5)  # fuga: nunca se libera
+
+tracemalloc.start()
+procesa(1000)
+foto1 = tracemalloc.take_snapshot()
+procesa(50_000)
+foto2 = tracemalloc.take_snapshot()
+for est in foto2.compare_to(foto1, "lineno")[:3]:
+    print(est)</code></pre>
+
+<pre data-lang="text"><code>&lt;LAB&gt;\lab_memoria.py:182: size=4105 KiB (+4033 KiB), count=51001 (+50000), average=82 B</code></pre>
+
+<p>La primera línea de la comparación (se muestra recortada: las siguientes entradas son de la propia biblioteca <code>tracemalloc</code>, con tamaños insignificantes de unos pocos cientos de bytes) apunta exactamente a la línea 182 del script, la del <code>append</code>: entre las dos fotografías hay 4.033 KiB más y 50.000 bloques más, justo los 50.000 elementos añadidos, con una media de 82 bytes cada uno. Esta es la ventaja del método: no hay que adivinar. La diferencia entre fotografías señala la línea que acumula memoria, y el número de bloques añadidos (50.000) coincide con las iteraciones, lo que confirma la hipótesis.</p>
+
+<p>Dos advertencias sobre su uso. La primera, de la propia documentación: rastrear tiene coste de memoria y CPU, de modo que no se deja activado por defecto en producción sin medir antes. La segunda, sobre el alcance: <code>tracemalloc</code> rastrea los bloques asignados por Python (usa el dominio 0 para ello; las extensiones en C pueden usar otros dominios), por lo que no ve necesariamente toda la memoria que usa el proceso: la memoria que asignan bibliotecas de extensión directamente al sistema puede quedar fuera, y la página consultada no detalla el caso concreto de bibliotecas como numpy, así que no afirmamos nada sobre él.</p>
+
+<h2>Cachés que retienen memoria: poner un límite o usar referencias débiles</h2>
+
+<p>La causa más común de «fugas» en programas de Python no es un ciclo ni un error del intérprete: es una caché que nadie vació. Un diccionario global donde se guarda el resultado de una función costosa «para no recalcularlo» es una buena idea con una pega: si las claves posibles son ilimitadas, la caché crece sin límite, y cada entrada mantiene vivo su resultado para siempre. Para ver la magnitud, simulamos esa caché con una función que devuelve una lista de 100 enteros, llamada con 20.000 argumentos distintos, y comparamos tres estrategias.</p>
+
+<h3>Caché sin límite frente a caché acotada</h3>
+
+<p>La biblioteca estándar incluye <code>functools.lru_cache</code>, un decorador que añade una caché a una función. Según la documentación, su tamaño máximo por defecto es 128 entradas, y si se pone <code>maxsize=None</code>, la política de descarte desaparece y la caché puede crecer sin límite. Lo mismo ocurre con <code>functools.cache</code>, que la documentación describe como una caché ligera y sin límite, equivalente a <code>lru_cache(maxsize=None)</code>, más pequeña y rápida precisamente porque nunca tiene que expulsar valores. El decorador exige además que los argumentos sean hashables, porque usa un diccionario internamente. Medimos la memoria retenida por un diccionario sin límite y por <code>lru_cache(maxsize=128)</code>:</p>
+
+<pre data-lang="python"><code>def calcula(n):
+    return [n] * 100
+
+cache_dict = {}
+for n in range(20_000):
+    cache_dict[n] = calcula(n)          # caché propia, sin límite
+
+@functools.lru_cache(maxsize=128)
+def calcula_lru(n):
+    return [n] * 100
+
+for n in range(20_000):
+    calcula_lru(n)</code></pre>
+
+<pre data-lang="text"><code>dict sin límite: 20,000 entradas, 17,909 KiB retenidos
+lru_cache(maxsize=128): CacheInfo(hits=0, misses=20000, maxsize=128, currsize=128), 120 KiB retenidos</code></pre>
+
+<p>La diferencia es de casi 150 veces: el diccionario retiene 17,5 MiB (unos 917 bytes por entrada, contando la lista, la clave y la estructura del propio diccionario), mientras que la caché acotada se queda en 128 entradas y 120 KiB. La función <code>cache_info()</code>, que la documentación describe como una tupla con nombre con los aciertos, los fallos, el tamaño máximo y el tamaño actual, lo confirma: 20.000 fallos y <code>currsize=128</code>. Fíjate también en el <code>hits=0</code>: en este experimento todos los argumentos eran distintos, así que la caché no sirvió de nada y solo costó memoria. Una caché solo compensa cuando hay repeticiones, y por eso conviene mirar la proporción de aciertos antes de decidir su tamaño.</p>
+
+<p>La documentación añade dos avisos relevantes para la memoria. Primero, la caché mantiene referencias a los argumentos y a los valores devueltos hasta que salen de la caché o hasta que se vacía (con <code>cache_clear()</code>); eso significa que un objeto grande pasado como argumento no se liberará mientras siga en ella. Segundo, si se cachea un método, el argumento <code>self</code> forma parte de la clave, de modo que la caché también retiene la instancia. Es una trampa fácil: decorar un método con <code>lru_cache</code> puede mantener vivas instancias que creías descartadas. La página remite a su sección de preguntas frecuentes para el caso de los métodos; no hemos reproducido el efecto en el laboratorio.</p>
+
+<h3>Referencias débiles: no mantener vivo lo que solo se consulta</h3>
+
+<p>Una alternativa para cachés de objetos grandes es no retenerlos con una referencia fuerte. Una <em>referencia débil</em> apunta a un objeto sin impedir que se libere: la documentación de <code>weakref</code> dice que, cuando las únicas referencias que quedan a un objeto son débiles, el recolector es libre de destruirlo y reutilizar su memoria. Y menciona el uso principal: implementar cachés o asociaciones que contengan objetos grandes, cuando se desea que un objeto grande no se mantenga vivo solo porque aparece en una caché. La clase <code>WeakValueDictionary</code> es un diccionario que referencia los valores débilmente: según la página, las entradas se descartan cuando ya no existe ninguna referencia fuerte al valor.</p>
+
+<pre data-lang="python"><code>class Grande:
+    def __init__(self, n):
+        self.n = n
+        self.datos = [n] * 1000
+
+objs = [Grande(i) for i in range(5)]
+debil = weakref.WeakValueDictionary({o.n: o for o in objs})
+print("5 objetos vivos; entradas en el diccionario débil:", len(debil))
+del objs[2:]
+print("tras soltar 3 objetos; entradas:", len(debil), "claves:", sorted(debil.keys()))</code></pre>
+
+<pre data-lang="text"><code>5 objetos vivos; entradas en el diccionario débil: 5
+tras soltar 3 objetos; entradas: 2 claves: [0, 1]</code></pre>
+
+<p>Al soltar tres de los cinco objetos, sus entradas desaparecieron solas del diccionario: quedaron las claves 0 y 1, cuyos objetos seguían referenciados desde la lista. Es exactamente el comportamiento que se quiere para una caché de «lo que ya esté en uso por otro lado». Tiene límites: la documentación enumera los objetos que admiten referencias débiles (instancias de clases, funciones escritas en Python, métodos, conjuntos, generadores y otros) y aclara que <code>list</code> y <code>dict</code> no las soportan directamente, aunque se puede añadir el soporte creando una subclase, y que <code>tuple</code> e <code>int</code> no las admiten ni siquiera en subclases (una nota de CPython). Y se enlaza con lo que vimos en <code>__slots__</code>: una clase con slots no admite referencias débiles salvo que incluya <code>'__weakref__'</code> en ellos, algo que nuestro experimento confirmó con el <code>TypeError</code>.</p>
+
+<p>La misma página describe <code>weakref.finalize</code>, que devuelve un finalizador que se llamará cuando el objeto sea recogido y que, a diferencia de una referencia débil común, sobrevive hasta que el objeto referenciado se recoge. Es la alternativa que propone la documentación del modelo de datos a <code>__del__</code> para registrar una función de limpieza que se ejecute cuando el objeto sea recogido.</p>
+
+<table>
+  <thead>
+    <tr><th>Necesidad</th><th>Herramienta</th><th>Qué retiene</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Recordar resultados de una función con pocos valores distintos</td><td><code>lru_cache(maxsize=N)</code></td><td>Como mucho N resultados y sus argumentos</td></tr>
+    <tr><td>Recordar resultados sabiendo que el conjunto de claves es pequeño y fijo</td><td><code>functools.cache</code> (sin límite)</td><td>Todo, hasta vaciar la caché</td></tr>
+    <tr><td>Indexar objetos grandes que ya se mantienen vivos por otro lado</td><td><code>WeakValueDictionary</code></td><td>Nada: no impide su liberación</td></tr>
+    <tr><td>Ejecutar una limpieza al liberarse un objeto</td><td><code>weakref.finalize</code></td><td>El finalizador, hasta que el objeto se recoja</td></tr>
+  </tbody>
+</table>
+
+<h2>Un método para investigar el consumo</h2>
+
+<ol>
+  <li><strong>Mide antes de optimizar.</strong> Un valor de la memoria residente del proceso (la que ve el sistema operativo) te dice <em>si</em> hay un problema; <code>tracemalloc</code> te dice <em>dónde</em>.</li>
+  <li><strong>Distingue pico de crecimiento.</strong> Un programa que sube y baja es un problema de pico (¿se puede procesar por trozos? ¿se puede usar un generador?); uno que solo sube es una fuga (algo retiene objetos).</li>
+  <li><strong>Para fugas, compara fotografías</strong> de <code>tracemalloc</code> separadas por una cantidad de trabajo conocida; la línea que más crece suele ser la culpable.</li>
+  <li><strong>Busca ciclos con <code>gc</code>.</strong> Si el crecimiento desaparece al llamar a <code>gc.collect()</code>, eran ciclos pendientes de recolección, no una retención lógica. Si no desaparece, algo mantiene referencias: una caché, una lista global, un registro de callbacks.</li>
+  <li><strong>Ataca las estructuras grandes.</strong> Cambia listas por generadores cuando solo se recorren una vez, usa <code>__slots__</code> en las clases que instancias por millones y revisa las cachés sin límite.</li>
+  <li><strong>Vuelve a medir</strong> y conserva los números: son el único modo de saber si el cambio sirvió.</li>
+</ol>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>«Python libera la memoria con el recolector de basura»</h3>
+
+<p>En CPython, la mayoría de los objetos se libera al instante por conteo de referencias; el recolector de basura solo se ocupa de los ciclos. Lo comprobamos: <code>r1</code> se liberó en el mismo <code>del</code>, mientras que el ciclo necesitó <code>gc.collect()</code>.</p>
+
+<h3>«<code>del x</code> libera el objeto»</h3>
+
+<p>Borra el <em>nombre</em> y decrementa el contador. El objeto solo se libera si era la última referencia: en nuestro experimento con <code>r2</code> y <code>r3</code>, el primer <code>del</code> no liberó nada.</p>
+
+<h3>«<code>sys.getsizeof()</code> mide cuánta memoria ocupa mi estructura»</h3>
+
+<p>Solo mide el objeto en sí. La lista de diez listas dio 184 bytes cuando el contenido real superaba los 80 KB.</p>
+
+<h3>«Los números enteros ocupan lo que su tipo en C»</h3>
+
+<p>Un entero pequeño ocupa 28 bytes y crece con el tamaño del valor.</p>
+
+<h3>«Un generador siempre es mejor que una lista»</h3>
+
+<p>Ahorra memoria si solo recorres los datos una vez. Si necesitas recorrerlos varias veces, acceder por índice u ordenarlos, un generador te obliga a recalcularlos o a convertirlos en lista.</p>
+
+<h3>«Con <code>__slots__</code> mis objetos son siempre más pequeños y mejores»</h3>
+
+<p>Son más pequeños (104 → 64 bytes en nuestra medida), pero no admiten atributos nuevos ni referencias débiles por defecto y complican la herencia. Un cambio a los slots en una clase con pocas instancias no compensa.</p>
+
+<h3>«Desactivo el recolector y mi programa va más rápido»</h3>
+
+<p>La documentación solo plantea desactivarlo si estás seguro de que el programa no crea ciclos. Si los crea, la memoria crece sin límite. Además, no hemos medido ninguna ganancia de velocidad en este artículo, así que no la prometemos.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿Por qué <code>getrefcount()</code> devuelve un número más alto de lo que esperaba?</h3>
+
+<p>Porque pasar el objeto como argumento crea una referencia temporal que también se cuenta, según la documentación. Una lista con un solo nombre da 2. Y para ciertos objetos inmortales (como <code>None</code> o el 0) el número es enorme y no significa nada.</p>
+
+<h3>¿Cuándo se ejecuta el recolector de ciclos?</h3>
+
+<p>Automáticamente, cuando el número de asignaciones menos el de liberaciones supera un umbral (2.000 en la configuración que vimos), y a petición con <code>gc.collect()</code>. Los valores y su significado cambian entre versiones de Python; consulta <code>gc.get_threshold()</code> en la tuya.</p>
+
+<h3>¿Cómo sé si tengo una fuga o solo un pico?</h3>
+
+<p>Observa la memoria a lo largo del tiempo con una carga constante. Si sube y baja siguiendo el trabajo, es un pico; si solo sube, hay una fuga. Una fuga se localiza comparando fotografías de <code>tracemalloc</code>, como en el caso del <code>append</code>.</p>
+
+<h3>¿La memoria que libera Python vuelve al sistema operativo?</h3>
+
+<p>No siempre ni de inmediato. La documentación de <code>pymalloc</code> explica que trabaja con arenas de memoria; liberar objetos pequeños deja huecos reutilizables dentro de ellas, pero no implica devolver la memoria al sistema en ese momento. No lo hemos medido aquí.</p>
+
+<h3>¿Hay herramientas distintas de <code>tracemalloc</code>?</h3>
+
+<p>Existen otras (perfiladores de memoria externos, inspección con <code>gc.get_objects()</code>), pero no las hemos consultado para este artículo. La documentación del propio <code>gc</code> advierte de que los objetos que devuelve <code>get_objects()</code> y <code>get_referrers()</code> pueden estar en un estado temporalmente inválido, así que deben usarse solo para depurar.</p>
+
+<h3>¿Qué hace el modo sin GIL con la memoria?</h3>
+
+<p>La documentación de la API de C indica que, en las compilaciones sin GIL, el asignador <code>mimalloc</code> es el predeterminado y obligatorio para los dominios de memoria y objetos, mientras que en la compilación normal está disponible pero no es el predeterminado. No hemos medido ninguna compilación sin GIL, de modo que no extendemos nuestras cifras a ella.</p>
+
+<h3>¿Puedo ver el tamaño real de un objeto con sus contenidos?</h3>
+
+<p>Con <code>sys.getsizeof()</code> recorriendo la estructura de forma recursiva (la documentación remite a una receta externa), o midiendo con <code>tracemalloc</code> la memoria antes y después de crearlo, que es lo que hicimos en los experimentos de <code>__slots__</code> y de los generadores.</p>
+
+<h2>Conclusión</h2>
+
+<p>La gestión de memoria de CPython cabe en una idea con una excepción: cada objeto cuenta cuántas referencias le apuntan y se libera cuando el contador llega a cero, salvo los ciclos, que necesitan un recolector aparte. De ahí se deduce casi todo lo observado: la liberación inmediata de <code>r1</code>, la supervivencia del ciclo hasta <code>gc.collect()</code>, y el consejo de no confiar en <code>__del__</code> para tareas importantes. Lo demás son costes concretos que conviene conocer: un entero cuesta 28 bytes, una lista tiene margen de reserva, una instancia con diccionario pesa un 60 % más que una con slots (104 frente a 64 bytes), y medir con <code>getsizeof()</code> sin recorrer la estructura subestima la memoria real por factores enormes.</p>
+
+<p>Pero lo más útil no es memorizar ninguna cifra, que cambiarán con la versión, sino el método. <code>tracemalloc</code> permite sustituir la intuición por una medida: tomar dos fotografías, compararlas, leer la línea. Un millón de cuadrados con un generador en lugar de una lista bajó el pico de 38,6 MiB a 3,7 KiB sin tocar el resultado; la línea del <code>append</code> apareció señalada con sus 50.000 bloques de más. Antes de optimizar, mide; después de optimizar, vuelve a medir. Y si trabajas con servicios que deben mantenerse estables durante semanas, incorpora esa medición a tu <a href="/articulos/observabilidad-metricas-logs-trazas-opentelemetry.html">observabilidad</a>: una curva de memoria que solo sube es la mejor alarma de que algo retiene lo que no debe.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Python Software Foundation. «gc — Garbage Collector interface». Documentación de Python 3. <a href="https://docs.python.org/3/library/gc.html" rel="noopener">https://docs.python.org/3/library/gc.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «tracemalloc — Trace memory allocations». <a href="https://docs.python.org/3/library/tracemalloc.html" rel="noopener">https://docs.python.org/3/library/tracemalloc.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «sys — System-specific parameters and functions». <a href="https://docs.python.org/3/library/sys.html" rel="noopener">https://docs.python.org/3/library/sys.html</a> (consultado el 27-10-2026; se leyeron los primeros 100.000 de 107.586 caracteres).</li>
+  <li>Python Software Foundation. «The Python Language Reference: Data model». <a href="https://docs.python.org/3/reference/datamodel.html" rel="noopener">https://docs.python.org/3/reference/datamodel.html</a> (consultado el 27-10-2026; se leyó el texto completo de 190.185 caracteres en dos tramos).</li>
+  <li>Python Software Foundation. «Memory Management», API de C de Python. <a href="https://docs.python.org/3/c-api/memory.html" rel="noopener">https://docs.python.org/3/c-api/memory.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «weakref — Weak references». <a href="https://docs.python.org/3/library/weakref.html" rel="noopener">https://docs.python.org/3/library/weakref.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «functools — Higher-order functions and operations on callable objects». <a href="https://docs.python.org/3/library/functools.html" rel="noopener">https://docs.python.org/3/library/functools.html</a> (consultado el 27-10-2026).</li>
+  <li>Equipo editorial. «Laboratorio de memoria en Python» (script y salida completos, Python 3.14.2, Windows 11). Archivo <code>editorial/fuentes/lab_memoria.md</code> del repositorio del sitio; ejecutado el 27-10-2026.</li>
+</ol>
+</section>

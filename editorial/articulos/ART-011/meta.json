@@ -1,0 +1,12 @@
+{
+  "id": "ART-011",
+  "slug": "python-asyncio-bucle-eventos-corrutinas",
+  "titulo": "Python asyncio: bucle de eventos, corrutinas y concurrencia",
+  "etiqueta": "python",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo funciona asyncio, con medidas reales en Python 3.14: bucle de eventos, TaskGroup frente a gather, cancelación, código bloqueante, semáforos, colas y depuración.",
+  "palabra_clave": "python asyncio",
+  "secundarias": ["event loop", "await", "TaskGroup", "corrutinas", "concurrencia"],
+  "relacionados": ["python-pathlib", "observabilidad-metricas-logs-trazas-opentelemetry", "tcp-en-la-practica-handshake-congestion-diagnostico"],
+  "barra": "azul"
+}

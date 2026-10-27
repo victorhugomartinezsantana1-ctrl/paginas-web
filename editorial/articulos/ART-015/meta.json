@@ -1,0 +1,12 @@
+{
+  "id": "ART-015",
+  "slug": "indices-bases-datos-btree-planes-ejecucion",
+  "titulo": "Índices en bases de datos: B-tree, planes de ejecución y errores comunes",
+  "etiqueta": "bases de datos",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo elegir y diseñar índices: B-tree, orden de columnas, cobertura, índices parciales y planes de ejecución, con medidas reales en SQLite y la documentación de PostgreSQL.",
+  "palabra_clave": "índices base de datos btree",
+  "secundarias": ["EXPLAIN", "índices compuestos", "cobertura", "selectividad", "índice parcial"],
+  "relacionados": ["postgresql-mvcc-vacuum-planificador", "observabilidad-metricas-logs-trazas-opentelemetry", "python-memoria-referencias-recolector-basura"],
+  "barra": "turquesa"
+}

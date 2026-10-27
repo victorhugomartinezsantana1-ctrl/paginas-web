@@ -1,0 +1,18 @@
+# Fuentes — ART-014 Rust: propiedad, préstamos y lifetimes
+
+Consulta: 2026-10-27. Páginas del libro oficial y del índice de errores del compilador; no muestran fecha de publicación y se actualizan con las ediciones de Rust.
+
+| # | Fuente | Organismo | URL | Respalda | Limitaciones |
+|---|---|---|---|---|---|
+| 1 | The Rust Programming Language — «What Is Ownership?» (cap. 4.1) | The Rust Project | https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html | Las tres reglas; pila y montículo; `String` y literales; `drop` al cerrar la llave; movimiento (`let s2 = s1;`) y `error[E0382]: borrow of moved value`; `clone`; tipos `Copy` (enteros, `bool`, flotantes, `char`, tuplas de `Copy`) y su incompatibilidad con `Drop`; propiedad y funciones; devolver tuplas como «demasiada ceremonia» | No explica cómo implementar `Drop` o `Copy` (remite al apéndice C) |
+| 2 | The Rust Programming Language — «References and Borrowing» (cap. 4.2) | The Rust Project | https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html | Referencias frente a punteros; préstamo; inmutables por defecto (E0596); referencias mutables (E0499, E0502); condiciones de una carrera de datos; el alcance de una referencia llega hasta su último uso; referencias colgantes (E0106); las dos reglas | No usa el término «Non-Lexical Lifetimes» |
+| 3 | The Rust Programming Language — «Validating References with Lifetimes» (cap. 10.3) | The Rust Project | https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html | Objetivo de los lifetimes; E0597; sintaxis `&'a`; `longest<'a>`; structs con referencias; tres reglas de elisión; `'static` y su advertencia; sin coste en tiempo de ejecución | — |
+| 4 | The Rust Programming Language — «Shared-State Concurrency» (cap. 16.3) | The Rust Project | https://doc.rust-lang.org/book/ch16-03-shared-state.html | `Mutex<T>`, `MutexGuard` (Deref y Drop), `Rc<T>` no es `Send` (mensaje del compilador), `Arc<T>`, motivo de que lo atómico no sea el valor por defecto, interior mutability, interbloqueos | No define `Sync` ni las reglas de `Send` (las remite a la sección siguiente) |
+| 5 | The Rust Programming Language — «Rc<T>, the Reference Counted Smart Pointer» (cap. 15.4) | The Rust Project | https://doc.rust-lang.org/book/ch15-04-rc.html | Propiedad múltiple; solo para un hilo; `Rc::clone` solo incrementa el contador; `Rc::strong_count` y `weak_count`; solo lectura compartida; remite a `RefCell<T>` y a `Weak<T>` | No explica los ciclos ni `Weak<T>` |
+| 6 | Rust Compiler Error Index: E0505, E0507, E0373 | The Rust Project | https://doc.rust-lang.org/error_codes/E0505.html · …/E0507.html · …/E0373.html | Descripciones de una línea («A value was moved out while it was still borrowed», «A borrowed value was moved out», «A captured variable in a closure may not live long enough»), ejemplos erróneos y correcciones sugeridas | E0505 no menciona `clone` ni `Rc`; E0507 no menciona `clone`, `Option::take` ni `Rc`/`Arc`; E0373 no incluye un ejemplo corregido de `thread::spawn` |
+
+## Observaciones
+
+- **No hay `rustc` ni `cargo` en el equipo de redacción.** Ningún fragmento de este artículo se compiló aquí. Los mensajes de error que se reproducen son solo los que figuran en las páginas citadas (código y titular); no se muestran salidas completas del compilador ni se inventan.
+- Los fragmentos de código siguen los patrones de las páginas oficiales; los marcamos como «no compilados aquí».
+- Conocimiento general (señalado): nombre «Non-Lexical Lifetimes» para el comportamiento descrito en el capítulo 4.2, comprobación de los préstamos de `RefCell` en tiempo de ejecución, comparación con C++ (apoyada en nuestro artículo y laboratorio de ART-013).

@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C++ moderno: RAII, semántica de movimiento y punteros inteligentes — devlog</title>
+  <meta name="description" content="Cómo escribir C++ sin gestionar memoria a mano: RAII, regla de cinco y de cero, std::move, unique_ptr y shared_ptr, con salidas reales de g++ y un caso de recurso exclusivo.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/cpp-moderno-raii-movimiento-punteros-inteligentes.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="C++ moderno: RAII, semántica de movimiento y punteros inteligentes">
+  <meta property="og:description" content="Cómo escribir C++ sin gestionar memoria a mano: RAII, regla de cinco y de cero, std::move, unique_ptr y shared_ptr, con salidas reales de g++ y un caso de recurso exclusivo.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/cpp-moderno-raii-movimiento-punteros-inteligentes.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "C++ moderno: RAII, semántica de movimiento y punteros inteligentes",
+    "description": "Cómo escribir C++ sin gestionar memoria a mano: RAII, regla de cinco y de cero, std::move, unique_ptr y shared_ptr, con salidas reales de g++ y un caso de recurso exclusivo.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 6400,
+    "keywords": "c++ moderno raii, move semantics, unique_ptr, shared_ptr, rule of five, weak_ptr",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/cpp-moderno-raii-movimiento-punteros-inteligentes.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[c++]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          C++ moderno: RAII, semántica de movimiento y punteros inteligentes
+        </h1>
+        <p class="mt-4 text-muted">Cómo escribir C++ sin gestionar memoria a mano: RAII, regla de cinco y de cero, std::move, unique_ptr y shared_ptr, con salidas reales de g++ y un caso de recurso exclusivo.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 32 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-el-problema-recursos-que-hay-que-devolve" class="text-accent hover:underline">El problema: recursos que hay que devolver</a></li>
+          <li><a href="#2-raii-la-idea-que-lo-sostiene-todo" class="text-accent hover:underline">RAII: la idea que lo sostiene todo</a></li>
+          <li><a href="#3-excepciones-donde-raii-gana-de-verdad" class="text-accent hover:underline">Excepciones: donde RAII gana de verdad</a></li>
+          <li><a href="#4-una-clase-que-posee-un-recurso-copiar-y" class="text-accent hover:underline">Una clase que posee un recurso: copiar y mover</a></li>
+          <li><a href="#5-std-move-un-cast-no-una-operacion" class="text-accent hover:underline">std::move: un cast, no una operación</a></li>
+          <li><a href="#6-unique-ptr-un-dueno-sin-sobrecoste" class="text-accent hover:underline">unique_ptr: un dueño, sin sobrecoste</a></li>
+          <li><a href="#7-shared-ptr-propiedad-compartida-y-su-pre" class="text-accent hover:underline">shared_ptr: propiedad compartida y su precio</a></li>
+          <li><a href="#8-como-pasar-y-devolver-punteros-inteligen" class="text-accent hover:underline">Cómo pasar y devolver punteros inteligentes</a></li>
+          <li><a href="#9-recursos-de-hardware-un-pin-con-dueno-un" class="text-accent hover:underline">Recursos de hardware: un pin con dueño único</a></li>
+          <li><a href="#10-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#11-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#12-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>Durante décadas, escribir C++ significó llevar la contabilidad de la memoria a mano: cada <code>new</code> con su <code>delete</code>, cada <code>fopen</code> con su <code>fclose</code>, cada <code>lock</code> con su <code>unlock</code>, en todos los caminos posibles del código, incluidos los que se producen cuando algo falla. Y esa contabilidad se rompe en los sitios más inesperados: un <code>return</code> temprano que se añadió después, una excepción lanzada por una función que se llama en medio, una condición de error en la que nadie pensó. El resultado son fugas de memoria, archivos abiertos, cerrojos que nunca se sueltan y, en sistemas con hardware, periféricos que quedan reservados hasta el siguiente reinicio.</p>
+
+<p>El C++ moderno resuelve esto con una idea que se aplica en todo el lenguaje: ligar la vida de un recurso a la vida de un objeto. Si el objeto es una variable local, el recurso se libera solo cuando la variable sale del ámbito, por la vía normal o por una excepción. Esa idea se llama RAII y es la base de los punteros inteligentes, de los contenedores de la biblioteca estándar y de las guardas de cerrojos. Alrededor de ella hay otras dos piezas que conviene dominar a la vez: la semántica de movimiento, que permite transferir un recurso de un objeto a otro sin copiarlo, y las reglas de cero, tres y cinco, que dicen qué funciones especiales debe escribir una clase y cuándo.</p>
+
+<p>En este artículo recorremos esas piezas con la documentación de referencia (cppreference y las Directrices Básicas de C++, <em>C++ Core Guidelines</em>) y con un laboratorio real: <strong>todos los resultados que verás se compilaron y ejecutaron</strong> con g++ 16.1.0 en modo <code>-std=c++20 -Wall -Wextra</code> sobre Windows, y el código fuente y las salidas completas están guardados en el repositorio del sitio (<code>editorial/fuentes/lab_cpp.md</code>). Dos límites de honestidad: probamos un solo compilador, de modo que tamaños y recuentos pueden diferir en otros (clang, MSVC) o en otras plataformas; y el caso de recursos de hardware es una <em>simulación en memoria</em>, sin ningún microcontrolador. Lo que se atribuye a una fuente procede de las páginas citadas al final, consultadas el 27 de octubre de 2026; cuando algo es conocimiento general o una interpretación nuestra, lo decimos. Si vienes de comparar lenguajes para sistemas embebidos en nuestro artículo de <a href="/articulos/rust-vs-cpp-sistemas-embebidos.html">Rust frente a C++</a>, este texto es la mitad C++ de esa comparación: cómo conseguir en C++ garantías de liberación comparables a las que Rust impone en el compilador.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>RAII: el constructor adquiere el recurso (o lanza una excepción si no puede) y el destructor lo libera sin lanzar; los objetos se destruyen en orden inverso al de su creación. En el laboratorio, A, B y C se liberaron como C, B, A.</li>
+    <li>Con una excepción en medio, un <code>new</code>/<code>delete</code> manual dejó 1 objeto vivo; con <code>unique_ptr</code>, 0.</li>
+    <li><code>std::move</code> no mueve nada: es un <em>cast</em> a referencia de rvalue. Mover un objeto <code>const</code> acabó invocando el constructor de <strong>copia</strong>.</li>
+    <li>Si el movimiento no es <code>noexcept</code>, el <code>std::vector</code> prefiere copiar al crecer: con 8 elementos, 0 copias y 7 movimientos frente a 7 copias y 0 movimientos.</li>
+    <li><code>unique_ptr</code> es del tamaño de un puntero (8 bytes) con el deleter por defecto; copiarlo es un error de compilación.</li>
+    <li><code>make_shared</code> hizo 1 asignación frente a 2 de <code>shared_ptr(new T)</code>; y dos objetos <code>shared_ptr</code> que se apuntan en ciclo no ejecutaron ningún destructor, mientras que con un <code>weak_ptr</code> hacia atrás se ejecutaron los dos.</li>
+    <li>Regla práctica de las directrices: si puedes evitar escribir operaciones especiales, evítalas (regla de cero); si escribes una, escribe o elimina todas (regla de cinco).</li>
+  </ul>
+</div>
+
+<h2 id="1-el-problema-recursos-que-hay-que-devolve">El problema: recursos que hay que devolver</h2>
+
+<p>Un <em>recurso</em>, en este contexto, es cualquier cosa que se adquiere antes de usarla y que hay que devolver después: memoria dinámica, un archivo abierto, un socket, un cerrojo bloqueado, una conexión a una base de datos, un hilo, y, en sistemas embebidos, un pin, un bus o un canal de DMA. La página de cppreference sobre RAII lo expresa con una enumeración parecida: cualquier cosa que existe en cantidad limitada.</p>
+
+<p>El patrón manual tiene siempre la misma forma: adquirir, usar, liberar. Y siempre el mismo defecto: entre «adquirir» y «liberar» hay código, y ese código puede salir por más de un camino. cppreference lo ilustra con dos funciones. En la mala, se llama a <code>m.lock()</code> y a <code>m.unlock()</code> a mano, y los comentarios de la página señalan los fallos: si <code>f()</code> lanza una excepción, el cerrojo no se libera nunca; si hay un <code>return</code> temprano, tampoco. En la buena, se usa <code>std::lock_guard</code>, y en ambos casos el cerrojo se libera. La diferencia no es de estilo: es de corrección.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-raii-la-idea-que-lo-sostiene-todo">RAII: la idea que lo sostiene todo</h2>
+
+<p>RAII son las siglas, en inglés, de «la adquisición de un recurso es la inicialización» (<em>Resource Acquisition Is Initialization</em>), un nombre poco afortunado para una idea sencilla. Según cppreference, la técnica liga el ciclo de vida de un recurso que debe adquirirse antes de usarse a la vida de un objeto. La receta es encapsular cada recurso en una clase donde <strong>el constructor adquiere el recurso</strong> y establece todos los invariantes de la clase, o lanza una excepción si no puede hacerlo, y <strong>el destructor libera el recurso y no lanza excepciones</strong>. Las directrices lo recogen en su primera regla de gestión de recursos, R.1: gestiona los recursos automáticamente mediante manejadores de recursos y RAII. Y en E.6, con el mismo espíritu: usa RAII para evitar fugas.</p>
+
+<p>La documentación añade una consecuencia importante: RAII garantiza que todos los recursos se liberan cuando termina la vida del objeto que los controla, <em>en orden inverso al de adquisición</em>, y se apoya en el desenrollado de la pila (<em>stack unwinding</em>) para eliminar las fugas y garantizar la seguridad ante excepciones. Lo comprobamos con tres objetos que anuncian su nacimiento y su muerte:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>struct Traza {
+    std::string n;
+    explicit Traza(std::string nombre) : n(std::move(nombre)) { std::cout &lt;&lt; "  adquirir " &lt;&lt; n &lt;&lt; "\n"; }
+    ~Traza() { std::cout &lt;&lt; "  liberar  " &lt;&lt; n &lt;&lt; "\n"; }
+    Traza(const Traza&amp;) = delete;
+    Traza&amp; operator=(const Traza&amp;) = delete;
+};
+
+void s1() {
+    Traza a("A");
+    Traza b("B");
+    Traza c("C");
+    std::cout &lt;&lt; "  fin del ámbito\n";
+}</code></pre>
+        </div>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  adquirir A
+  adquirir B
+  adquirir C
+  fin del ámbito
+  liberar  C
+  liberar  B
+  liberar  A</code></pre>
+        </div>
+
+<p>El orden es el de una pila: lo último que se adquiere es lo primero que se libera. Tiene sentido porque los recursos suelen depender unos de otros (un archivo abierto después de un directorio, una conexión usada por una transacción), y liberarlos al revés respeta esas dependencias. Observa también que no hay ninguna llamada de liberación escrita en <code>s1()</code>: no existe nada que olvidar.</p>
+
+<h3>Lo que RAII no cubre</h3>
+
+<p>cppreference es explícita sobre los límites: RAII no se aplica a la gestión de recursos que no se adquieren antes de usarse, como el tiempo de CPU, la disponibilidad de núcleos, la capacidad de la caché, el ancho de banda de red, el consumo eléctrico o la memoria de la pila. También señala qué clases se reconocen como «no RAII»: las que tienen funciones miembro como <code>open()</code>/<code>close()</code>, <code>lock()</code>/<code>unlock()</code> o <code>init()</code>/<code>destroy()</code>. No quiere decir que no puedan existir; quiere decir que dejan al usuario la tarea de acordarse, y esa es la parte frágil. Una clase de archivo con <code>abrir()</code> y <code>cerrar()</code> sueltos no es RAII; la misma clase que abre en el constructor y cierra en el destructor, sí.</p>
+
+<p>Entre las clases de la biblioteca estándar que la página reconoce como RAII están los tipos que se gestionan solos (<code>std::string</code>, <code>std::vector</code>, <code>std::jthread</code> desde C++20, entre otros), los envoltorios de memoria (<code>std::unique_ptr</code> y <code>std::shared_ptr</code> a través de <code>make_unique</code> y <code>make_shared</code>) y los envoltorios de cerrojos (<code>std::lock_guard</code>, <code>std::unique_lock</code>, <code>std::shared_lock</code>). Las directrices de concurrencia lo resumen en un título: CP.20, usa RAII, nunca <code>lock()</code>/<code>unlock()</code> a pelo.</p>
+
+<h2 id="3-excepciones-donde-raii-gana-de-verdad">Excepciones: donde RAII gana de verdad</h2>
+
+<p>La prueba de fuego de cualquier estrategia de liberación es qué ocurre cuando algo falla a mitad. Escribimos dos funciones casi idénticas: ambas crean un objeto <code>Pieza</code> (que cuenta cuántas hay vivas con un contador estático), llaman a una función que lanza una excepción y, si todo fuera bien, liberarían la pieza. La primera usa <code>new</code> y <code>delete</code> a mano; la segunda, <code>std::make_unique</code>:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>void manual() {
+    Pieza* p = new Pieza();
+    falla();          // lanza una excepción
+    delete p;         // nunca se ejecuta
+}
+
+void con_raii() {
+    auto p = std::make_unique&lt;Pieza&gt;();
+    falla();          // lanza una excepción
+}</code></pre>
+        </div>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  manual: capturada 'fallo intermedio'
+  piezas que quedaron vivas tras manual(): 1
+  con_raii: capturada 'fallo intermedio'
+  piezas que quedaron vivas tras con_raii(): 0</code></pre>
+        </div>
+
+<p>La función manual dejó una pieza viva (una fuga); la función con RAII, ninguna. La excepción se capturó correctamente en ambos casos: el problema no está en el manejo del error, sino en lo que se queda atrás. Esto explica por qué las directrices son tan tajantes en este terreno. R.11 dice que evites llamar a <code>new</code> y <code>delete</code> explícitamente; según la nota de la regla, un puntero devuelto por <code>new</code> debe ir a un manejador de recursos, y un <code>delete</code> desnudo en el código de aplicación es probablemente un error. R.12 afina: entrega de inmediato el resultado de una asignación explícita a un objeto gestor, para que ninguna excepción ni retorno intermedio pueda dejarla huérfana. Y E.16 añade el requisito complementario: los destructores, la liberación de memoria, el intercambio (<code>swap</code>) y la copia o movimiento de tipos de excepción nunca deben fallar.</p>
+
+<h2 id="4-una-clase-que-posee-un-recurso-copiar-y">Una clase que posee un recurso: copiar y mover</h2>
+
+<p>RAII cubre bien el caso de variables locales. Pero un recurso rara vez se queda quieto: se devuelve de funciones, se guarda en contenedores, se pasa de un objeto a otro. Para eso hay que decidir qué significa <em>copiar</em> y <em>mover</em> una clase que posee un recurso, y ahí entran las reglas de tres, cinco y cero. Usaremos una clase <code>Buffer</code> que posee un array dinámico de enteros y que imprime cuál de sus funciones especiales se ejecuta.</p>
+
+<h3>La regla de tres</h3>
+
+<p>cppreference recoge la regla clásica: si una clase necesita un destructor definido por el usuario, un constructor de copia definido por el usuario o un operador de asignación de copia definido por el usuario, casi con seguridad necesita los tres. El motivo es que, si la clase posee un recurso con un puntero «crudo», el destructor tiene que liberarlo; y si lo libera, la copia generada por defecto (que copia el puntero, no el contenido) dejaría a dos objetos creyéndose dueños del mismo recurso, con doble liberación al destruirse. Las directrices expresan la misma idea en C.31: todos los recursos adquiridos por una clase deben liberarse en el destructor de la clase, especialmente en los casos de error.</p>
+
+<h3>La regla de cinco</h3>
+
+<p>Con C++11 aparecieron otras dos operaciones, el constructor de movimiento y la asignación de movimiento. La página de cppreference explica la consecuencia: la presencia de un destructor, un constructor de copia o un operador de asignación de copia definidos por el usuario (incluso si se declaran como <code>= default</code> o <code>= delete</code>) <em>impide la definición implícita</em> del constructor de movimiento y del operador de asignación de movimiento. Por eso, cualquier clase para la que interese el movimiento tiene que declarar las cinco funciones especiales. La directriz C.21 lo dice con una frase: si defines o eliminas (<code>= delete</code>) cualquiera de las funciones de copia, movimiento o destrucción, define o elimina todas. Y C.22 añade que las operaciones por defecto deben ser coherentes entre sí: la copia por construcción y por asignación deben significar lo mismo.</p>
+
+<p>Nuestro <code>Buffer</code> sigue la regla de cinco. Los cinco miembros, con sus mensajes de traza, son estos (se omiten los cuerpos que no cambian el argumento):</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>struct Buffer {
+    int* d;
+    std::size_t n;
+    explicit Buffer(std::size_t n_) : d(new int[n_]()), n(n_) { /* traza */ }
+    ~Buffer() { delete[] d; }
+
+    Buffer(const Buffer&amp; o) : d(new int[o.n]), n(o.n) {            // copia: duplica el contenido
+        std::copy(o.d, o.d + n, d);
+    }
+    Buffer(Buffer&amp;&amp; o) noexcept                                  // movimiento: roba el recurso
+        : d(std::exchange(o.d, nullptr)), n(std::exchange(o.n, 0)) {}
+
+    Buffer&amp; operator=(const Buffer&amp; o);                          // asignación de copia
+    Buffer&amp; operator=(Buffer&amp;&amp; o) noexcept;                      // asignación de movimiento
+};</code></pre>
+        </div>
+
+<p>El constructor de movimiento no copia los datos: copia el <em>puntero</em> y deja al origen vacío (<code>nullptr</code> y tamaño cero) mediante <code>std::exchange</code>. Esa es la esencia del movimiento, transferir la propiedad del recurso en lugar de duplicarlo, y la directriz C.64 lo formula así: una operación de movimiento debe mover y dejar su origen en un estado válido. Veamos qué ocurre en cada una de las combinaciones:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>    ctor(4)
+  Buffer b = a;
+    COPIA: constructor de copia
+  Buffer c = std::move(a);
+    MOVE: constructor de movimiento
+  tras mover: a.d es nulo, a.n = 0
+  b = c;
+    COPIA: asignación de copia
+  b = std::move(c);
+    MOVE: asignación de movimiento
+  const Buffer k(3); Buffer x = std::move(k);
+    ctor(3)
+    COPIA: constructor de copia</code></pre>
+        </div>
+
+<p>La salida confirma el contrato de cada operación. <code>Buffer b = a;</code> invoca el constructor de copia (se duplica el contenido); <code>Buffer c = std::move(a);</code> invoca el de movimiento, y después <code>a</code> queda con el puntero nulo y tamaño 0: es un objeto <em>válido pero vacío</em>, que se puede destruir o reasignar sin problema. <code>b = c;</code> y <code>b = std::move(c);</code> invocan respectivamente las asignaciones de copia y de movimiento. Y la última línea reserva una sorpresa que merece su propio apartado.</p>
+
+<h3>Mover un objeto const copia</h3>
+
+<p>En las dos últimas líneas de la salida, el objeto <code>k</code> es <code>const</code> y, aun así, escribimos <code>std::move(k)</code>. El resultado no fue un movimiento sino una <strong>copia</strong>: «COPIA: constructor de copia». La razón (conocimiento general, no extraído de la página de cppreference, que no trata este caso) es que mover requiere modificar el origen, y un objeto <code>const</code> no se puede modificar; el resultado de <code>std::move</code> sobre él es una referencia de rvalue <em>constante</em>, que no se puede enlazar al constructor de movimiento (que espera una referencia no constante) y sí al de copia, que acepta una referencia constante. No hay error ni aviso, solo una copia silenciosa en un sitio donde esperabas un movimiento. Si ves un <code>std::move</code> sobre un objeto <code>const</code>, es casi siempre un fallo.</p>
+
+<h3>La regla de cero</h3>
+
+<p>La mejor noticia es que, en la práctica, casi nunca hay que escribir las cinco. cppreference lo enuncia como la <em>regla de cero</em>: las clases con destructores, constructores de copia o movimiento, o asignaciones de copia o movimiento personalizados deberían ocuparse exclusivamente de la propiedad (por el principio de responsabilidad única), y las demás clases no deberían tener ninguna de esas funciones personalizadas. La directriz C.20 es más breve: si puedes evitar definir operaciones por defecto, evítalo. Dicho de otro modo: una clase que no posee recursos directamente, sino que los delega en miembros que ya se gestionan solos (<code>std::string</code>, <code>std::vector</code>, <code>std::unique_ptr</code>), no necesita escribir nada, y el compilador genera copia, movimiento y destructor correctos.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>struct Registro {
+    std::string nombre;
+    std::vector&lt;int&gt; datos;
+};      // sin destructor, sin constructores de copia ni de movimiento</code></pre>
+        </div>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  copia: r2.datos.size()=1000
+  movimiento: r3.datos.size()=1000, r1.datos.size() tras mover=0
+  is_nothrow_move_constructible&lt;Registro&gt; = true
+  is_copy_constructible&lt;Registro&gt;         = true</code></pre>
+        </div>
+
+<p>Esta clase de tres líneas se copia (r2 conserva los 1.000 elementos), se mueve (r3 los recibe y r1 queda vacío) y su movimiento es <code>noexcept</code>, todo sin una línea de código especial. Esa es la razón de que el consejo práctico del C++ moderno sea: <strong>escribe clases que sigan la regla de cero, y concentra la regla de cinco en unas pocas clases pequeñas</strong> cuya única responsabilidad sea poseer un recurso (un manejador de archivo, un buffer, un pin). Es, además, lo que hace C.32: si una clase tiene un puntero crudo o una referencia, plantéate si es un dueño; las referencias, según las directrices, nunca deben poseer.</p>
+
+<h2 id="5-std-move-un-cast-no-una-operacion">std::move: un cast, no una operación</h2>
+
+<p>El nombre de <code>std::move</code> induce a error. Según cppreference, se usa para <em>indicar</em> que un objeto puede ser «movido desde» él: produce una expresión <em>xvalue</em> que identifica su argumento y es exactamente equivalente a un <code>static_cast</code> a un tipo de referencia de rvalue. La página no lo dice con esas palabras, pero es la consecuencia directa: <code>std::move</code> por sí solo no mueve nada. Lo que hace es permitir que, al elegir entre sobrecargas (copia o movimiento), el compilador escoja la que acepta una referencia de rvalue. La documentación lo matiza al decir que las funciones receptoras «tienen la opción, pero no la obligación» de mover los recursos del argumento.</p>
+
+<h3>El estado de un objeto movido</h3>
+
+<p>¿Qué se puede hacer con un objeto después de moverlo? La documentación responde para la biblioteca estándar: salvo que se especifique otra cosa, todos los objetos estándar movidos quedan en un «estado válido pero no especificado», lo que significa que se mantienen los invariantes de su clase (puedes destruirlo, asignarle un valor nuevo o llamar a funciones sin precondiciones, como <code>empty()</code> o <code>clear()</code>), pero no debes suponer qué contiene. Lo comprobamos con una cadena larga y un vector grande:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  string: t.size()=60, s.size() tras mover=0
+  vector: v2.size()=1000, v1.size() tras mover=0
+  ¿Se puede usar de nuevo la movida? s.append("ok") -&gt; 'ok'</code></pre>
+        </div>
+
+<p>En esta implementación, ambos objetos movidos quedaron vacíos (tamaño 0) y siguieron siendo plenamente utilizables: a la cadena movida pudimos añadirle texto. Pero cuidado con convertir eso en una regla: la documentación solo promete «válido pero no especificado», y que aquí valga 0 es una elección de esta implementación. Si tu código depende de que una cadena movida esté vacía, está apoyándose en algo que el estándar no garantiza; lo correcto es asignarle un valor o limpiarla antes de reutilizarla. Y la propia página recuerda un caso límite: la autoasignación por movimiento (<code>v = std::move(v);</code>) deja a los tipos estándar en un estado válido, aunque normalmente no especificado.</p>
+
+<p>Una nota sobre el vocabulario: <code>std::move</code> no se usa cuando el parámetro es una <em>referencia de reenvío</em> (el tipo de un parámetro plantilla que parece una referencia de rvalue); en ese caso se emplea <code>std::forward</code>, que reenvía un argumento preservando su categoría de valor. La página de cppreference lo señala como la excepción principal. Es un tema de programación genérica que no desarrollamos aquí.</p>
+
+<h3>noexcept: la diferencia entre mover y copiar al crecer</h3>
+
+<p>Entre las directrices, C.66 pide que las operaciones de movimiento sean <code>noexcept</code>, y C.37 y E.16 piden lo mismo de los destructores. Un experimento muestra por qué. Definimos dos clases idénticas, salvo que el constructor de movimiento de una está marcado <code>noexcept</code> y el de la otra no (la declaración es <code>noexcept(Noexc)</code> con un parámetro de plantilla booleano), e insertamos 8 elementos en un <code>std::vector</code>, contando cuántas veces se invoca cada operación al ir creciendo:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  movimiento noexcept   : copias=0, movimientos=7
+  movimiento sin noexcept: copias=7, movimientos=0</code></pre>
+        </div>
+
+<p>Mismos objetos, misma operación, y el contenedor tomó decisiones opuestas: con el movimiento <code>noexcept</code> trasladó los elementos existentes moviéndolos (7 movimientos: 1 + 2 + 4 al duplicar la capacidad); sin <code>noexcept</code>, los copió (7 copias). El mecanismo (conocimiento general, no descrito en las páginas consultadas) es que, al reasignar su almacenamiento, el contenedor solo usa el movimiento si garantiza que no lanzará excepciones (a través de <code>std::move_if_noexcept</code>); si el movimiento pudiera fallar a mitad, el contenedor se quedaría con los elementos a medias y no podría deshacer el cambio, de modo que prefiere la copia, más lenta pero segura. La lección práctica es medible: <strong>olvidar <code>noexcept</code> en un constructor de movimiento puede convertir los redimensionamientos de tus contenedores en copias completas</strong> sin que el compilador diga una palabra. En una clase que posee un array grande, eso cuesta rendimiento real.</p>
+
+<h2 id="6-unique-ptr-un-dueno-sin-sobrecoste">unique_ptr: un dueño, sin sobrecoste</h2>
+
+<p>Con las piezas anteriores se entiende bien <code>std::unique_ptr</code>. Según cppreference, es un puntero inteligente que posee y gestiona otro objeto a través de un puntero, y que lo elimina cuando el <code>unique_ptr</code> sale del ámbito, se destruye o se le asigna otro puntero (por <code>operator=</code> o por <code>reset()</code>). El deleter por defecto (<code>std::default_delete</code>) usa el operador <code>delete</code>. Y encarna una regla: la clase cumple los requisitos de movible y asignable por movimiento, pero no los de copiable ni asignable por copia. Hay un solo dueño, y la propiedad solo cambia de manos con un movimiento explícito.</p>
+
+<h3>Copiarlo es un error de compilación</h3>
+
+<p>No es una convención: el compilador la impone. Intentamos copiar un <code>unique_ptr</code> en un programa aparte, y g++ lo rechazó con este mensaje (recortado y con la ruta del compilador sustituida por <code>&lt;GCC&gt;</code>):</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>lab_cpp_error.cpp: In function 'int main()':
+lab_cpp_error.cpp:5:30: error: use of deleted function 'std::unique_ptr&lt;_Tp, _Dp&gt;::unique_ptr(const std::unique_ptr&lt;_Tp, _Dp&gt;&amp;) [with _Tp = int; _Dp = std::default_delete&lt;int&gt;]'
+    5 |     std::unique_ptr&lt;int&gt; b = a;  // intento de copiar un unique_ptr
+&lt;GCC&gt;/bits/unique_ptr.h:524:7: note: declared here
+  524 |       unique_ptr(const unique_ptr&amp;) = delete;</code></pre>
+        </div>
+
+<p>El mensaje dice exactamente lo que cabría esperar: el constructor de copia está <em>borrado</em> (<code>= delete</code>, la misma sintaxis que usamos en <code>Traza</code>). Un error de este tipo, que impide compilar un programa que podría haber tenido dos dueños para el mismo objeto, es un fallo que se detecta en el ordenador del programador y no en producción. Es la versión C++ de lo que otros lenguajes consiguen con su sistema de propiedad.</p>
+
+<h3>Transferir la propiedad</h3>
+
+<p>Lo que sí se puede hacer es mover. Una función puede devolver un <code>unique_ptr</code> (el dueño nace dentro y sale de ella), y otra puede recibirlo por valor, lo que anuncia en la propia firma que <em>asume la propiedad</em>. La directriz R.32 lo recoge: toma un parámetro <code>unique_ptr&lt;widget&gt;</code> para expresar que la función asume la propiedad de un <code>widget</code>. Probamos con una fábrica y un consumidor:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>    ctor(2)
+  consume(std::move(p));
+  consume: recibo un Buffer de 2 elementos
+  tras mover, p es nulo</code></pre>
+        </div>
+
+<p>Tras <code>consume(std::move(p))</code>, <code>p</code> quedó nulo: la propiedad se transfirió a la función, que destruyó el <code>Buffer</code> al terminar. Quien llama sabe, leyendo el código, que ya no puede usar ese puntero. El resto de las directrices de este bloque van en la misma línea: R.20 pide usar <code>unique_ptr</code> o <code>shared_ptr</code> para representar la propiedad, y R.21 pide preferir <code>unique_ptr</code> sobre <code>shared_ptr</code> salvo que de verdad haga falta compartir la propiedad, porque es más sencillo, hace predecible el momento de la destrucción y evita el mantenimiento de un contador de referencias.</p>
+
+<h3>Tamaño: ¿cuánto cuesta?</h3>
+
+<p>La promesa habitual es que un <code>unique_ptr</code> no añade coste frente a un puntero crudo. La página de cppreference no da una cifra, así que la medimos en esta plataforma de 64 bits:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  sizeof(int*)                                  = 8
+  sizeof(unique_ptr&lt;int&gt;)                       = 8
+  sizeof(unique_ptr&lt;int, lambda sin capturas&gt;)  = 8
+  sizeof(unique_ptr&lt;int, void(*)(int*)&gt;)        = 16
+  sizeof(unique_ptr&lt;int, lambda con captura&gt;)   = 16
+  sizeof(shared_ptr&lt;int&gt;)                       = 16</code></pre>
+        </div>
+
+<p>Con el deleter por defecto, y también con una lambda sin capturas (un objeto sin estado), el <code>unique_ptr</code> ocupa 8 bytes, lo mismo que un puntero. Si el deleter es un puntero a función o una lambda con captura, el deleter hay que guardarlo y el tamaño sube a 16. Para un recurso como un manejador de archivo con una función de cierre, la lambda sin capturas es la opción más barata. Y el <code>shared_ptr</code> ocupa 16 bytes: dos punteros, uno al objeto y otro al bloque de control, como veremos.</p>
+
+<h3>Deleters propios: RAII para cualquier recurso</h3>
+
+<p>La plantilla acepta como segundo parámetro un deleter, cualquier objeto invocable que reciba el puntero. Con él, <code>unique_ptr</code> sirve para envolver cualquier recurso que se libere con una función: aquí un <code>FILE*</code> de C, con un deleter que cierra el archivo:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>auto cerrar = [](std::FILE* f) {
+    if (f) { std::fclose(f); std::cout &lt;&lt; "  (fclose ejecutado por el deleter)\n"; }
+};
+{
+    std::unique_ptr&lt;std::FILE, decltype(cerrar)&gt; f(std::fopen("lab_cpp_tmp.txt", "w"), cerrar);
+    std::fputs("hola desde RAII\n", f.get());
+}   // aquí se cierra
+{
+    std::unique_ptr&lt;std::FILE, decltype(cerrar)&gt; f(std::fopen("lab_cpp_tmp.txt", "r"), cerrar);
+    char buf[64]{};
+    std::fgets(buf, sizeof buf, f.get());
+    std::cout &lt;&lt; "  leído: " &lt;&lt; buf;
+}</code></pre>
+        </div>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  (fclose ejecutado por el deleter)
+  leído: hola desde RAII
+  (fclose ejecutado por el deleter)</code></pre>
+        </div>
+
+<p>El archivo se cerró dos veces, una al salir de cada bloque, sin que escribiéramos ninguna llamada a <code>fclose</code> en el flujo principal. Es el mismo patrón que cppreference ilustra en sus ejemplos con un deleter de función y con una lambda. Con este truco, cualquier API de C con parejas «abrir/cerrar» (o «adquirir/liberar») se puede envolver en RAII con unas pocas líneas.</p>
+
+<h3>Otros detalles de unique_ptr</h3>
+
+<ul>
+  <li><strong>Arrays.</strong> Existe una especialización para arrays dinámicos, <code>unique_ptr&lt;T[]&gt;</code>, que proporciona acceso indexado y libera con <code>delete[]</code>: el ejemplo de la página crea tres objetos y su destructor se ejecuta 3 veces. En código nuevo, un <code>std::vector</code> suele ser preferible, pero la especialización existe para interfaces que exigen un array.</li>
+  <li><strong>Tipos incompletos.</strong> Un <code>unique_ptr</code> puede construirse para un tipo incompleto, lo que lo hace útil en el idioma de implementación privada (<em>pImpl</em>); con el deleter por defecto, el tipo debe ser completo allí donde se invoca el deleter (en el destructor, la asignación por movimiento y <code>reset</code>).</li>
+  <li><strong>Conversión de derivada a base.</strong> Un <code>unique_ptr&lt;Derivada&gt;</code> es convertible a <code>unique_ptr&lt;Base&gt;</code>, pero la página avisa de que eso produce comportamiento indefinido salvo que el destructor de la base sea virtual. (La directriz C.35 pide que el destructor de una clase base sea público y virtual, o protegido y no virtual.)</li>
+  <li><strong><code>release()</code>, <code>reset()</code> y <code>get()</code></strong>: devuelven el puntero cediendo la propiedad, sustituyen el objeto gestionado y devuelven el puntero sin ceder nada, respectivamente. <code>get()</code> es la puerta para llamar a APIs que esperan un puntero crudo <em>sin propiedad</em>, que es justo lo que establece la directriz R.3: un puntero crudo (<code>T*</code>) no es propietario.</li>
+</ul>
+
+<p>Y una observación sobre <code>make_unique</code>: la página de cppreference lo lista como la forma de crear un puntero único que gestiona un objeto nuevo (disponible desde C++14), pero no dice que deba preferirse a <code>new</code>. Quien lo dice son las directrices: C.150 y R.23 piden usar <code>make_unique()</code> para construir objetos poseídos por <code>unique_ptr</code>. En nuestro laboratorio hizo una sola asignación de memoria (la del propio objeto, pues el <code>unique_ptr</code> no necesita un bloque de control), de modo que su ventaja no es de rendimiento sino de escribir el tipo una sola vez y de no dejar nunca un <code>new</code> suelto en el código.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="7-shared-ptr-propiedad-compartida-y-su-pre">shared_ptr: propiedad compartida y su precio</h2>
+
+<p>A veces un objeto tiene de verdad varios dueños y nadie sabe de antemano cuál lo va a soltar el último: un recurso compartido entre varios componentes, un objeto que sobrevive a la función que lo creó mientras otros hilos lo usan. Para eso existe <code>std::shared_ptr</code>. Según cppreference, mantiene la propiedad compartida de un objeto a través de un puntero: varios <code>shared_ptr</code> pueden poseer el mismo objeto, y este se destruye cuando se destruye (o se reasigna o se reinicia con <code>reset()</code>) el último <code>shared_ptr</code> que lo poseía.</p>
+
+<h3>El bloque de control</h3>
+
+<p>Para saber cuántos dueños hay, el <code>shared_ptr</code> necesita un contador compartido. Esa información vive en un <em>bloque de control</em> que, según la página, contiene un puntero al objeto gestionado (o el propio objeto), el deleter (con el tipo borrado), el asignador (también con el tipo borrado), el número de <code>shared_ptr</code> que poseen el objeto y el número de <code>weak_ptr</code> que se refieren a él. De ahí el tamaño: un <code>shared_ptr</code> es, en esencia, dos punteros (el objeto y el bloque de control), los 16 bytes que medimos antes, frente a los 8 de un <code>unique_ptr</code>.</p>
+
+<p>La documentación detalla además cómo se mantienen los contadores: los incrementos suelen hacerse con el equivalente a un <code>fetch_add</code> atómico con orden de memoria relajado (los decrementos requieren un orden más fuerte, para poder destruir con seguridad el bloque de control). Es decir, copiar un <code>shared_ptr</code> cuesta una operación atómica, bastante más que copiar un puntero, y por eso las directrices recomiendan pasarlos con cuidado (R.34 a R.37, que veremos).</p>
+
+<h3>make_shared: una asignación en lugar de dos</h3>
+
+<p>cppreference explica que, cuando un <code>shared_ptr</code> se crea con <code>std::make_shared</code> (o <code>allocate_shared</code>), la memoria para el bloque de control y para el objeto se reserva en una sola asignación; al construirlo desde un puntero (<code>shared_ptr&lt;T&gt;(new T)</code>), el objeto y el bloque de control se asignan por separado. Contamos las asignaciones de memoria sustituyendo <code>operator new</code> por una versión que las cuenta:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  make_shared&lt;Obj&gt;()        : 1 asignación(es)
+  shared_ptr&lt;Obj&gt;(new Obj)  : 2 asignación(es)
+  make_unique&lt;Obj&gt;()        : 1 asignación(es)</code></pre>
+        </div>
+
+<p>La medida coincide con la documentación: <code>make_shared</code> hace una asignación, y construir el <code>shared_ptr</code> desde <code>new</code> hace dos. La directriz R.22 añade que <code>make_shared()</code> es más conciso, puede combinar las dos asignaciones y ayuda a la seguridad ante excepciones en expresiones complejas anteriores a C++17. Hay una contrapartida que la documentación sugiere sin enunciarla: el bloque de control no se libera hasta que el contador de <code>weak_ptr</code> también llega a cero; con <code>make_shared</code>, que objeto y bloque comparten la misma asignación, eso implica que la memoria del objeto, aunque ya esté destruido, no se devuelve hasta que desaparezcan también los <code>weak_ptr</code> (una consecuencia nuestra de combinar esas dos frases de la página, que no hemos medido).</p>
+
+<h3>Contadores y weak_ptr</h3>
+
+<p>Un <code>weak_ptr</code> es un observador: se refiere a un objeto gestionado por <code>shared_ptr</code> sin ser dueño, de modo que no impide su destrucción. Lo comprobamos con el contador de uso:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  use_count tras una copia y un weak_ptr: 2
+  use_count tras reset de la copia: 1
+  weak_ptr.expired() tras soltar el último dueño: true</code></pre>
+        </div>
+
+<p>Con el <code>shared_ptr</code> original y una copia, el contador vale 2, y el <code>weak_ptr</code> no cuenta (si contara, valdría 3). Al reiniciar la copia baja a 1, y al soltar el último dueño el <code>weak_ptr</code> informa de que el objeto ya expiró. Este comportamiento permite comprobar «¿sigue vivo el objeto?» sin mantenerlo vivo.</p>
+
+<h3>El ciclo: la fuga que RAII no evita</h3>
+
+<p>Los punteros inteligentes con conteo de referencias tienen el mismo punto ciego que vimos en Python: los ciclos. Si A guarda un <code>shared_ptr</code> a B y B guarda un <code>shared_ptr</code> a A, ninguno puede llegar a cero. La página de cppreference no discute los ciclos, pero las directrices sí: R.24 pide usar <code>std::weak_ptr</code> para romper ciclos de <code>shared_ptr</code>, porque los contadores de una estructura cíclica nunca llegan a cero y por tanto un enlace debe ser no propietario. Lo medimos con dos estructuras de nodos que cuentan cuántos destructores se ejecutan:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>struct NodoS { std::shared_ptr&lt;NodoS&gt; otro; ~NodoS() { ++destruidos; } };
+struct NodoW { std::shared_ptr&lt;NodoW&gt; otro; std::weak_ptr&lt;NodoW&gt; atras; ~NodoW() { ++destruidos; } };
+
+{ auto a = make_shared&lt;NodoS&gt;(); auto b = make_shared&lt;NodoS&gt;();
+  a-&gt;otro = b; b-&gt;otro = a; }                      // ciclo fuerte
+{ auto a = make_shared&lt;NodoW&gt;(); auto b = make_shared&lt;NodoW&gt;();
+  a-&gt;otro = b; b-&gt;atras = a; }                     // el enlace de vuelta es débil</code></pre>
+        </div>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  ciclo de shared_ptr: destructores ejecutados = 0 de 2
+  con weak_ptr hacia atrás: destructores ejecutados = 2 de 2</code></pre>
+        </div>
+
+<p>La diferencia es la que predice la teoría: en el ciclo fuerte, al salir del ámbito, <em>ningún</em> destructor se ejecutó; los dos nodos quedaron huérfanos en la memoria para siempre (una fuga). Con un enlace débil de vuelta, los dos se destruyeron. A diferencia de Python, C++ no tiene un recolector que busque ciclos: si los creas, los pagas. La regla de diseño es pensar en la dirección de la propiedad: el padre posee a los hijos con <code>shared_ptr</code> (o <code>unique_ptr</code>), y los hijos apuntan al padre con <code>weak_ptr</code> o con un puntero crudo no propietario.</p>
+
+<h3>Seguridad entre hilos: lo que se dice y lo que no</h3>
+
+<p>Se oye a menudo que «<code>shared_ptr</code> es seguro entre hilos», y es una frase que hay que matizar con lo que dice la documentación. cppreference afirma que todas las funciones miembro (incluidos el constructor de copia y la asignación de copia) pueden llamarse desde varios hilos sobre <em>objetos <code>shared_ptr</code> distintos</em>, sin sincronización adicional, aunque esos objetos sean copias y compartan la propiedad del mismo objeto. Pero advierte de que acceder sin sincronización al <em>mismo</em> objeto <code>shared_ptr</code> con una función miembro no constante es una carrera de datos, y que <code>std::atomic&lt;shared_ptr&gt;</code> puede evitarla. La página, en lo que pudimos leer, no enuncia la frase «el bloque de control es seguro, pero el objeto gestionado no», que a veces se cita; la regla útil es esta: copiar el puntero entre hilos es seguro, pero modificar el objeto al que apunta desde varios hilos sigue necesitando sincronización por tu cuenta.</p>
+
+<p>Tampoco la página afirma que <code>use_count()</code> sea aproximado en código multihilo (algo que se cita a menudo): su ejemplo muestra recuentos que varían entre hilos, pero no lo declara explícitamente, así que no extendemos la afirmación.</p>
+
+<h2 id="8-como-pasar-y-devolver-punteros-inteligen">Cómo pasar y devolver punteros inteligentes</h2>
+
+<p>La firma de una función es documentación que el compilador comprueba. Las directrices aprovechan eso para distinguir intenciones. Resumimos las que leímos con nuestras palabras:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Quiero expresar...</th><th>Firma</th><th>Directriz</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>La función asume la propiedad del objeto</td><td><code>void f(std::unique_ptr&lt;Widget&gt;)</code></td><td>R.32</td></tr>
+    <tr><td>La función comparte la propiedad</td><td><code>void f(std::shared_ptr&lt;Widget&gt;)</code></td><td>R.34</td></tr>
+    <tr><td>La función solo usa el objeto, sin intervenir en su vida</td><td><code>void f(Widget&amp;)</code> o <code>void f(Widget*)</code> (puntero no propietario)</td><td>R.3 y R.30 (cuyo desarrollo remite a F.7 y no leímos)</td></tr>
+    <tr><td>La función puede sustituir el objeto del puntero del llamante</td><td><code>void f(std::unique_ptr&lt;Widget&gt;&amp;)</code></td><td>R.33</td></tr>
+  </tbody>
+</table></div>
+
+<p>La directriz R.30 es la que justifica la tercera fila: se toman punteros inteligentes como parámetros solo para expresar semánticas de vida; si la función solo necesita usar el objeto, basta con una referencia o un puntero crudo no propietario, que no cuesta un incremento atómico. Y la R.37 avisa de una trampa sutil: no pases un puntero o referencia obtenidos de un puntero inteligente que tenga alias. Si, en algún punto más profundo de la cadena de llamadas, ese puntero inteligente se reinicia, el objeto se destruye y las referencias quedan colgando; la nota de la regla advierte de que violarla es la causa número uno de ese tipo de errores, y la solución es tomar una copia local del puntero inteligente para mantener vivo el objeto mientras dura la llamada.</p>
+
+<h2 id="9-recursos-de-hardware-un-pin-con-dueno-un">Recursos de hardware: un pin con dueño único</h2>
+
+<p>Todo lo anterior se aplica con especial fuerza a los sistemas con hardware, donde los recursos escasos no son bytes de memoria sino pines, buses, canales de interrupción o periféricos. Imagina que cada pin de una placa solo puede tener un dueño a la vez: reservarlo dos veces es un error, y olvidar liberarlo lo deja inutilizable hasta el siguiente reinicio. Es el escenario ideal para una clase RAII de movimiento solamente (movible y no copiable). Aquí viene la salvedad de honestidad: <strong>no tenemos hardware en el equipo de redacción</strong>, así que el «registro de pines» del laboratorio es un conjunto en memoria que simula la exclusividad. Lo que se demuestra es el patrón de código, no ningún comportamiento de una placa concreta.</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>cpp</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>class Pin {
+    int n_ = -1;
+    void liberar() noexcept {
+        if (n_ &gt;= 0) { pines_ocupados().erase(n_); /* traza */ n_ = -1; }
+    }
+public:
+    explicit Pin(int n) {
+        if (!pines_ocupados().insert(n).second)
+            throw std::runtime_error("el pin " + std::to_string(n) + " ya está reservado");
+        n_ = n;
+    }
+    ~Pin() { liberar(); }
+    Pin(const Pin&amp;) = delete;
+    Pin&amp; operator=(const Pin&amp;) = delete;
+    Pin(Pin&amp;&amp; o) noexcept : n_(std::exchange(o.n_, -1)) {}
+    Pin&amp; operator=(Pin&amp;&amp; o) noexcept {
+        if (this != &amp;o) { liberar(); n_ = std::exchange(o.n_, -1); }
+        return *this;
+    }
+};</code></pre>
+        </div>
+
+<p>Fíjate en cómo se combinan las reglas que vimos. La copia está prohibida (<code>= delete</code>), porque dos copias del mismo pin romperían la exclusividad. El movimiento está permitido y es <code>noexcept</code> (C.66), y deja el origen en un estado válido: el valor <code>-1</code> significa «sin pin». La asignación de movimiento libera primero el pin que ya tuviera el destino antes de adoptar el nuevo. El constructor lanza una excepción si no puede reservar el recurso, tal como indica la definición de RAII, y el destructor llama a una función <code>noexcept</code>. Y la función que lo devuelve (<code>abre_pin</code>) permite escribir <code>Pin a = abre_pin(4);</code> sin copias (desde C++17 la elisión de la copia en ese caso está garantizada, un dato general que no procede de las páginas consultadas).</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  reservar pin 4
+  tras mover: a.numero()=-1, b.numero()=4
+  error esperado: el pin 4 ya está reservado
+  liberar pin 4
+  fuera del ámbito; se puede reservar de nuevo:
+  reservar pin 4
+  liberar pin 4</code></pre>
+        </div>
+
+<p>La traza cuenta toda la historia. Se reserva el pin 4; al mover <code>a</code> a <code>b</code>, la propiedad cambia de manos y <code>a</code> queda vacío; un segundo intento de reservar el pin 4 falla con la excepción esperada (la reserva doble se detecta en el constructor, no después); al salir del ámbito, <code>b</code> libera el pin <em>una sola vez</em> (el <code>a</code> vacío no libera nada); y, a continuación, el pin se puede volver a reservar. Con una gestión manual, este mismo escenario exigiría recordar la liberación en cada salida de la función, incluidas las excepciones.</p>
+
+<p>Dos matices para el mundo embebido. Primero, muchos entornos de microcontroladores compilan con las excepciones desactivadas (un dato general sobre las cadenas de herramientas habituales, no extraído de nuestras fuentes). Las directrices lo contemplan en sus reglas E.25 a E.27: si no puedes lanzar excepciones, simula RAII para la gestión de recursos, plantéate fallar rápido o usa códigos de error sistemáticamente. En ese caso, un constructor que «lanza» no es una opción, y la alternativa habitual es una función de fábrica que devuelva un resultado o un valor opcional. Segundo, un pin que se libera en el destructor se libera también si el programa sale por una vía que no pase por él (un <code>abort</code>, un reinicio por vigilante), y eso no lo arregla ninguna técnica de este artículo: RAII protege frente a las salidas ordinarias del ámbito, no frente a la muerte del proceso. Para las diferencias con otros lenguajes en esos mismos entornos, remitimos de nuevo al artículo sobre <a href="/articulos/rust-vs-cpp-sistemas-embebidos.html">Rust y C++ en sistemas embebidos</a>, y para la planificación de tareas e interrupciones en un microcontrolador concreto, al de <a href="/articulos/freertos-esp32-planificador-prioridades-isr.html">FreeRTOS en el ESP32</a>.</p>
+
+<p>El mismo patrón sirve para recursos que están más cerca de un programa de terminal. Si has trabajado con ncurses, como en nuestro artículo sobre <a href="/articulos/cpp-ncurses-terminal.html">C++ y ncurses</a>, sabes que la biblioteca exige emparejar una llamada de inicio y otra de cierre de la pantalla (<code>initscr</code> y <code>endwin</code>; una descripción general de la API, no tomada de las fuentes de este artículo). Encapsular esa pareja en una clase cuyo destructor restaura la terminal evita que un error o una excepción dejen la consola en un estado extraño: es el mismo caso del pin, con otro recurso.</p>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="10-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>«Con punteros inteligentes ya no hay fugas»</h3>
+
+<p>Los ciclos de <code>shared_ptr</code> siguen siendo fugas: en el laboratorio, ningún destructor se ejecutó en el ciclo fuerte. Hay que decidir qué enlaces poseen y cuáles observan, y los segundos van con <code>weak_ptr</code>.</p>
+
+<h3>«<code>std::move</code> mueve el objeto»</h3>
+
+<p>Es un <em>cast</em>. Lo que mueve (o no) es la función a la que se lo pasas. Y sobre un objeto <code>const</code> acaba copiando, sin avisar.</p>
+
+<h3>«Usar un objeto después de moverlo es siempre un error»</h3>
+
+<p>No necesariamente: un objeto estándar movido queda en un estado válido pero no especificado y se puede destruir, asignar o llamar con operaciones sin precondiciones. Lo que es un error es <em>suponer</em> qué contiene. En tus propias clases, define el estado del origen tras mover (la directriz C.64 pide que sea válido) y documéntalo.</p>
+
+<h3>«Basta con declarar el destructor para que mi clase sea segura»</h3>
+
+<p>Si declaras un destructor, cppreference recuerda que se suprime la generación implícita del movimiento, de modo que tu clase pasará a copiar donde esperabas mover. Hay que declarar (o eliminar) las cinco funciones, o ninguna.</p>
+
+<h3>«<code>shared_ptr</code> es el puntero inteligente por defecto»</h3>
+
+<p>La directriz R.21 dice lo contrario: preferir <code>unique_ptr</code> salvo que haga falta compartir. En nuestras medidas, el <code>shared_ptr</code> ocupa el doble (16 frente a 8 bytes) y cada copia exige una operación atómica sobre el contador.</p>
+
+<h3>«Si el movimiento falla, ya se verá»</h3>
+
+<p>Un movimiento que pudiera lanzar excepciones no es utilizable en algunas operaciones de los contenedores. El vector del experimento copió 7 veces en lugar de mover 7 veces únicamente por la ausencia de <code>noexcept</code>.</p>
+
+<h3>«Borrar a través de un puntero a la base siempre funciona»</h3>
+
+<p>Solo si el destructor de la base es virtual; de otro modo, es comportamiento indefinido. cppreference lo señala al hablar de la conversión de <code>unique_ptr&lt;Derivada&gt;</code> a <code>unique_ptr&lt;Base&gt;</code>, y las directrices lo recogen en C.35 y C.127.</p>
+
+<h3>«Un puntero crudo es siempre una mala idea»</h3>
+
+<p>No: es una buena herramienta para expresar <em>no propiedad</em>. La directriz R.3 establece que un <code>T*</code> es no propietario; lo que hay que evitar es el puntero crudo que posee. Y R.2 pide usar punteros crudos en las interfaces para denotar objetos individuales, solo.</p>
+
+<h2 id="11-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Cuándo uso <code>unique_ptr</code> y cuándo un objeto en la pila?</h3>
+
+<p>Si el objeto puede vivir como variable local, miembro o global, no lo asignes dinámicamente; es la directriz R.5, prefiere objetos con ámbito y no asignes en el montón innecesariamente. El <code>unique_ptr</code> aparece cuando necesitas vida dinámica (el objeto sale de la función que lo crea), polimorfismo (un puntero a una clase base) o un tipo incompleto en una cabecera.</p>
+
+<h3>¿Qué es mejor, <code>make_unique</code> o <code>new</code>?</h3>
+
+<p><code>make_unique</code>. Las directrices (R.23, C.150) lo piden, y evita escribir el tipo dos veces y dejar un <code>new</code> suelto. La ventaja es de seguridad y legibilidad; en nuestra medida hizo una sola asignación, la del objeto.</p>
+
+<h3>¿Cuándo hay que escribir las cinco funciones especiales?</h3>
+
+<p>Cuando la clase <em>posee</em> directamente un recurso que ninguno de sus miembros gestiona ya (un puntero crudo, un manejador del sistema, un número de pin). Si todos los miembros se gestionan solos, aplica la regla de cero y no escribas nada. Y si dudas, tira de un envoltorio existente (<code>unique_ptr</code> con deleter, <code>vector</code>, <code>string</code>) en lugar de escribir uno propio.</p>
+
+<h3>¿Un destructor puede lanzar excepciones?</h3>
+
+<p>No debería. cppreference lo incluye en la receta de RAII (el destructor libera el recurso y nunca lanza excepciones), y las directrices dedican a ello C.36 (un destructor no debe fallar) y C.37 (declarar los destructores <code>noexcept</code>). No hemos reproducido en el laboratorio qué ocurre si lo haces, de modo que no damos más detalle.</p>
+
+<h3>¿Cómo sé si estoy copiando donde quería mover?</h3>
+
+<p>Con una clase de traza como nuestro <code>Buffer</code>, que imprime qué función se ejecuta, o con contadores como los de <code>Pesado</code>. En código real, los perfiladores y las comprobaciones estáticas pueden ayudar, pero no las hemos evaluado para este artículo.</p>
+
+<h3>¿Sirve todo esto con el estándar C++11?</h3>
+
+<p>Parte sí y parte no: <code>make_unique</code> llegó con C++14 y la elisión garantizada de copias con C++17, según las páginas de cppreference y el dato general que ya señalamos. Nuestro laboratorio usó C++20. Si trabajas con un compilador antiguo, comprueba la versión de cada característica en su página de referencia.</p>
+
+<h3>¿Es RAII exclusivo de C++?</h3>
+
+<p>La técnica nació en C++, pero existen equivalentes en otros lenguajes (bloques <code>with</code> en Python, <code>using</code> en C#, <code>Drop</code> en Rust). La comparación con Rust la desarrollamos en el artículo de <a href="/articulos/rust-vs-cpp-sistemas-embebidos.html">Rust frente a C++</a>.</p>
+
+<h2 id="12-conclusion">Conclusión</h2>
+
+<p>El C++ moderno no consiste en dominar plantillas esotéricas, sino en una disciplina sencilla: <strong>nunca dejar un recurso sin dueño</strong>. RAII es el mecanismo (el constructor adquiere, el destructor libera, en orden inverso, también cuando hay excepciones); los punteros inteligentes y los contenedores estándar son sus aplicaciones ya hechas; la semántica de movimiento permite transferir la propiedad sin copiar; y las reglas de cero, tres y cinco dicen cuánto código hay que escribir para que todo eso funcione. Los experimentos lo confirmaron de forma tangible: una pieza viva tras una excepción con <code>new</code>/<code>delete</code> manual y ninguna con <code>unique_ptr</code>; copias donde esperabas movimientos al olvidar un <code>noexcept</code>; un ciclo de <code>shared_ptr</code> sin un solo destructor; y un compilador que rechaza copiar un <code>unique_ptr</code>.</p>
+
+<p>Si tuvieras que recordar cuatro hábitos: usa objetos con ámbito siempre que puedas; prefiere <code>unique_ptr</code> y deja <code>shared_ptr</code> para cuando la propiedad compartida es real; sigue la regla de cero y concentra la de cinco en clases pequeñas de una sola responsabilidad, con movimientos <code>noexcept</code>; y piensa en la dirección de los enlaces para que los ciclos se rompan con <code>weak_ptr</code>. El resto de lo que contamos, desde el comportamiento de <code>const</code> con <code>std::move</code> hasta el tamaño del deleter, son detalles que merece la pena medir en tu propio compilador, con un programa de quince líneas como los de este laboratorio, antes de darlos por sabidos.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>cppreference.com. «RAII». <a href="https://en.cppreference.com/w/cpp/language/raii" rel="noopener">https://en.cppreference.com/w/cpp/language/raii</a> (consultado el 27-10-2026).</li>
+  <li>cppreference.com. «std::unique_ptr». <a href="https://en.cppreference.com/w/cpp/memory/unique_ptr" rel="noopener">https://en.cppreference.com/w/cpp/memory/unique_ptr</a> (consultado el 27-10-2026).</li>
+  <li>cppreference.com. «std::shared_ptr». <a href="https://en.cppreference.com/w/cpp/memory/shared_ptr" rel="noopener">https://en.cppreference.com/w/cpp/memory/shared_ptr</a> (consultado el 27-10-2026).</li>
+  <li>cppreference.com. «The rule of three/five/zero». <a href="https://en.cppreference.com/w/cpp/language/rule_of_three" rel="noopener">https://en.cppreference.com/w/cpp/language/rule_of_three</a> (consultado el 27-10-2026).</li>
+  <li>cppreference.com. «std::move». <a href="https://en.cppreference.com/w/cpp/utility/move" rel="noopener">https://en.cppreference.com/w/cpp/utility/move</a> (consultado el 27-10-2026).</li>
+  <li>Stroustrup, B. y Sutter, H. (eds.). «C++ Core Guidelines». isocpp.github.io. <a href="https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines" rel="noopener">https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines</a> (consultado el 27-10-2026; se leyeron los tramos de caracteres 150.000–250.000 y 300.000–400.000 y los títulos de los tramos 200.000–300.000 y 500.000–600.000, de 687.858).</li>
+  <li>Equipo editorial. «Laboratorio de C++ moderno» (código y salidas completas, g++ 16.1.0, <code>-std=c++20</code>, Windows). Archivo <code>editorial/fuentes/lab_cpp.md</code> del repositorio del sitio; ejecutado el 27-10-2026.</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/rust-vs-cpp-sistemas-embebidos.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[hardware]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Investigación Exhaustiva: Rust vs C++ en Sistemas Embebidos y ESP32</span>
+          </a></li>
+          <li><a href="/articulos/cpp-ncurses-terminal.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[cpp]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">C++ en la Terminal: Interfaces con Ncurses</span>
+          </a></li>
+          <li><a href="/articulos/freertos-esp32-planificador-prioridades-isr.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[embebidos]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">FreeRTOS en el ESP32: planificador, prioridades, interrupciones y sincronización</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-el-problema-recursos-que-hay-que-devolve" class="text-muted hover:text-accent">El problema: recursos que hay que devolver</a></li>
+            <li><a href="#2-raii-la-idea-que-lo-sostiene-todo" class="text-muted hover:text-accent">RAII: la idea que lo sostiene todo</a></li>
+            <li><a href="#3-excepciones-donde-raii-gana-de-verdad" class="text-muted hover:text-accent">Excepciones: donde RAII gana de verdad</a></li>
+            <li><a href="#4-una-clase-que-posee-un-recurso-copiar-y" class="text-muted hover:text-accent">Una clase que posee un recurso: copiar y mover</a></li>
+            <li><a href="#5-std-move-un-cast-no-una-operacion" class="text-muted hover:text-accent">std::move: un cast, no una operación</a></li>
+            <li><a href="#6-unique-ptr-un-dueno-sin-sobrecoste" class="text-muted hover:text-accent">unique_ptr: un dueño, sin sobrecoste</a></li>
+            <li><a href="#7-shared-ptr-propiedad-compartida-y-su-pre" class="text-muted hover:text-accent">shared_ptr: propiedad compartida y su precio</a></li>
+            <li><a href="#8-como-pasar-y-devolver-punteros-inteligen" class="text-muted hover:text-accent">Cómo pasar y devolver punteros inteligentes</a></li>
+            <li><a href="#9-recursos-de-hardware-un-pin-con-dueno-un" class="text-muted hover:text-accent">Recursos de hardware: un pin con dueño único</a></li>
+            <li><a href="#10-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#11-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#12-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>

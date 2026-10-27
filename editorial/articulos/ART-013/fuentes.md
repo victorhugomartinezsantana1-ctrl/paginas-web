@@ -1,0 +1,19 @@
+# Fuentes — ART-013 C++ moderno: RAII, movimiento y punteros inteligentes
+
+Consulta: 2026-10-27. Las páginas de cppreference y las Core Guidelines no muestran fecha de publicación y cambian con las revisiones del estándar.
+
+| # | Fuente | Organismo | URL | Respalda | Limitaciones |
+|---|---|---|---|---|---|
+| 1 | RAII | cppreference.com | https://en.cppreference.com/w/cpp/language/raii | Definición (el constructor adquiere y establece invariantes o lanza; el destructor libera y no lanza); liberación en orden inverso; desenrollado de pila; ejemplos `lock`/`unlock` frente a `lock_guard`; recursos a los que no aplica; clases de la biblioteca estándar | `std::fstream` no figura en la página |
+| 2 | std::unique_ptr | cppreference.com | https://en.cppreference.com/w/cpp/memory/unique_ptr | Propiedad exclusiva; copia prohibida y movimiento permitido; deleter por defecto y personalizado; especialización para arrays; usos habituales; tipos incompletos (pimpl); conversión derivada→base y destructor virtual | No dice que se prefiera `make_unique`; no da el tamaño con un deleter sin estado |
+| 3 | std::shared_ptr | cppreference.com | https://en.cppreference.com/w/cpp/memory/shared_ptr | Propiedad compartida; contenido del bloque de control; `make_shared` con una sola asignación; contadores atómicos; seguridad entre hilos de las funciones miembro sobre objetos `shared_ptr` distintos | No trata ciclos; no afirma que `use_count()` sea aproximado; no dice literalmente que el bloque de control sea seguro entre hilos pero el objeto no |
+| 4 | Rule of three / five / zero | cppreference.com | https://en.cppreference.com/w/cpp/language/rule_of_three | Los tres enunciados; declarar destructor, copia o asignación de copia impide el movimiento implícito; ejemplos con `char*` y con `std::string` | Copy-and-swap solo aparece en comentarios del código |
+| 5 | std::move | cppreference.com | https://en.cppreference.com/w/cpp/utility/move | Es un `static_cast` a referencia de rvalue (xvalue); objetos estándar movidos en «estado válido pero no especificado»; ejemplo con `push_back` | No dice con esas palabras que `std::move` no mueve nada; no trata `const` |
+| 6 | C++ Core Guidelines | Stroustrup y Sutter (editores), isocpp.github.io | https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines | C.20 (regla de cero), C.21 (regla de cinco), C.22, C.30, C.31, C.32; R.1, R.3, R.5, R.11, R.12, R.20, R.21, R.22, R.24, R.32, R.34, R.37; títulos de C.33, C.36, C.37, C.64, C.66, E.6, E.16, E.25–E.27, CP.20 | Página de 687.858 caracteres; se leyeron los tramos 150.000–250.000 y 300.000–400.000 y el listado de títulos de 200.000–300.000 y 500.000–600.000. R.30 solo remite a F.7 y no se leyó. De los títulos solo se usan sus enunciados, no su desarrollo |
+| 7 | Laboratorio propio | Equipo editorial | `editorial/fuentes/lab_cpp.md` | Todas las salidas mostradas: orden de liberación, excepciones, copia y movimiento, crecimiento de vector con y sin `noexcept`, tamaños, asignaciones, ciclos, deleter de `FILE*`, regla de cero, pin simulado y el error de compilación al copiar un `unique_ptr` | Un solo compilador (g++ 16.1.0, `-std=c++20`, `-O0`) en Windows; otros compiladores y plataformas pueden dar tamaños y recuentos distintos. No hay hardware real |
+
+## Observaciones
+
+- Los resultados con `noexcept` en el crecimiento del vector son medidas reales; el mecanismo subyacente (el contenedor usa el movimiento solo si es `noexcept`, `std::move_if_noexcept`) es conocimiento general que las páginas consultadas no describen, y así se declara en el texto.
+- El «pin» del caso de hardware es una simulación en memoria; no se probó ningún microcontrolador.
+- Conocimiento general (señalado): elisión garantizada de copias desde C++17, `std::move_if_noexcept`, uso de ncurses (`initscr`/`endwin`), excepciones desactivadas en muchos entornos embebidos.

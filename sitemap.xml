@@ -4,6 +4,7 @@
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/arch-hyprland-wayland.html</loc><lastmod>2026-10-25</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/azure-static-web-apps.html</loc><lastmod>2026-10-20</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/contenedores-linux-namespaces-cgroups-seccomp.html</loc><lastmod>2026-10-27</lastmod></url>
+  <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/cpp-moderno-raii-movimiento-punteros-inteligentes.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/cpp-ncurses-terminal.html</loc><lastmod>2026-10-23</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/dns-resolucion-cache-dnssec.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/docker-multi-stage.html</loc><lastmod>2026-09-24</lastmod></url>
@@ -13,6 +14,7 @@
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/git-rebase-interactivo.html</loc><lastmod>2026-09-17</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/github-actions-cache.html</loc><lastmod>2026-10-14</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/github-actions-seguridad-permisos-oidc-cadena-suministro.html</loc><lastmod>2026-10-27</lastmod></url>
+  <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/indices-bases-datos-btree-planes-ejecucion.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/kubernetes-arquitectura-interna.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/linux-grep-sed-awk.html</loc><lastmod>2026-10-01</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/neovim-ide-terminal.html</loc><lastmod>2026-10-26</lastmod></url>
@@ -20,8 +22,11 @@
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/obsidian-llm-python.html</loc><lastmod>2026-10-21</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/particiones-dualboot.html</loc><lastmod>2026-10-24</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/postgresql-mvcc-vacuum-planificador.html</loc><lastmod>2026-10-27</lastmod></url>
+  <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/python-asyncio-bucle-eventos-corrutinas.html</loc><lastmod>2026-10-27</lastmod></url>
+  <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/python-memoria-referencias-recolector-basura.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/python-metodos-numericos.html</loc><lastmod>2026-10-20</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/python-pathlib.html</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/rust-propiedad-prestamos-lifetimes.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/rust-vs-cpp-sistemas-embebidos.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/systemd-unidades-dependencias-journald-temporizadores.html</loc><lastmod>2026-10-27</lastmod></url>
   <url><loc>https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/tcp-en-la-practica-handshake-congestion-diagnostico.html</loc><lastmod>2026-10-27</lastmod></url>

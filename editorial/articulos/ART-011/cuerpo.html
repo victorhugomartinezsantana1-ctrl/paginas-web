@@ -1,0 +1,392 @@
+<p>Un programa que descarga veinte páginas, consulta una base de datos y espera la respuesta de una API pasa la mayor parte de su vida esperando. No calcula: espera a que un paquete atraviese la red, a que un disco devuelva un bloque, a que otro servicio conteste. Si cada espera se hace una detrás de otra, los tiempos se suman; si se hacen a la vez, el tiempo total se acerca al de la más lenta. <code>asyncio</code> es la forma que ofrece la biblioteca estándar de Python para solapar esas esperas en un solo hilo, con la sintaxis <code>async</code>/<code>await</code>. Y es también una fuente inagotable de malentendidos: se cree que «hace el código más rápido», que «ejecuta cosas en paralelo» o que basta con añadir <code>async</code> delante de una función para que deje de bloquear. Ninguna de las tres cosas es cierta, y el motivo se entiende en cuanto se conoce el modelo.</p>
+
+<p>En este artículo construimos ese modelo desde cero y lo comprobamos con experimentos. Una advertencia de método, esta vez con una diferencia respecto a otros artículos de la serie: el equipo de redacción sí tiene Python en el equipo, así que <strong>todas las medidas que verás se ejecutaron de verdad</strong> con Python 3.14.2 en Windows 11, en una compilación estándar con GIL. Los scripts y las salidas completas están guardados en el repositorio del sitio (carpeta <code>editorial/fuentes</code>, archivo <code>lab_asyncio.md</code>), y los tiempos que damos son los de una ejecución concreta: se repetirán de forma parecida en tu equipo, no idéntica. El comportamiento que se atribuye a la documentación procede de las páginas oficiales de Python citadas al final, consultadas el 27 de octubre de 2026; cuando algo es una interpretación nuestra o conocimiento general, lo decimos. Si vienes de manejar archivos y rutas con <a href="/articulos/python-pathlib.html">pathlib</a>, aquí damos el siguiente paso: dejar de esperar en serie.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>asyncio ejecuta tareas en un bucle de eventos de un solo hilo: solo avanza una a la vez, y el control cambia de una a otra <strong>únicamente en los <code>await</code></strong>. Es concurrencia cooperativa, no paralelismo.</li>
+    <li>Llamar a una función <code>async</code> no ejecuta nada: devuelve un objeto corrutina. Hay que esperarlo con <code>await</code> o planificarlo como tarea.</li>
+    <li>En nuestra medida, cinco esperas de 0,2 s tardaron 1,03 s en serie y 0,21 s con <code>TaskGroup</code>.</li>
+    <li>Una llamada bloqueante dentro de una corrutina congela todo el bucle: en el experimento, un <code>time.sleep(0.5)</code> abrió un hueco de 516 ms en un latido que debía latir cada 50 ms; con <code>asyncio.to_thread()</code> el hueco máximo fue de 64 ms.</li>
+    <li><code>TaskGroup</code> cancela las demás tareas cuando una falla y agrupa los errores en un <code>ExceptionGroup</code>; <code>gather()</code> por defecto propaga el primer error pero deja las otras tareas funcionando.</li>
+    <li>Guarda siempre una referencia a las tareas que creas: el bucle solo mantiene referencias débiles, según la documentación.</li>
+    <li>Para el trabajo de CPU, hilos y <code>to_thread()</code> no ayudan con GIL: dos cálculos tardaron 0,64 s en serie y 0,67 s con <code>to_thread()</code>.</li>
+  </ul>
+</div>
+
+<h2>El problema que resuelve asyncio</h2>
+
+<p>Conviene empezar por distinguir dos clases de trabajo, porque la elección de herramienta depende de ellas. Un trabajo <strong>limitado por entrada/salida</strong> (E/S) pasa la mayor parte del tiempo esperando a algo externo: una conexión de red, un archivo, un servicio. Un trabajo <strong>limitado por CPU</strong> pasa el tiempo calculando: comprimir, procesar imágenes, entrenar un modelo. La distinción es una simplificación general y no procede de una fuente concreta, pero ordena todo lo que sigue.</p>
+
+<p>Cuando el trabajo es de E/S, la CPU está ociosa mientras espera, y esa ociosidad se puede aprovechar para atender otras esperas. La documentación de <code>asyncio</code> lo dice con una frase: es «a menudo un ajuste perfecto para código de red de alto nivel y estructurado, limitado por E/S». Y añade que es la base de varios marcos asíncronos de Python que proporcionan servidores web y de red de alto rendimiento, bibliotecas de conexión a bases de datos o colas de tareas distribuidas. No es una exageración de marketing: cualquier servicio que atiende muchas conexiones lentas a la vez (un servidor web, un rastreador, un cliente de una API con muchas llamadas) gana mucho con este modelo.</p>
+
+<p>Con una condición: la ganancia solo existe si se aprovecha el tiempo de espera. Un programa que ya está dominado por cálculos no va más rápido con <code>asyncio</code> y puede incluso ir peor, como veremos con números. Por eso, el primer paso para decidir si te sirve es mirar dónde se va el tiempo de tu programa. Si has leído nuestro artículo sobre <a href="/articulos/observabilidad-metricas-logs-trazas-opentelemetry.html">observabilidad</a>, la respuesta a esa pregunta sale de una traza o de un histograma de latencias, no de una intuición.</p>
+
+<h2>El modelo mental: bucle, corrutinas, tareas y futuros</h2>
+
+<p>El centro de todo es el <strong>bucle de eventos</strong> (<em>event loop</em>). La documentación lo define como el núcleo de toda aplicación asyncio: los bucles de eventos ejecutan tareas asíncronas y callbacks, realizan operaciones de red y lanzan subprocesos. Piensa en él como un único trabajador con una lista de tareas pendientes. Toma una, la ejecuta hasta que llega a un punto en que debe esperar (un <code>await</code> sobre algo que todavía no está listo), la aparca y pasa a otra. Cuando lo que esperaba la tarea aparcada está listo, vuelve a ponerla en la lista. El trabajador nunca está parado si hay algo que hacer, y nunca hace dos cosas a la vez.</p>
+
+<p>Alrededor de esa idea hay cuatro conceptos que conviene no confundir:</p>
+
+<ul>
+  <li><strong>Función corrutina</strong>: una función definida con <code>async def</code>.</li>
+  <li><strong>Objeto corrutina</strong>: lo que devuelve la llamada a una función corrutina. Según la documentación, llamarla simplemente <em>no la planifica</em>: obtienes un objeto del estilo de <code>&lt;coroutine object main at ...&gt;</code>, que no ha empezado a ejecutarse.</li>
+  <li><strong>Tarea</strong> (<em>Task</em>): un objeto que envuelve una corrutina y la planifica en el bucle para que se ejecute «en cuanto pueda», sin que nadie tenga que esperarla inmediatamente.</li>
+  <li><strong>Futuro</strong> (<em>Future</em>): un objeto de nivel más bajo que representa un resultado que aún no está disponible. Las tareas son una clase de futuro.</li>
+</ul>
+
+<p>La documentación agrupa esos tres últimos bajo el nombre de <em>awaitable</em>: un objeto es esperable si puede usarse en una expresión <code>await</code>, y los tres tipos son las corrutinas, las tareas y los futuros. El punto de entrada habitual es <code>asyncio.run(main())</code>, que crea un bucle, ejecuta la corrutina principal hasta el final y cierra el bucle.</p>
+
+<h3>Cooperación: el control cambia solo en los await</h3>
+
+<p>La propiedad más importante del modelo, y la que explica casi todos sus errores, es que la concurrencia de asyncio es <strong>cooperativa</strong>. El bucle no puede interrumpir una tarea a mitad de una instrucción: es la tarea quien cede el control, y lo hace al llegar a un <code>await</code> cuyo resultado todavía no está listo. Entre dos <code>await</code> consecutivos, el código se ejecuta de una pieza, sin que ninguna otra tarea avance. Eso tiene una parte buena (no hacen falta cerrojos para proteger un fragmento de código sin <code>await</code> en medio, porque nadie puede entrar a la vez; es una consecuencia de lo anterior, no una cita) y una parte mala: una tarea que tarda mucho sin ceder el control retiene a todas las demás.</p>
+
+<p>La documentación ofrece una herramienta para ceder el control a propósito: <code>asyncio.sleep(0)</code>. Según el texto, un retardo de 0 proporciona una ruta optimizada para permitir que se ejecuten otras tareas, y puede usarse en funciones de larga duración para no bloquear el bucle durante toda su ejecución. Añade que <code>sleep()</code> siempre suspende la tarea actual y deja que otras se ejecuten.</p>
+
+<h2>Primera medida: esperar en serie o a la vez</h2>
+
+<p>Veamos la diferencia con un experimento mínimo. La función <code>espera()</code> duerme 0,2 segundos con <code>asyncio.sleep()</code> y devuelve su número. Primero se llama cinco veces una detrás de otra; después, cinco veces concurrentes con <code>TaskGroup</code> y con <code>gather()</code>:</p>
+
+<pre data-lang="python"><code>async def espera(n, d=0.2):
+    await asyncio.sleep(d)
+    return n
+
+# En serie
+for i in range(5):
+    await espera(i)
+
+# Concurrente con TaskGroup
+async with asyncio.TaskGroup() as tg:
+    for i in range(5):
+        tg.create_task(espera(i))
+
+# Concurrente con gather
+await asyncio.gather(*(espera(i) for i in range(5)))</code></pre>
+
+<pre data-lang="text"><code>secuencial: 1.03 s
+TaskGroup : 0.21 s
+gather    : 0.21 s</code></pre>
+
+<p>La aritmética es la esperada: cinco esperas de 0,2 s suman 1,0 s en serie (la décima de más es la sobrecarga de planificar y despertar cada espera), mientras que en concurrencia el tiempo total es el de la espera más larga, 0,2 s, más una pequeña sobrecarga. Cinco veces menos tiempo, sin ningún hilo adicional y sin que el programa haga nada más rápido: simplemente hemos dejado de esperar en fila. Con 50 esperas la diferencia sería de 10 s frente a unos 0,2 s, siempre que el servicio al que se espera aguante esa concurrencia, que es un asunto que veremos en la sección del semáforo.</p>
+
+<p>Una nota sobre el ejemplo: <code>asyncio.sleep()</code> simula una espera de E/S sin hacer E/S real. Es perfecto para medir el comportamiento del bucle porque es predecible; con una red real los tiempos serían los de la red. Aquí no medimos ninguna conexión real, y por eso las cifras no deben leerse como «lo que ganarás en tu aplicación», sino como la demostración de un mecanismo.</p>
+
+<h2>Crear tareas y no perderlas</h2>
+
+<p>La forma de decir «empieza esto y sigue con lo tuyo» es <code>asyncio.create_task(corrutina)</code>. Devuelve la tarea y la planifica. Aquí la documentación contiene una advertencia que no se debe pasar por alto: hay que guardar una referencia al resultado de esta función, porque el bucle de eventos solo mantiene referencias débiles a las tareas, de modo que una tarea sin ninguna otra referencia puede ser recogida por el recolector de basura en cualquier momento, incluso antes de haber terminado.</p>
+
+<p>La consecuencia práctica es un error que no da señales: se escribe <code>asyncio.create_task(hacer_algo())</code> sin guardar el resultado, el programa funciona casi siempre y, de vez en cuando, una tarea desaparece sin terminar. No hemos reproducido este fallo en el laboratorio porque depende del momento en que actúe el recolector de basura y no se puede provocar de forma fiable; nos fiamos de la documentación. Hay dos formas de evitarlo: guardar las tareas en una colección propia, o, mejor, crearlas dentro de un <code>TaskGroup</code>, que se queda con una referencia a cada una mientras el grupo siga abierto.</p>
+
+<h2>TaskGroup: concurrencia con estructura</h2>
+
+<p>Un <code>TaskGroup</code>, disponible desde Python 3.11, es un gestor de contexto asíncrono que agrupa tareas. La documentación describe su comportamiento en tres frases:</p>
+
+<ul>
+  <li>Al salir del bloque <code>async with</code>, se espera a que terminen todas las tareas del grupo.</li>
+  <li>La primera vez que una de las tareas falla con una excepción que no sea <code>asyncio.CancelledError</code>, las demás tareas del grupo se cancelan.</li>
+  <li>Cuando todas han terminado, si alguna falló, las excepciones se combinan en un <code>ExceptionGroup</code> (o <code>BaseExceptionGroup</code>) que se lanza al salir del bloque.</li>
+</ul>
+
+<p>La idea de fondo se llama a veces <em>concurrencia estructurada</em> (término general, no de la documentación citada): el tiempo de vida de las tareas está acotado por el bloque de código que las creó. Cuando el programa sale del bloque, todas han terminado, por las buenas o por las malas, y no queda ninguna tarea huérfana corriendo por detrás.</p>
+
+<h3>Comparación con gather(): un fallo, dos comportamientos</h3>
+
+<p>Antes de <code>TaskGroup</code>, la herramienta habitual era <code>asyncio.gather()</code>, y sigue siendo útil, pero su comportamiento ante errores es distinto y sorprende. La documentación dice que, por defecto (<code>return_exceptions=False</code>), la primera excepción se propaga inmediatamente a la tarea que espera en <code>gather()</code>, y que las demás tareas «no se cancelan y seguirán ejecutándose». Con <code>return_exceptions=True</code>, las excepciones se tratan como resultados correctos y se devuelven en la lista de resultados. La página presenta <code>TaskGroup</code> como una alternativa nueva con garantías más fuertes (cancela las tareas restantes cuando una falla, algo que <code>gather</code> no hace); no dice que <code>gather()</code> esté obsoleto.</p>
+
+<p>Lo comprobamos con un experimento. Tres tareas: A y C duran 1 segundo y registran cómo acaban; B falla a los 50 ms con un <code>ValueError</code>. Primero con <code>TaskGroup</code>:</p>
+
+<pre data-lang="python"><code>estado = {}
+try:
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(larga("A", estado))
+        tg.create_task(falla())
+        tg.create_task(larga("C", estado))
+except* ValueError as eg:
+    print("TaskGroup: ExceptionGroup con", [repr(e) for e in eg.exceptions])
+print("TaskGroup: estado de las demás ->", estado)</code></pre>
+
+<p>Y después con <code>gather()</code>, creando A y C como tareas y pasando B directamente:</p>
+
+<pre data-lang="python"><code>estado = {}
+t_a = asyncio.create_task(larga("A", estado))
+t_c = asyncio.create_task(larga("C", estado))
+try:
+    await asyncio.gather(t_a, falla(), t_c)
+except ValueError as e:
+    print("gather: propaga", repr(e), "inmediatamente")
+print("gather: justo después del fallo ->", {"A": t_a.done(), "C": t_c.done()})
+await asyncio.sleep(1.1)
+print("gather: pasado 1,1 s ->", estado)</code></pre>
+
+<pre data-lang="text"><code>TaskGroup: ExceptionGroup con ["ValueError('fallo en la tarea B')"]
+TaskGroup: estado de las demás -> {'C': 'cancelada', 'A': 'cancelada'}
+gather: propaga ValueError('fallo en la tarea B') inmediatamente
+gather: justo después del fallo -> {'A': False, 'C': False}
+gather: pasado 1,1 s -> {'A': 'terminó', 'C': 'terminó'}</code></pre>
+
+<p>La diferencia es nítida y confirma la documentación. Con <code>TaskGroup</code>, el fallo de B cancela A y C (ambas registran «cancelada»), y el error llega empaquetado en un <code>ExceptionGroup</code>. Con <code>gather()</code>, el error llega enseguida a quien espera, pero A y C siguen vivas: justo después del fallo todavía no han terminado y, un segundo más tarde, acaban normalmente. Esa segunda parte es la trampa: el código que llamó a <code>gather()</code> ya recibió el error y probablemente siguió su camino, mientras las otras tareas continúan trabajando «en segundo plano», quizá modificando estado que ya nadie vigila.</p>
+
+<p>Un detalle de sintaxis que aparece en el ejemplo: <code>except*</code>. Es la forma de capturar excepciones dentro de un <code>ExceptionGroup</code> (sintaxis de Python 3.11, un dato general que no procede de las páginas consultadas): <code>except* ValueError</code> captura los <code>ValueError</code> del grupo, y podría haber otras cláusulas <code>except*</code> para otros tipos. Como las excepciones llegan siempre empaquetadas, un <code>except ValueError</code> normal no las capturaría.</p>
+
+<h3>¿Y si no quiero que un fallo cancele a los demás?</h3>
+
+<p>A veces el comportamiento correcto es que cada tarea gestione sus propios errores y el resto siga: por ejemplo, al descargar veinte páginas, que una falle no debería impedir descargar las otras. Con <code>TaskGroup</code> eso se consigue capturando las excepciones <em>dentro</em> de cada tarea, de modo que ninguna llegue a salir del grupo. Lo veremos en el caso completo más abajo.</p>
+
+<h2>Cancelación y tiempos límite</h2>
+
+<p>La cancelación es el punto más delicado del modelo, y la documentación es explícita en varias cosas. Cuando se cancela una tarea, <code>asyncio.CancelledError</code> se lanza en ella «en la siguiente oportunidad», es decir, en el próximo <code>await</code> en el que la tarea ceda el control. Si el código captura <code>CancelledError</code> de forma explícita, la documentación indica que, por lo general, debería propagarse una vez terminada la limpieza; su propio ejemplo captura la cancelación, hace la limpieza en un bloque <code>finally</code> y vuelve a lanzarla con un <code>raise</code>. Suprimir la cancelación por completo es, en palabras de la documentación, «poco común y activamente desaconsejado», y si se hace hay que llamar además a <code>uncancel()</code> para eliminar del todo el estado de cancelación.</p>
+
+<p>Un dato que es fuente de errores silenciosos: <code>CancelledError</code> hereda directamente de <code>BaseException</code>, no de <code>Exception</code>. Lo comprobamos:</p>
+
+<pre data-lang="text"><code>¿CancelledError es subclase de Exception? False
+¿CancelledError es subclase de BaseException? True</code></pre>
+
+<p>La consecuencia es que un <code>except Exception:</code> no captura la cancelación (algo deliberado, para que un bloque «captura todo» no se la trague sin querer). Pero un <code>except BaseException:</code> o un <code>except:</code> sin tipo sí la captura, y si no se vuelve a lanzar, la tarea ignorará la orden de cancelarse. Esa es la razón de ser de la advertencia de la documentación.</p>
+
+<h3>Tiempos límite con asyncio.timeout()</h3>
+
+<p>Para limitar el tiempo de espera, la forma moderna (desde Python 3.11) es el gestor de contexto <code>asyncio.timeout()</code>. La documentación explica su mecanismo: cancela la tarea actual y maneja internamente el <code>CancelledError</code> resultante, transformándolo en un <code>TimeoutError</code>. De ahí una consecuencia que la propia página señala: el <code>TimeoutError</code> solo se puede capturar <em>fuera</em> del bloque del gestor de contexto. La función <code>wait_for()</code> hace algo parecido para una sola espera: si vence el plazo, cancela lo que espera y lanza <code>TimeoutError</code>; la documentación advierte de que espera a que la cancelación se complete realmente, de modo que el tiempo total puede superar el plazo, y añade que desde Python 3.12 se implementa con <code>asyncio.timeout()</code>.</p>
+
+<pre data-lang="python"><code>try:
+    async with asyncio.timeout(0.1):
+        await asyncio.sleep(1)
+except TimeoutError:
+    print("asyncio.timeout(0.1): TimeoutError capturada fuera del bloque")
+
+try:
+    await asyncio.wait_for(asyncio.sleep(1), timeout=0.1)
+except TimeoutError:
+    print("wait_for(timeout=0.1): TimeoutError")</code></pre>
+
+<pre data-lang="text"><code>asyncio.timeout(0.1): TimeoutError capturada fuera del bloque
+wait_for(timeout=0.1): TimeoutError</code></pre>
+
+<p>También medimos la cancelación manual: se crea una tarea con una espera de 1 s, se cede una vez el control con <code>sleep(0)</code> para que arranque, y se llama a <code>cancel()</code>. El método devolvió <code>True</code> (la petición se aceptó), y al esperar la tarea se obtuvo <code>CancelledError</code> y <code>cancelled()</code> fue <code>True</code>. Recuerda además lo que dice la documentación: <code>cancel()</code> es una <em>petición</em>, no una garantía; la tarea la recibe en su siguiente <code>await</code> y puede, si el código es incorrecto, ignorarla.</p>
+
+<p>Otras dos funciones de la misma página merecen una línea: <code>asyncio.as_completed()</code>, que ejecuta awaitables concurrentemente y permite obtener los resultados a medida que terminan (en el orden de finalización, no en el de envío), y <code>asyncio.shield()</code>, que protege un awaitable de la cancelación de quien lo espera (la tarea interna sigue ejecutándose aunque se cancele la corrutina que la esperaba). Esta última se usa poco y con cuidado: dejar una tarea viva y sin dueño es exactamente el tipo de situación que <code>TaskGroup</code> pretende evitar.</p>
+
+<h2>El error más caro: bloquear el bucle</h2>
+
+<p>Si solo recuerdas una cosa de este artículo, que sea esta. Como el bucle es un único trabajador y la cooperación depende de los <code>await</code>, <strong>cualquier código que tarde mucho sin ceder el control congela a todas las demás tareas</strong>: las conexiones no se atienden, los temporizadores no vencen, los latidos no laten. La documentación lo resume en una línea: el código bloqueante (en especial, el limitado por CPU) no debe llamarse directamente.</p>
+
+<p>Lo hemos medido. Un «latido» es una tarea que anota la hora cada 50 ms. Mientras late, otra parte del programa hace una pausa de 0,5 s. En el primer caso la pausa es <code>time.sleep(0.5)</code> dentro de la propia corrutina (bloqueante: duerme al hilo entero). En el segundo, la misma pausa se delega con <code>await asyncio.to_thread(time.sleep, 0.5)</code>, que la ejecuta en otro hilo:</p>
+
+<pre data-lang="text"><code>time.sleep(0.5) dentro de la corrutina: latidos=8, hueco máximo=516 ms
+await asyncio.to_thread(time.sleep, 0.5): latidos=15, hueco máximo=64 ms</code></pre>
+
+<p>Los números cuentan la historia. Con la llamada bloqueante, el latido no pudo ejecutarse durante todo el medio segundo: el mayor intervalo entre dos latidos fue de 516 ms (en vez de los 50 ms previstos), y en total hubo 8 latidos. Con <code>to_thread()</code>, el bucle quedó libre mientras el otro hilo dormía: el intervalo máximo fue de 64 ms (los 50 previstos más la sobrecarga de planificación) y hubo 15 latidos. En una aplicación real, ese latido sería cualquier otra petición: durante esos 516 ms, ningún cliente habría recibido respuesta.</p>
+
+<h3>Cómo detectarlo: el modo de depuración</h3>
+
+<p>Detectar bloqueos accidentales sin medir a mano es posible gracias al modo de depuración. Según la página «Developing with asyncio», se activa de cuatro formas: la variable de entorno <code>PYTHONASYNCIODEBUG=1</code>, el modo de desarrollo de Python, el parámetro <code>debug=True</code> de <code>asyncio.run()</code> o la llamada a <code>loop.set_debug()</code>. En ese modo, la documentación indica que se registran los callbacks que tardan más de 100 milisegundos (el atributo <code>loop.slow_callback_duration</code>, cuyo valor por defecto de 0,1 s confirmamos en la página del bucle de eventos y en nuestra medida), y también el tiempo del selector de E/S cuando es demasiado largo.</p>
+
+<p>Lo probamos con un script que, en modo de depuración, bloquea el bucle durante 0,25 s. El registro contiene una línea como esta (acortada; la salida completa está en el archivo del laboratorio):</p>
+
+<pre data-lang="text"><code>Executing &lt;Task pending name='Task-1' coro=&lt;main() running at ...lab_asyncio_debug.py:26&gt; wait_for=&lt;Future pending ...&gt; ...&gt; took 0.277 seconds</code></pre>
+
+<p>El mensaje identifica la tarea (<code>Task-1</code>), la corrutina que se estaba ejecutando y la línea concreta, y dice cuánto tardó: 0,277 s. Esa cifra es algo superior a los 0,25 s del bloqueo porque el paso de la tarea que se midió también incluía la recolección de basura forzada y la escritura del primer aviso, antes de llegar al primer <code>await</code> que cede el control; lo relevante es que la herramienta señala quién bloqueó el bucle y por cuánto tiempo, sin que hayamos medido nada a mano.</p>
+
+<h3>Cómo arreglarlo: ejecutores e hilos</h3>
+
+<p>Las soluciones que ofrece la documentación para el código bloqueante son los <em>ejecutores</em>. La más general es <code>loop.run_in_executor(executor, func, *args)</code>, que ejecuta una función en un ejecutor y devuelve un futuro esperable. Si se pasa <code>None</code> como ejecutor, se usa el ejecutor por defecto, que salvo que se cambie con <code>loop.set_default_executor()</code> será un <code>ThreadPoolExecutor</code> creado la primera vez que se necesita. La página del bucle de eventos no indica cuántos hilos tiene por defecto; lo decide <code>ThreadPoolExecutor</code>, y no lo damos como cifra. La página «Developing with asyncio» añade que el ejecutor puede ser de hilos, de otro intérprete o incluso de procesos.</p>
+
+<p>Para el caso común existe <code>asyncio.to_thread(func, *args)</code> (desde Python 3.9), que ejecuta la función en un hilo aparte y propaga el contexto actual de <code>contextvars</code>. Según la documentación, se pensó sobre todo para funciones limitadas por E/S que bloquearían el bucle. Y la misma página incluye la salvedad que da el siguiente apartado.</p>
+
+<h2>Hilos, GIL y trabajo de CPU</h2>
+
+<p>La nota de la documentación sobre <code>to_thread()</code> es clara: debido al GIL (el cerrojo global del intérprete), <code>asyncio.to_thread()</code> solo suele servir para hacer no bloqueantes las funciones limitadas por E/S; para módulos de extensión que liberan el GIL, o implementaciones de Python sin él, también podría servir para funciones de CPU. La página de <code>threading</code> lo refuerza: en CPython, por el GIL, solo un hilo puede ejecutar código Python a la vez (aunque algunas bibliotecas orientadas al rendimiento pueden superar esa limitación); si se quiere aprovechar los varios núcleos, se aconseja <code>multiprocessing</code> o <code>concurrent.futures.ProcessPoolExecutor</code>; y los hilos siguen siendo un modelo adecuado para ejecutar varias tareas de E/S a la vez. Añade que, desde Python 3.13, las compilaciones «sin GIL» (<em>free-threaded</em>) pueden desactivarlo, pero no es el comportamiento por defecto.</p>
+
+<p>Lo comprobamos con una función de CPU (una suma de cuadrados de seis millones de términos) ejecutada dos veces en serie y después en dos hilos con <code>to_thread()</code>. Antes de medir, el script consulta si el GIL está activado (con <code>sys._is_gil_enabled()</code>, una función que existe en esta versión aunque la página de <code>threading</code> no la documenta):</p>
+
+<pre data-lang="text"><code>GIL activado: True
+2 llamadas secuenciales : 0.64 s
+2 llamadas con to_thread: 0.67 s</code></pre>
+
+<p>Dos hilos, sin ganancia: 0,67 s frente a 0,64 s (incluso algo peor por la sobrecarga). Es la demostración empírica de la advertencia: con GIL, el cálculo puro no se acelera con hilos. Para eso hace falta paralelismo real, con procesos. Lo que sí hizo <code>to_thread()</code> en el experimento anterior fue <em>liberar el bucle</em> mientras el hilo trabajaba, que es lo que se necesita cuando una llamada bloqueante (o un cálculo breve) no debe congelar el servicio; pero no hace el cálculo más rápido.</p>
+
+<table>
+  <thead>
+    <tr><th>Tipo de trabajo</th><th>Herramienta recomendada por la documentación</th><th>Por qué</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Muchas esperas de E/S en un solo hilo</td><td><code>asyncio</code> (corrutinas y tareas)</td><td>Un solo hilo solapa las esperas sin cambios de contexto del sistema</td></tr>
+    <tr><td>Una función de E/S bloqueante que no se puede reescribir como asíncrona</td><td><code>asyncio.to_thread()</code> o <code>run_in_executor()</code></td><td>Saca la llamada del hilo del bucle y lo deja libre</td></tr>
+    <tr><td>Varias tareas de E/S sin usar asyncio</td><td>Hilos (<code>threading</code>)</td><td>«Un modelo apropiado» según la página de <code>threading</code></td></tr>
+    <tr><td>Cálculo intensivo que debe usar varios núcleos</td><td><code>multiprocessing</code> o <code>ProcessPoolExecutor</code></td><td>El GIL impide el paralelismo de CPU entre hilos de Python</td></tr>
+  </tbody>
+</table>
+
+<h2>Limitar la concurrencia: semáforos, cerrojos y colas</h2>
+
+<p>Lanzar cien mil tareas a la vez es técnicamente posible y casi siempre una mala idea: se agotan descriptores de archivo, se satura el servicio de destino o se dispara el consumo de memoria. Necesitamos poner límites, y asyncio proporciona primitivas de sincronización análogas a las de <code>threading</code>, con una diferencia crucial que la documentación subraya al abrir la página: <strong>no son seguras entre hilos</strong> y no deben usarse para sincronizar hilos del sistema (para eso está <code>threading</code>). Sirven para coordinar tareas dentro del mismo bucle.</p>
+
+<h3>Semaphore: un máximo de tareas a la vez</h3>
+
+<p>Un <code>Semaphore</code> tiene un contador interno (por defecto, 1). Cada <code>acquire()</code> lo decrementa y, si el contador está a cero, la tarea se bloquea hasta que otra llame a <code>release()</code>. La forma recomendada de usarlo es <code>async with</code>, que adquiere y libera automáticamente. Para ver el efecto, lanzamos diez tareas de 0,1 s con un semáforo de 3 y anotamos cuántas estaban activas a la vez:</p>
+
+<pre data-lang="text"><code>máximo simultáneo observado=3, tiempo total=0.44 s</code></pre>
+
+<p>Nunca hubo más de tres tareas simultáneas, y el tiempo total confirma la cuenta: diez tareas en tandas de tres son cuatro tandas (3 + 3 + 3 + 1), y 4 × 0,1 s = 0,4 s más sobrecarga. Sin límite, las diez habrían tardado unos 0,1 s; con límite de 1 (el valor por defecto del semáforo), 1,0 s. El semáforo es, por tanto, el regulador que permite elegir un punto intermedio entre «todo a la vez» y «uno a uno».</p>
+
+<p>La documentación describe los demás: <code>Lock</code> (un cerrojo de exclusión mutua para tareas, también recomendado con <code>async with</code>), <code>Event</code> (para avisar a varias tareas de que ha ocurrido algo; el latido de nuestro experimento lo usa como señal de parada), <code>Condition</code> (combina las funciones de un <code>Event</code> y de un <code>Lock</code>), <code>BoundedSemaphore</code> (un semáforo que lanza <code>ValueError</code> si se libera por encima de su valor inicial) y <code>Barrier</code> (bloquea hasta que un número dado de tareas lo esperan). Una limitación que conviene recordar: los métodos de estas primitivas no aceptan un argumento de plazo, de modo que los plazos se imponen desde fuera con <code>wait_for()</code> (así lo dice la página; en la práctica también se puede envolver la espera en un <code>asyncio.timeout()</code>, como hicimos en el caso completo).</p>
+
+<h3>Queue: productores, consumidores y contrapresión</h3>
+
+<p>La cola <code>asyncio.Queue</code> es la herramienta natural para el patrón productor-consumidor, y su rasgo más útil es el tamaño máximo. Según la documentación, si <code>maxsize</code> es menor o igual que cero la cola es infinita; si es mayor que cero, <code>await put()</code> se bloquea cuando la cola alcanza ese tamaño, hasta que un <code>get()</code> retira un elemento. Esa espera es la <strong>contrapresión</strong> (<em>backpressure</em>): un productor rápido se frena solo cuando el consumidor no da abasto, en vez de acumular elementos sin límite en memoria.</p>
+
+<p>Lo medimos con una cola de <code>maxsize=2</code>, un productor que inserta seis elementos y un consumidor que tarda 0,1 s en procesar cada uno. Anotamos cuánto esperó cada <code>put()</code>:</p>
+
+<pre data-lang="text"><code>put(0) esperó 0 ms
+put(1) esperó 0 ms
+put(2) esperó 0 ms
+put(3) esperó 110 ms
+put(4) esperó 110 ms
+put(5) esperó 111 ms</code></pre>
+
+<p>Los primeros tres <code>put()</code> no esperaron: los dos primeros llenaron la cola y, cuando el productor intentó el tercero, el consumidor arrancó y retiró de inmediato el primer elemento, liberando un hueco. A partir del cuarto, el productor tiene que esperar unos 110 ms por elemento: justo lo que tarda el consumidor en procesar uno. El productor ha quedado acompasado con el consumidor, que es exactamente lo que se quiere. Las demás piezas de la API son sencillas: <code>task_done()</code> indica que un elemento se ha procesado (lanza <code>ValueError</code> si se llama más veces que elementos hubo) y <code>join()</code> bloquea hasta que todos los elementos se han procesado; <code>put_nowait()</code> y <code>get_nowait()</code> no esperan y lanzan <code>QueueFull</code> o <code>QueueEmpty</code>. Desde Python 3.13 existe además <code>Queue.shutdown()</code>, que pone la cola en modo de cierre y hace que las operaciones posteriores lancen <code>QueueShutDown</code>, una forma limpia de avisar a los consumidores de que ya no habrá más trabajo (nuestro experimento usa en su lugar un valor centinela, <code>None</code>, que funciona en cualquier versión). Como las primitivas anteriores, la cola no es segura entre hilos y no tiene parámetro de plazo.</p>
+
+<h2>Un caso completo: veinte descargas con límite y plazo</h2>
+
+<p>Juntemos las piezas en un ejemplo realista (sin red, para que sea reproducible). Veinte «descargas» simuladas, con estas reglas: como máximo cinco a la vez (semáforo), un plazo de 0,5 s por descarga (<code>timeout</code>), la descarga número 7 tarda 2 s (superará el plazo) y la número 11 falla con un <code>ConnectionError</code>. Queremos que el fallo de una no cancele las demás, así que cada tarea captura sus propias excepciones y anota su resultado:</p>
+
+<pre data-lang="python"><code>async def tarea(i, sem, resultados):
+    async with sem:
+        try:
+            async with asyncio.timeout(PLAZO):
+                resultados[i] = ("ok", await descargar(i))
+        except TimeoutError:
+            resultados[i] = ("plazo", None)
+        except ConnectionError as e:
+            resultados[i] = ("error", str(e))
+
+async def main():
+    sem = asyncio.Semaphore(CONCURRENCIA)
+    resultados = {}
+    async with asyncio.TaskGroup() as tg:
+        for i in range(20):
+            tg.create_task(tarea(i, sem, resultados))
+    ...</code></pre>
+
+<pre data-lang="text"><code>resultados por estado: {'error': 1, 'ok': 18, 'plazo': 1}
+fallidas: {7: ('plazo', None), 11: ('error', 'conexión rechazada')}
+máximo de descargas simultáneas: 5 (límite 5)
+tiempo total: 0.83 s
+tiempo secuencial estimado (suma de esperas, con plazo de 0.5 s para la nº 7): 3.30 s</code></pre>
+
+<p>El resultado es el esperado: 18 descargas correctas, la 7 cortada por el plazo, la 11 con su error, y nunca más de cinco a la vez. El tiempo total fue de 0,83 s frente a los 3,30 s que habría tardado en serie. Ese último número no se midió: es la suma de las esperas programadas (2,75 s de las 18 correctas, 0,5 s del plazo de la 7 y 0,05 s de la 11), una estimación para comparar. Fíjate en el orden de los bloques: el plazo se aplica <em>dentro</em> del semáforo, de modo que cuenta el tiempo de la descarga y no el tiempo de espera para obtener un hueco. Si lo pusieras fuera, una tarea en cola podría agotar su plazo sin haber empezado.</p>
+
+<h2>Depuración: los avisos que deberías leer</h2>
+
+<p>Asyncio emite avisos útiles que es fácil ignorar. Los dos más importantes aparecen en la documentación de depuración y los provocamos a propósito en el laboratorio.</p>
+
+<h3>«Coroutine was never awaited»</h3>
+
+<p>Si llamas a una función corrutina y no esperas el resultado ni la conviertes en tarea, el objeto corrutina se descarta sin haberse ejecutado, y Python emite un <code>RuntimeWarning</code> con el texto «coroutine ... was never awaited». La documentación da la solución: esperarla con <code>await</code> o convertirla en tarea con <code>asyncio.create_task()</code>. En modo de depuración, el aviso incluye además la traza de dónde se creó la corrutina, como vimos en nuestra salida: «Coroutine created at (most recent call last)», con las líneas implicadas. Es el error típico de olvidar un <code>await</code> delante de una llamada.</p>
+
+<h3>«Task exception was never retrieved»</h3>
+
+<p>Si una tarea termina con una excepción y nadie la espera ni consulta su resultado, la excepción no llega a ningún sitio. La documentación explica que, cuando el objeto futuro se recoge por el recolector de basura, asyncio registra el mensaje «Task exception was never retrieved». Lo provocamos creando una tarea que lanza un <code>RuntimeError</code> y descartándola sin esperarla; el registro mostró el mensaje, la tarea afectada y la excepción, y en modo de depuración añadió el <code>source_traceback</code> con el punto del código donde se creó la tarea. Sin el modo de depuración, solo te dirían <em>que</em> una excepción se perdió, no <em>dónde</em> se originó la tarea.</p>
+
+<p>La lección práctica es doble: ejecutar los tests y los entornos de desarrollo con el modo de depuración activado, y tratar cualquiera de estos dos avisos como un error real, no como ruido.</p>
+
+<h2>Hilos y asyncio: cómo conversan</h2>
+
+<p>Mezclar asyncio con hilos exige cuidado, y la documentación es tajante: casi todos los objetos de asyncio no son seguros entre hilos, lo que normalmente no es un problema salvo que se trabaje con ellos desde fuera de una tarea o de un callback. Para interactuar con el bucle desde otro hilo del sistema hay dos funciones previstas:</p>
+
+<ul>
+  <li><code>loop.call_soon_threadsafe(callback, *args)</code>: programa un callback desde otro hilo.</li>
+  <li><code>asyncio.run_coroutine_threadsafe(corrutina, loop)</code>: programa una corrutina desde otro hilo y devuelve un <code>concurrent.futures.Future</code> para obtener el resultado.</li>
+</ul>
+
+<p>En modo de depuración, además, muchas API no seguras entre hilos (como <code>call_soon()</code> o <code>call_at()</code>) lanzan una excepción si se llaman desde el hilo equivocado, lo que convierte un fallo intermitente en un error inmediato. Y una nota sobre señales: la documentación indica que, para manejarlas, el bucle debe ejecutarse en el hilo principal.</p>
+
+<h2>Particularidades de la plataforma: Windows y Unix</h2>
+
+<p>En el laboratorio, el bucle que se creó fue un <code>ProactorEventLoop</code>. No es casualidad: la página del bucle de eventos explica que <code>asyncio.EventLoop</code> es un alias de <code>SelectorEventLoop</code> en Unix y de <code>ProactorEventLoop</code> en Windows (alias disponible desde Python 3.13) y que, por defecto, asyncio se configura para usarlo. En la práctica el programa no cambia, pero la implementación subyacente (cómo se espera a que la E/S esté lista) sí; si dependes de una característica concreta de un bucle o de una plataforma, consulta la tabla de disponibilidad de la documentación. La misma página avisa de una novedad que afecta al código antiguo: el sistema de políticas del bucle está obsoleto y se eliminará en Python 3.16, y en 3.14 <code>get_event_loop()</code> lanza <code>RuntimeError</code> si no hay un bucle actual. Nuestra recomendación para código nuevo es no tocar las políticas y arrancar siempre con <code>asyncio.run()</code>.</p>
+
+<h2>Cuándo elegir asyncio (y cuándo no)</h2>
+
+<p>La decisión depende de tres preguntas. La primera: ¿el tiempo se va esperando? Si sí, asyncio o hilos son candidatos. Si el tiempo se va calculando, no lo son (procesos, o un lenguaje y bibliotecas con paralelismo real). La segunda: ¿cuántas esperas simultáneas? Con unas pocas decenas, los hilos bastan y el código es más sencillo; con miles de conexiones abiertas a la vez, el modelo de corrutinas escala mejor porque una tarea es mucho más ligera que un hilo del sistema (una afirmación general, que no hemos medido aquí). La tercera: ¿las bibliotecas que usas son asíncronas? Esta es la que más pesa en la práctica. Una biblioteca síncrona de acceso a bases de datos, llamada directamente desde una corrutina, bloquea el bucle; hay que sustituirla por una variante asíncrona o envolverla con <code>to_thread()</code>.</p>
+
+<p>El coste del modelo conviene tenerlo presente: <code>async</code> «contagia». Una función que espera una corrutina tiene que ser ella misma una corrutina, de modo que adoptar asyncio en una parte del código tiende a extenderse hacia arriba hasta el punto de entrada. Y la depuración, aunque ha mejorado mucho, sigue siendo más difícil que en código secuencial. Si tu programa hace tres peticiones y termina, probablemente no compense.</p>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>«Poner async delante de la función la hace asíncrona»</h3>
+
+<p>Una función <code>async def</code> sin ningún <code>await</code> verdadero sobre algo que ceda el control se ejecuta de una pieza, igual que una normal. Y si dentro llama a código bloqueante (<code>time.sleep()</code>, <code>requests.get()</code>, una consulta síncrona a una base de datos), bloquea el bucle entero, como midió el experimento de los 516 ms.</p>
+
+<h3>«asyncio ejecuta las tareas en paralelo»</h3>
+
+<p>Las ejecuta de forma concurrente: están todas «en curso» a la vez, pero solo una avanza en cada instante. Lo que se solapa son las <em>esperas</em>. Ninguna tarea corre en paralelo con otra dentro del mismo bucle.</p>
+
+<h3>«<code>create_task()</code> sin guardar la referencia es suficiente»</h3>
+
+<p>La documentación advierte de que una tarea sin otra referencia puede ser recogida por el recolector de basura incluso antes de terminar. Guarda las tareas o usa <code>TaskGroup</code>.</p>
+
+<h3>«<code>gather()</code> cancela todo si algo falla»</h3>
+
+<p>Por defecto no: propaga el primer error, pero las demás tareas siguen ejecutándose, como mostró el experimento (A y C terminaron un segundo después). Si quieres cancelación, usa <code>TaskGroup</code>; si quieres recoger los errores como resultados, <code>return_exceptions=True</code>.</p>
+
+<h3>«Capturar <code>Exception</code> atrapa la cancelación»</h3>
+
+<p>No: <code>CancelledError</code> hereda de <code>BaseException</code>. Y si capturas <code>BaseException</code> (o usas un <code>except:</code> sin tipo), vuelve a lanzar la cancelación cuando termines la limpieza.</p>
+
+<h3>«Los hilos de <code>to_thread()</code> aceleran los cálculos»</h3>
+
+<p>Con GIL, no: dos cálculos tardaron 0,67 s en dos hilos frente a 0,64 s en serie. <code>to_thread()</code> sirve para no bloquear el bucle, no para acelerar la CPU.</p>
+
+<h3>«Las primitivas de asyncio sirven para sincronizar hilos»</h3>
+
+<p>No son seguras entre hilos. La documentación lo dice en la primera frase de la página: para hilos, usa <code>threading</code>.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿asyncio hace mi código más rápido?</h3>
+
+<p>Hace que un programa que espera mucho tarde menos tiempo total, porque solapa esperas. No acelera el cálculo ni cada operación individual: en nuestra medida, cada espera de 0,2 s siguió durando 0,2 s; lo que cambió es que se hicieron a la vez.</p>
+
+<h3>¿Cuál es la diferencia entre una corrutina y una tarea?</h3>
+
+<p>Una corrutina es el objeto que resulta de llamar a una función <code>async def</code>; no hace nada hasta que se espera o se planifica. Una tarea envuelve una corrutina y la planifica en el bucle para ejecutarse de forma concurrente. Al esperar una corrutina directamente, se ejecuta dentro de la tarea actual; con <code>create_task()</code>, se ejecuta como una tarea más.</p>
+
+<h3>¿Debo usar TaskGroup o gather()?</h3>
+
+<p>Para código nuevo, la documentación presenta <code>TaskGroup</code> como la opción con garantías más fuertes de cancelación y de gestión de errores. <code>gather()</code> sigue disponible y es cómodo cuando quieres una lista de resultados en orden y quizá <code>return_exceptions=True</code>. Elige según el comportamiento ante fallos que necesites, no por moda.</p>
+
+<h3>¿Puedo llamar a una función asíncrona desde código síncrono?</h3>
+
+<p>Sí, con <code>asyncio.run(corrutina)</code> desde el punto de entrada. No se debe llamar a <code>asyncio.run()</code> dentro de un bucle que ya está en marcha (dato general, no extraído de las páginas consultadas); dentro de una corrutina, lo correcto es <code>await</code>. Desde otro hilo, <code>run_coroutine_threadsafe()</code>.</p>
+
+<h3>¿Qué es el REPL de asyncio?</h3>
+
+<p>La página principal indica que se puede experimentar en un contexto concurrente de asyncio ejecutando <code>python -m asyncio</code>, una forma cómoda de probar <code>await</code> directamente en la consola interactiva (en 3.13 usa el nuevo REPL cuando es posible).</p>
+
+<h3>¿Cómo pruebo código asíncrono?</h3>
+
+<p>La documentación consultada para este artículo no cubre las herramientas de pruebas, así que no damos una receta. Lo que sí se desprende de lo anterior es que conviene ejecutar las pruebas con el modo de depuración activado, para que los avisos de corrutinas no esperadas y excepciones no recuperadas aparezcan.</p>
+
+<h3>¿Y el GIL desactivado en Python 3.13 y 3.14?</h3>
+
+<p>La página de <code>threading</code> indica que desde la versión 3.13 existen compilaciones «sin GIL» que permiten un paralelismo real de hilos, pero que no es el comportamiento por defecto. Nuestra compilación tenía el GIL activado (la consulta devolvió <code>True</code>), así que no hemos medido qué ocurre sin él; por eso no extendemos al caso sin GIL las conclusiones sobre CPU.</p>
+
+<h2>Conclusión</h2>
+
+<p>asyncio descansa en una idea sencilla: un solo trabajador que cambia de tarea cuando la tarea en curso tiene que esperar. De esa idea se deducen casi todas las reglas prácticas. Las esperas se solapan, así que el tiempo total se acerca al de la más lenta (1,03 s se convirtieron en 0,21 s). El cambio de tarea solo ocurre en los <code>await</code>, así que cualquier código bloqueante congela todo (516 ms de hueco frente a 64 ms con <code>to_thread()</code>). Las tareas deben tener dueño, y por eso conviene <code>TaskGroup</code>, que además cancela a las demás si una falla, algo que <code>gather()</code> no hace por defecto. Los límites (semáforos y colas con tamaño) evitan que la concurrencia se desboque, y los plazos con <code>asyncio.timeout()</code> evitan que una espera no acabe nunca.</p>
+
+<p>Lo más valioso del experimento no es ningún número concreto, sino la costumbre de medir: el modo de depuración señala qué bloquea el bucle y por cuánto tiempo; los avisos de corrutinas no esperadas y de excepciones no recuperadas señalan los olvidos. Si adoptas asyncio, activa ese modo en desarrollo, mide tus latencias con las herramientas de observabilidad y recuerda lo que asyncio no es: ni paralelismo de CPU, ni una forma de acelerar cada operación, ni una solución para bibliotecas bloqueantes. Es una forma ordenada de esperar muchas cosas a la vez, y para eso, bien usada, es excelente.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>Python Software Foundation. «Coroutines and Tasks». Documentación de Python 3. <a href="https://docs.python.org/3/library/asyncio-task.html" rel="noopener">https://docs.python.org/3/library/asyncio-task.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «Developing with asyncio». <a href="https://docs.python.org/3/library/asyncio-dev.html" rel="noopener">https://docs.python.org/3/library/asyncio-dev.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «Event Loop». <a href="https://docs.python.org/3/library/asyncio-eventloop.html" rel="noopener">https://docs.python.org/3/library/asyncio-eventloop.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «Synchronization Primitives». <a href="https://docs.python.org/3/library/asyncio-sync.html" rel="noopener">https://docs.python.org/3/library/asyncio-sync.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «Queues». <a href="https://docs.python.org/3/library/asyncio-queue.html" rel="noopener">https://docs.python.org/3/library/asyncio-queue.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «asyncio — Asynchronous I/O». <a href="https://docs.python.org/3/library/asyncio.html" rel="noopener">https://docs.python.org/3/library/asyncio.html</a> (consultado el 27-10-2026).</li>
+  <li>Python Software Foundation. «threading — Thread-based parallelism». <a href="https://docs.python.org/3/library/threading.html" rel="noopener">https://docs.python.org/3/library/threading.html</a> (consultado el 27-10-2026).</li>
+  <li>Equipo editorial. «Laboratorio de asyncio» (scripts y salidas completas, Python 3.14.2, Windows 11). Archivo <code>editorial/fuentes/lab_asyncio.md</code> del repositorio del sitio; ejecutado el 27-10-2026.</li>
+</ol>
+</section>

@@ -1,0 +1,12 @@
+{
+  "id": "ART-012",
+  "slug": "python-memoria-referencias-recolector-basura",
+  "titulo": "Memoria en Python: referencias, recolector de basura y cómo medirla",
+  "etiqueta": "python",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo gestiona CPython la memoria: conteo de referencias, ciclos y recolector, tamaños reales con getsizeof, __slots__, generadores y tracemalloc, todo medido en Python 3.14.",
+  "palabra_clave": "gestión de memoria python",
+  "secundarias": ["refcount", "ciclos", "gc", "__slots__", "tracemalloc"],
+  "relacionados": ["python-asyncio-bucle-eventos-corrutinas", "python-metodos-numericos", "observabilidad-metricas-logs-trazas-opentelemetry"],
+  "barra": "verde"
+}

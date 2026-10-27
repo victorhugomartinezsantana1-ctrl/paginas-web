@@ -1,0 +1,342 @@
+<p>Si el coste crece en proporción al número de filas, una consulta que tarda 5 milisegundos con mil filas tardaría 5 segundos con un millón y unos 83 minutos con mil millones, cuando la base de datos tiene que mirar todas las filas para encontrar las que le piden. Los índices son la herramienta que evita ese crecimiento: permiten encontrar las filas que cumplen una condición sin recorrer la tabla entera. Son también la herramienta más mal usada de las bases de datos. Se crean «por si acaso» y no sirven para nada, se crean con las columnas en el orden equivocado y la consulta los ignora, se crean sobre columnas con pocos valores distintos y empeoran la consulta, o se acumulan hasta que las escrituras se vuelven lentas.</p>
+
+<p>En este artículo explicamos cómo funcionan los índices B-tree (el tipo que usan por defecto las bases de datos relacionales), cómo leer un plan de ejecución, y qué reglas gobiernan el orden de las columnas, la cobertura, los índices parciales y las situaciones en que un índice no se usa. Una advertencia de método que condiciona todo el texto: <strong>los experimentos se ejecutaron en SQLite 3.50.4, no en PostgreSQL</strong>. Nuestro plan de redacción preveía medir con PostgreSQL, pero en el equipo de redacción no hay un servidor de PostgreSQL, y en cambio SQLite sí estaba disponible; preferimos medir de verdad en SQLite a describir sin medir en PostgreSQL. Lo que decimos de PostgreSQL procede de su documentación oficial, y no hemos ejecutado ninguna consulta ni ningún plan en él. Los resultados de SQLite no se trasladan automáticamente a PostgreSQL: son sistemas con planificadores distintos. Los datos son sintéticos: 300.000 pedidos generados con una semilla fija, con una distribución que elegimos nosotros (el 95 % de los pedidos «pagados», el 4 % «pendientes» y el 1 % «cancelados»), de modo que los números no son una predicción para tus datos. El script, los planes y las salidas completas están guardados en el repositorio del sitio (<code>editorial/fuentes/lab_indices.md</code>). Si te interesa cómo PostgreSQL gestiona versiones de filas y limpieza, que influye en los índices, lo tratamos en el artículo sobre <a href="/articulos/postgresql-mvcc-vacuum-planificador.html">PostgreSQL: MVCC, VACUUM y el planificador</a>.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Buscar los pedidos de un cliente tardó una media de 29,28 ms sin índice (plan <code>SCAN</code>) y 0,111 ms con él (plan <code>SEARCH</code>): 264 veces menos, con 300.000 filas.</li>
+    <li>El orden de las columnas de un índice compuesto importa: el índice <code>(estado, cliente_id)</code> sirve para buscar solo por estado, pero no para buscar solo por cliente; con <code>(cliente_id, estado)</code> ocurre lo contrario.</li>
+    <li>Una función sobre la columna indexada anula el índice: <code>substr(creado, 1, 7) = '2024-03'</code> tardó 35,79 ms frente a 1,43 ms del rango directo; un índice sobre esa expresión lo dejó en 1,65 ms.</li>
+    <li>Un índice sobre una columna poco selectiva puede ser desastroso: consultar el 95 % de las filas por un índice tardó 1.895,7 ms frente a 43,8 ms sin índice, y el planificador de SQLite lo eligió solo, incluso después de <code>ANALYZE</code>.</li>
+    <li>Un índice parcial que solo cubre los pedidos pendientes ocupó el 1 % de la tabla, frente al 21 % de un índice completo por cliente.</li>
+    <li>Los índices cuestan escrituras: insertar 50.000 filas tardó 0,07 s sin índices, 0,49 s con uno y 3,41 s con cuatro.</li>
+    <li>El plan de ejecución se lee, no se adivina: <code>SCAN</code> recorre todo; <code>SEARCH</code> visita un subconjunto; <code>USE TEMP B-TREE FOR ORDER BY</code> señala una ordenación que un índice podría evitar.</li>
+  </ul>
+</div>
+
+<h2>El problema: buscar sin recorrerlo todo</h2>
+
+<p>Imagina una tabla de pedidos con 300.000 filas y la consulta «dame los pedidos del cliente 12345». Si la tabla no tiene ningún índice utilizable, la base de datos solo puede hacer una cosa: leer cada fila y comprobar si el cliente coincide. Es un <em>recorrido completo</em> de la tabla, y su coste crece linealmente con el número de filas. La documentación de SQLite lo describe con dos consultas sobre una tabla de frutas: una búsqueda por <code>rowid</code> (el identificador interno de fila) usa una búsqueda binaria, cuyo coste crece con el logaritmo del número de filas, mientras que una búsqueda por una columna sin índice requiere recorrer todas las filas y su coste crece con el número de filas. La documentación de PostgreSQL usa la analogía del índice alfabético de un libro: sin él, hay que leer el libro entero para encontrar un tema; con él, se va directamente a las páginas.</p>
+
+<p>Un índice es, en esencia, una copia ordenada de una o varias columnas, con la información necesaria para volver a la fila. SQLite lo explica como otra tabla que almacena las columnas indexadas seguidas del <code>rowid</code>, ordenada por esas columnas. Buscar <code>fruit='Peach'</code> con un índice sobre <code>fruit</code> requiere una búsqueda binaria en el índice para obtener el <code>rowid</code>, y después una segunda búsqueda binaria en la tabla para obtener la fila. Como las filas con el mismo valor quedan contiguas en el índice, para encontrar más coincidencias basta avanzar a la siguiente entrada. PostgreSQL lo describe con otro lenguaje: con un índice sobre <code>id</code>, el sistema «podría tener que recorrer solo unos pocos niveles de un árbol de búsqueda».</p>
+
+<h3>La medida: 264 veces menos tiempo</h3>
+
+<p>Lo medimos. Creamos la tabla con 300.000 pedidos de 20.000 clientes (unos 15 pedidos por cliente), y buscamos los pedidos de 30 clientes elegidos al azar, primero sin índice y después con un índice sobre <code>cliente_id</code>. El plan, que mostramos con <code>EXPLAIN QUERY PLAN</code>, cambia de forma y de coste:</p>
+
+<pre data-lang="sql"><code>SELECT * FROM pedidos WHERE cliente_id = ?;
+
+-- sin índice
+SCAN pedidos
+
+CREATE INDEX idx_cliente ON pedidos (cliente_id);
+
+-- con índice
+SEARCH pedidos USING INDEX idx_cliente (cliente_id=?)</code></pre>
+
+<pre data-lang="text"><code>tiempo medio por consulta: sin índice = 29.28 ms | con índice = 0.111 ms | factor = 264x
+filas devueltas por cliente (media): 15.0</code></pre>
+
+<p>El mismo resultado (15 filas) llegó 264 veces más rápido. La aritmética explica el orden de magnitud: una búsqueda binaria sobre 300.000 elementos necesita unos 18 pasos (log<sub>2</sub> 300.000 ≈ 18,2), mientras que el recorrido completo comprueba 300.000 filas; la proporción entre ambas cuentas es de unas 16.000 veces (300.000 / 18), y la medida real es mucho menor porque hay costes fijos (preparar la consulta, leer las 15 filas, pasar los datos a Python). Hay que insistir en una limitación: el factor de 264 es de <em>este</em> experimento, con estos datos y este motor, y crece con el tamaño de la tabla: con el doble de filas, el recorrido completo duraría el doble, y la búsqueda con índice casi lo mismo.</p>
+
+<h2>Cómo se organiza un índice B-tree</h2>
+
+<p>El tipo de índice que usan casi todas las bases de datos relacionales por defecto se llama <em>B-tree</em> (árbol B). PostgreSQL lo confirma: <code>CREATE INDEX</code> crea un índice B-tree salvo que se indique otro tipo con <code>USING</code>. La página de SQLite que consultamos no usa el término, y se limita a describir la tabla de índice ordenada y la búsqueda binaria, que es el comportamiento observable. La descripción general de la estructura (un árbol equilibrado de páginas cuyas hojas contienen las entradas ordenadas, de modo que la altura crece de forma logarítmica con el número de filas) es conocimiento general que las páginas consultadas no detallan; para entender el uso práctico basta con la propiedad que sí documentan: <strong>las entradas están ordenadas</strong>.</p>
+
+<p>Esa ordenación es lo que determina qué puede hacer un índice B-tree. Según PostgreSQL, el planificador considera un B-tree para las comparaciones <code>&lt;</code>, <code>&lt;=</code>, <code>=</code>, <code>&gt;=</code> y <code>&gt;</code>, y para las construcciones derivadas de ellas, como <code>BETWEEN</code> e <code>IN</code>; también para <code>IS NULL</code> e <code>IS NOT NULL</code>. Y puede devolver los datos <em>ya ordenados</em>, lo que a veces evita una ordenación (la página aclara que no siempre es más rápido que recorrer y ordenar, pero a menudo ayuda). SQLite enumera una lista parecida de formas utilizables (<code>=</code>, <code>IS</code>, <code>IN</code>, <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>IS NULL</code>, <code>LIKE</code> y <code>GLOB</code>). Fíjate en lo que no aparece: condiciones como «contiene este texto» o «termina en...» no tienen un orden que aprovechar, y por eso no pueden usar un B-tree, como veremos con <code>LIKE</code>.</p>
+
+<h2>Leer un plan de ejecución</h2>
+
+<p>Para saber si una consulta usa un índice no hay que adivinarlo: se le pregunta al motor. En SQLite, el comando es <code>EXPLAIN QUERY PLAN</code>, que según su documentación da una descripción de alto nivel de cómo se ejecutará la consulta, en particular cómo usa los índices. Las líneas que importan:</p>
+
+<ul>
+  <li><code>SCAN tabla</code>: un recorrido completo (incluyendo el caso de recorrer todas las filas en el orden que define un índice).</li>
+  <li><code>SEARCH tabla USING INDEX nombre (columna=?)</code>: solo se visita un subconjunto de filas, localizado mediante el índice. Entre paréntesis aparecen los términos del <code>WHERE</code> que se usan para buscar.</li>
+  <li><code>... USING COVERING INDEX ...</code>: la consulta se responde solo con el índice, sin consultar la tabla (lo veremos en la sección de cobertura).</li>
+  <li><code>USE TEMP B-TREE FOR ORDER BY</code>: el motor tiene que construir una estructura temporal para ordenar. Según la documentación, un índice sobre la columna de ordenación puede eliminar esa línea, y usar un índice es casi siempre mucho más eficiente que ordenar.</li>
+  <li><code>MULTI-INDEX OR</code>: para condiciones con <code>OR</code> resueltas con la estrategia «O por unión», con una línea por cada índice utilizado.</li>
+</ul>
+
+<p>Una advertencia de la propia documentación, que conviene respetar: la salida de <code>EXPLAIN QUERY PLAN</code> está pensada solo para depuración interactiva, y las aplicaciones no deben depender de su formato, que cambió sustancialmente en la versión 3.24.0 y tuvo cambios menores en la 3.36.0. Las líneas que reproducimos en este artículo son las de la versión 3.50.4 y pueden diferir en otra. PostgreSQL tiene un mecanismo análogo, <code>EXPLAIN</code>, con un formato propio (un dato general: la documentación de índices consultada no lo describe, de modo que no hablamos de su salida).</p>
+
+<h2>Índices compuestos: el orden de las columnas</h2>
+
+<p>Cuando una consulta filtra por varias columnas, un índice sobre varias de ellas puede ser más eficaz que varios índices sueltos, pero el <em>orden</em> de las columnas decide para qué consultas sirve. La documentación de PostgreSQL lo enuncia así para los B-tree: un índice de varias columnas puede usarse con condiciones sobre cualquier subconjunto de sus columnas, pero es más eficaz cuando hay restricciones sobre las columnas de más a la izquierda. Con más precisión: las restricciones de igualdad sobre las columnas iniciales, más cualquier restricción de desigualdad sobre la primera columna sin igualdad, limitan siempre la parte del índice que se recorre; las restricciones sobre columnas más a la derecha se comprueban dentro del índice, lo que ahorra visitas a la tabla pero no reduce necesariamente la parte recorrida. SQLite lo expresa con una condición equivalente: los términos de igualdad deben aplicarse a las columnas más a la izquierda del índice, la última columna usada puede llevar desigualdades y no puede haber huecos. Su ejemplo: con un índice sobre <code>(a, b, c, d)</code> y la condición <code>a=5 AND b IN (1,2,3) AND d='hello'</code>, solo se usan las columnas a y b, porque la columna c no tiene restricción.</p>
+
+<p>Es la lógica de una guía telefónica ordenada por apellido y, dentro de cada apellido, por nombre: sirve para buscar un apellido, o un apellido y un nombre; no sirve para buscar un nombre sin conocer el apellido, porque los nombres iguales están dispersos por toda la guía. Lo comprobamos con dos índices sobre las mismas dos columnas en orden opuesto, y tres consultas. Para forzar a SQLite a usar cada índice usamos la cláusula <code>INDEXED BY</code>, y mostramos solo la primera línea del plan:</p>
+
+<pre data-lang="text"><code>a) WHERE cliente_id = ? AND estado = 'pendiente'
+   idx_estado_cliente : SEARCH ... USING INDEX idx_estado_cliente (estado=? AND cliente_id=?)
+   idx_cliente_estado : SEARCH ... USING INDEX idx_cliente_estado (cliente_id=? AND estado=?)
+b) WHERE estado = 'pendiente' (sin cliente)
+   idx_estado_cliente : SEARCH ... USING COVERING INDEX idx_estado_cliente (estado=?)
+   idx_cliente_estado : SCAN ... USING COVERING INDEX idx_cliente_estado
+c) WHERE cliente_id = ? (sin estado)
+   idx_estado_cliente : SCAN ... USING INDEX idx_estado_cliente
+   idx_cliente_estado : SEARCH ... USING INDEX idx_cliente_estado (cliente_id=?)</code></pre>
+
+<p>La tabla de resultados confirma la regla. Cuando la consulta usa las dos columnas (caso a), ambos índices sirven con <code>SEARCH</code>. Pero en el caso b (solo el estado), el índice con <code>estado</code> en primer lugar busca (<code>SEARCH</code>), y el que lo tiene en segundo lugar recorre todo el índice (<code>SCAN</code>). En el caso c (solo el cliente) ocurre al revés: el índice que empieza por <code>cliente_id</code> busca y el otro recorre. Un recorrido del índice completo sigue siendo un coste proporcional al número de filas, no a las 15 que se buscan.</p>
+
+<p>La regla práctica es dejar a la izquierda las columnas que usarás con <em>igualdad</em> en más consultas, y reservar la última para la que se use con un rango. Y una advertencia de la documentación de PostgreSQL contra el exceso: los índices de varias columnas deben usarse con moderación; un índice de una sola columna suele ser suficiente y ahorra espacio y tiempo, y es poco probable que un índice con más de tres columnas ayude, salvo que el uso de la tabla sea muy estilizado. SQLite añade un consejo de higiene: si las columnas de un índice son un prefijo de las de otro, el más corto sobra, porque SQLite puede usar el más largo para esas búsquedas.</p>
+
+<h3>Omitir la primera columna: el skip scan</h3>
+
+<p>Existe una optimización que relaja un poco la regla. Con ella, un índice puede usarse aunque falte su primera columna en la condición: el motor itera sobre los valores distintos de la primera columna y busca en cada uno. La página de PostgreSQL consultada la describe (con un índice sobre <code>(x, y)</code> y la condición <code>y = 7700</code>, el planificador puede hacer búsquedas repetidas para cada valor de <code>x</code>) y precisa que solo suele compensar cuando hay pocos valores distintos de <code>x</code>; no hemos comprobado desde qué versión de PostgreSQL existe, así que verifica tu versión. SQLite la tiene documentada con una condición: solo se considera si se ha ejecutado <code>ANALYZE</code>, y compensa a partir de unas 18 repeticiones por valor de la columna inicial. En nuestro experimento, que se hizo antes de ejecutar <code>ANALYZE</code>, no apareció: el caso c recorrió el índice entero.</p>
+
+<h2>Índices de cobertura: no volver a la tabla</h2>
+
+<p>Con un índice normal, el motor busca en el índice y después va a la tabla a por las demás columnas. Si el índice contiene <em>todas</em> las columnas que la consulta necesita, el segundo paso sobra. SQLite lo llama índice de cobertura (<em>covering index</em>), y su página de planificación dice que añadir las columnas de salida al final del índice permite responder sin consultar la tabla original, lo que reduce aproximadamente a la mitad el número de búsquedas binarias. PostgreSQL lo llama <em>index-only scan</em> (recorrido solo de índice): según su documentación, todo índice es una estructura secundaria separada del montón de la tabla, por lo que un recorrido de índice ordinario debe además leer filas del montón, a menudo en posiciones dispersas; un recorrido solo de índice devuelve valores directamente de las entradas del índice. Tiene dos restricciones: el tipo de índice debe admitirlo (los B-tree siempre) y la consulta debe referirse solo a columnas almacenadas en el índice. Para ampliar la cobertura sin alterar la unicidad, PostgreSQL ofrece la cláusula <code>INCLUDE</code>: <code>CREATE INDEX tab_x_y ON tab(x) INCLUDE (y);</code> hace que <code>SELECT y FROM tab WHERE x = 'key'</code> pueda ser un recorrido solo de índice, y la página aconseja ser conservador con las columnas incluidas, sobre todo las anchas, porque duplican datos y agrandan el índice.</p>
+
+<p>La documentación de PostgreSQL añade un matiz sobre el mapa de visibilidad: como las entradas de índice no guardan información de visibilidad de las filas, normalmente hay que visitar el montón para comprobar si la fila es visible para la consulta; PostgreSQL lleva, por cada página, un bit que indica si todas sus filas son visibles para todas las transacciones, y si ese bit está puesto, el recorrido solo de índice se ahorra la visita. La página dice que el recorrido solo de índice gana únicamente cuando una fracción significativa de las páginas tiene el bit puesto, lo que es típico en datos que cambian poco. <strong>No menciona <code>VACUUM</code></strong> en ese contexto, de modo que no afirmamos aquí qué proceso pone esos bits; si te interesa ese vínculo, consúltalo en la documentación de tu versión.</p>
+
+<h3>La medida: cobertura con coste</h3>
+
+<p>Probamos la cobertura con la consulta <code>SELECT estado, importe FROM pedidos WHERE cliente_id = ?</code>, primero con el índice solo de <code>cliente_id</code> y después con uno de cobertura sobre <code>(cliente_id, estado, importe)</code>:</p>
+
+<pre data-lang="text"><code>con idx_cliente (solo cliente_id):
+  -> SEARCH pedidos USING INDEX idx_cliente (cliente_id=?)
+con idx_cobertura (cliente_id, estado, importe):
+  -> SEARCH pedidos USING COVERING INDEX idx_cobertura (cliente_id=?)
+tiempo medio por consulta: idx_cliente = 0.110 ms | idx_cobertura = 0.082 ms | factor = 1.34x</code></pre>
+
+<p>El índice de cobertura redujo el tiempo de 0,110 a 0,082 ms: una mejora del 34 % (un factor de 1,34), real pero mucho más modesta que el «el doble de rápido» que menciona la documentación de SQLite para muchas consultas. Es un recordatorio de que esas frases describen un caso, no una garantía: aquí las consultas devuelven solo 15 filas y la fracción de tiempo dedicada a ir a la tabla es pequeña. Y la factura de la cobertura la pagas en disco: medimos el tamaño de cada índice como diferencia del tamaño del archivo tras <code>VACUUM</code>, con una tabla de 14,76 MiB sin índices:</p>
+
+<table>
+  <thead>
+    <tr><th>Índice</th><th>Tamaño (MiB)</th><th>% de la tabla</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>(cliente_id)</code></td><td>3,13</td><td>21 %</td></tr>
+    <tr><td><code>(estado, cliente_id)</code></td><td>5,20</td><td>35 %</td></tr>
+    <tr><td><code>(cliente_id, estado, importe)</code> (cobertura)</td><td>7,77</td><td>53 %</td></tr>
+    <tr><td><code>(notas)</code>, texto de 12 caracteres</td><td>6,02</td><td>41 %</td></tr>
+    <tr><td><code>(cliente_id) WHERE estado = 'pendiente'</code> (parcial)</td><td>0,13</td><td>1 %</td></tr>
+  </tbody>
+</table>
+
+<p>El índice de cobertura es más de dos veces mayor que el simple (7,77 frente a 3,13 MiB) para ganar un 34 % de velocidad en una consulta concreta. Si esa consulta es crítica y se ejecuta miles de veces por segundo, compensa; si es ocasional, no. Y fíjate en la última fila de la tabla, a la que volveremos: un índice parcial puede ocupar una centésima parte de la tabla.</p>
+
+<h2>Ordenar sin ordenar: índices y ORDER BY</h2>
+
+<p>Como las entradas de un índice están ordenadas, un índice bien elegido puede entregar las filas en el orden pedido sin ordenarlas después. SQLite lo explica con su coste: ordenar K filas cuesta del orden de K log K y necesita almacenamiento temporal; si un índice ya entrega las filas en el orden de <code>ORDER BY</code>, se omite la ordenación, y un recorrido del índice en sentido inverso resuelve <code>DESC</code>. Probamos con una consulta típica, «los 5 pedidos más recientes de un cliente»:</p>
+
+<pre data-lang="text"><code>SELECT * FROM pedidos WHERE cliente_id = ? ORDER BY creado DESC LIMIT 5
+
+con idx_cliente (cliente_id):
+  -> SEARCH pedidos USING INDEX idx_cliente (cliente_id=?)
+  -> USE TEMP B-TREE FOR ORDER BY
+con idx_cliente_creado (cliente_id, creado):
+  -> SEARCH pedidos USING INDEX idx_cliente_creado (cliente_id=?)</code></pre>
+
+<p>Con el índice solo sobre <code>cliente_id</code>, el motor localiza las 15 filas del cliente y después tiene que ordenarlas: la segunda línea del plan, <code>USE TEMP B-TREE FOR ORDER BY</code>, es el aviso. Con el índice compuesto <code>(cliente_id, creado)</code>, las filas de cada cliente ya están ordenadas por fecha dentro del índice, y la línea de ordenación desaparece. Con 15 filas por cliente la diferencia práctica es pequeña, pero con un cliente que tuviera cientos de miles de pedidos y una consulta con <code>LIMIT 5</code>, evitar la ordenación significaría leer 5 entradas del índice en lugar de ordenar todas. (Esa extrapolación es un razonamiento nuestro, no una medida.) Observa el patrón de diseño: la columna de igualdad primero (<code>cliente_id</code>) y la de ordenación después (<code>creado</code>), que es la regla de la sección anterior aplicada a un caso concreto.</p>
+
+<h2>Por qué a veces el índice no se usa</h2>
+
+<p>La queja más frecuente es «tengo un índice y la consulta lo ignora». Casi siempre hay una causa concreta, y el plan de ejecución la delata.</p>
+
+<h3>Una función sobre la columna</h3>
+
+<p>Si se aplica una función a la columna indexada, el motor no puede usar el orden del índice, porque lo que está ordenado es el valor de la columna, no el resultado de la función. La página de SQLite no lo dice con esas palabras: se limita a listar las formas utilizables, que tienen todas la columna «desnuda» a un lado, y a documentar que los índices sobre expresiones permiten indexar una expresión. Lo comprobamos con una tabla que tiene un índice sobre <code>creado</code> (una fecha en texto <code>AAAA-MM-DD</code>) y dos formas de pedir las filas de marzo de 2024:</p>
+
+<pre data-lang="text"><code>rango directo sobre la columna:
+  -> SEARCH pedidos USING COVERING INDEX idx_creado (creado>? AND creado<?)
+substr(creado,1,7) = '2024-03':
+  -> SCAN pedidos USING COVERING INDEX idx_creado
+tiempos: rango directo = 1.43 ms | con función = 35.79 ms
+
+tras CREATE INDEX idx_mes ON pedidos (substr(creado, 1, 7)):
+  -> SEARCH pedidos USING COVERING INDEX idx_mes (<expr>=?)
+tiempo con índice de expresión = 1.65 ms
+resultados idénticos: True</code></pre>
+
+<p>La diferencia es de 25 veces: 35,79 ms con la función frente a 1,43 ms con el rango directo. Observa en el plan que, con la función, el motor no abandonó el índice por completo: <code>SCAN ... USING COVERING INDEX idx_creado</code> recorre el índice entero (que, al ser de cobertura para esa consulta, evita ir a la tabla), pero sigue siendo un recorrido completo de 300.000 entradas, no una búsqueda. Hay dos soluciones. La primera es reescribir la condición para que la columna aparezca sin transformar (un rango de fechas, como en la primera consulta), que casi siempre es lo mejor. La segunda, cuando la expresión es inevitable, es crear un <em>índice sobre la expresión</em> idéntica, que el motor entonces puede buscar: con él, la consulta bajó a 1,65 ms y devolvió exactamente el mismo resultado. Es un índice más que mantener, con su coste de escritura, así que conviene reservarlo para las consultas que lo justifican.</p>
+
+<h3>El patrón LIKE: prefijo sí, sufijo no</h3>
+
+<p>PostgreSQL es explícito: un B-tree puede usarse con <code>LIKE</code> y con el operador <code>~</code> solo cuando el patrón es una constante anclada al principio de la cadena, como <code>col LIKE 'foo%'</code> o <code>col ~ '^foo'</code>; un patrón como <code>col LIKE '%bar'</code> no cumple la condición. La razón sigue de la ordenación: todas las cadenas que empiezan por «foo» están contiguas en el índice, pero las que acaban en «bar» están dispersas. La página añade una condición de configuración: si la base de datos no usa la configuración regional C, hace falta una clase de operadores especial, que describe en otra sección y que no hemos consultado. SQLite tiene condiciones propias y más sutiles, que documenta: el patrón no debe empezar por un comodín, la columna debe tener afinidad de texto, y la intercalación del índice debe ser <code>NOCASE</code> mientras <code>case_sensitive_like</code> esté desactivado (lo está por defecto) o <code>BINARY</code> si está activado. Lo comprobamos:</p>
+
+<pre data-lang="text"><code>índice con intercalación BINARY (la predeterminada), LIKE 'abc%':
+  -> SCAN pedidos USING COVERING INDEX idx_notas
+con índice COLLATE NOCASE, LIKE 'abc%':
+  -> SEARCH pedidos USING COVERING INDEX idx_notas_nocase (notas>? AND notas<?)
+con ambos índices, LIKE '%abc':
+  -> SCAN pedidos USING COVERING INDEX idx_notas_nocase</code></pre>
+
+<p>Tres resultados, todos conformes a la documentación. Un índice normal sobre <code>notas</code> (intercalación <code>BINARY</code>) <em>no</em> sirvió para <code>LIKE 'abc%'</code>: SQLite lo recorrió entero, porque por defecto <code>LIKE</code> no distingue mayúsculas de minúsculas y el índice sí. Con un índice declarado <code>COLLATE NOCASE</code>, la misma consulta pasó a ser una búsqueda de rango (<code>notas&gt;? AND notas&lt;?</code>: SQLite transforma el prefijo en un intervalo). Y el patrón con comodín al principio (<code>'%abc'</code>) fue un recorrido completo incluso con el índice adecuado. Es un caso para tener presente: el índice «correcto» en un motor puede no serlo en otro, y la única forma de saberlo es mirar el plan.</p>
+
+<h3>Condiciones con OR</h3>
+
+<p>La documentación de SQLite recoge que las condiciones con <code>OR</code> pueden resolverse con una estrategia «O por unión», con un plan que muestra una línea <code>MULTI-INDEX OR</code> y una subentrada por cada índice utilizado (un índice por cada rama del <code>OR</code>). No hemos medido este caso, así que no damos cifras; lo que conviene recordar es que un <code>OR</code> entre columnas distintas puede exigir un índice por cada una, y que el plan lo dirá.</p>
+
+<h2>Selectividad: cuando el índice empeora la consulta</h2>
+
+<p>Llegamos a la lección más contraintuitiva. Un índice ayuda cuando la condición selecciona <em>pocas</em> filas: encontrar 15 entre 300.000. Cuando selecciona una fracción grande de la tabla, ir fila por fila a la tabla a través del índice puede ser mucho peor que recorrer la tabla de principio a fin. La documentación de PostgreSQL lo anticipa de manera diplomática: el sistema usa un índice «cuando cree que hacerlo será más eficiente que un recorrido secuencial de la tabla». Y en la sección de índices parciales sugiere evitar indexar los valores comunes, los que ocupan más de un pequeño porcentaje de las filas, porque las consultas por esos valores no usarán el índice de todas formas.</p>
+
+<p>En nuestros datos, el estado de un pedido tiene una distribución muy desigual: 284.981 «pagados» (95 %), 12.029 «pendientes» y 2.990 «cancelados» (1 %). Creamos un índice sobre <code>(estado, cliente_id)</code> y medimos una consulta que cuenta y promedia el importe de los pedidos de un estado, forzando el uso del índice (con <code>INDEXED BY</code>) o prohibiéndolo (con <code>NOT INDEXED</code>):</p>
+
+<pre data-lang="text"><code>estado = pagado (95 %):    sin índice = 43.8 ms | con idx_estado_cliente = 1895.7 ms
+estado = cancelado (1 %):  sin índice = 37.2 ms | con idx_estado_cliente = 26.8 ms</code></pre>
+
+<p>Para los cancelados, el índice ayudó poco (de 37,2 a 26,8 ms). Para los pagados, fue desastroso: la consulta pasó de 43,8 ms a <strong>1.895,7 ms</strong>, 43 veces más lenta. La razón es mecánica (una interpretación nuestra de la medida): con el índice, el motor localiza las 285.000 entradas del estado «pagado» y por cada una va a la tabla a leer el importe, con 285.000 accesos a posiciones dispersas; sin índice, lee la tabla una sola vez en orden. Es probable que influya que la tabla (14,76 MiB) cabe entera en la memoria caché del sistema, algo que no hemos comprobado; en una tabla mucho mayor que la memoria, el recorrido completo también se encarecería. Lo que se mantiene es la regla: el índice solo paga cuando la condición es selectiva.</p>
+
+<h3>¿Lo elige el planificador por sí solo?</h3>
+
+<p>Lo que hicimos arriba era forzar el índice. La pregunta importante es si el motor cae en la trampa él solo, sin pistas. Lo probamos con la misma consulta, parametrizada, antes y después de ejecutar <code>ANALYZE</code>, el comando que según la documentación de SQLite (y de PostgreSQL) recoge estadísticas sobre los datos para que el planificador decida mejor:</p>
+
+<pre data-lang="text"><code>sin pista, antes de ANALYZE, estado = 'pagado':
+  -> SEARCH pedidos USING INDEX idx_estado_cliente (estado=?)     tiempo = 1835.3 ms
+sin pista, antes de ANALYZE, estado = 'cancelado':
+  -> SEARCH pedidos USING INDEX idx_estado_cliente (estado=?)     tiempo = 17.1 ms
+sin pista, después de ANALYZE, estado = 'pagado':
+  -> SEARCH pedidos USING INDEX idx_estado_cliente (estado=?)     tiempo = 1805.1 ms
+sin pista, después de ANALYZE, estado = 'cancelado':
+  -> SEARCH pedidos USING INDEX idx_estado_cliente (estado=?)     tiempo = 17.4 ms
+
+estadísticas guardadas para el índice (estado, cliente_id): '300000 100000 10'</code></pre>
+
+<p>El resultado es incómodo: SQLite 3.50.4 eligió el índice por sí solo para los dos valores, antes y después de <code>ANALYZE</code>, y la consulta de los pagados tardó 1,8 segundos. Las estadísticas que guarda (la fila de <code>sqlite_stat1</code> para ese índice, <code>300000 100000 10</code>) dicen que hay 300.000 filas y que cada valor de <code>estado</code> corresponde, de media, a 100.000; es un promedio que no distingue entre un valor que ocupa el 95 % y uno que ocupa el 1 %. No hemos investigado por qué el planificador mantiene el índice incluso con ese dato, ni afirmamos que PostgreSQL se comporte igual (la documentación de PostgreSQL consultada solo dice que el planificador usa el índice cuando cree que es más eficiente, y recomienda ejecutar <code>ANALYZE</code> con regularidad). La enseñanza práctica no depende del motor: <strong>no des por sentado que el planificador evitará un índice malo; comprueba el plan y mide la consulta con los valores reales más frecuentes</strong>, no solo con los raros.</p>
+
+<h2>Índices parciales: indexar solo lo que se consulta</h2>
+
+<p>La solución natural al problema de los valores comunes es no indexarlos. Un <em>índice parcial</em> cubre solo un subconjunto de la tabla, definido por una expresión condicional llamada <em>predicado</em>: el índice contiene entradas solo para las filas que lo cumplen. PostgreSQL describe los beneficios: evitar los valores comunes (los que suponen más de unos pocos puntos porcentuales de las filas, porque las consultas por esos valores no usarían el índice de todos modos) hace el índice menor, acelera las consultas que sí lo usan y reduce el coste de las actualizaciones, porque el índice no siempre necesita actualizarse. Su ejemplo es un registro de accesos en el que la mayoría de las peticiones proceden de la subred de la organización: se indexan solo las direcciones externas.</p>
+
+<p>En nuestro caso, lo que se consulta con frecuencia son los pedidos <em>pendientes</em> de cada cliente (el 4 % de la tabla):</p>
+
+<pre data-lang="sql"><code>CREATE INDEX idx_pend_cliente ON pedidos (cliente_id) WHERE estado = 'pendiente';</code></pre>
+
+<p>El tamaño es el dato más llamativo, y está en la tabla anterior: <strong>0,13 MiB, el 1 % de la tabla</strong>, frente a los 3,13 MiB (21 %) del índice completo sobre la misma columna. El plan confirma que se usa cuando la consulta pide los pendientes y que no se usa cuando no:</p>
+
+<pre data-lang="text"><code>consulta con estado = 'pendiente':
+  -> SEARCH pedidos USING INDEX idx_pend_cliente (cliente_id=?)
+consulta con estado = 'pagado' (fuera del predicado):
+  -> SEARCH pedidos USING INDEX idx_cliente (cliente_id=?)
+forzar el índice parcial para 'pagado' -> no query solution</code></pre>
+
+<p>La segunda consulta usó el índice completo, y cuando intentamos forzar el parcial para una consulta fuera de su predicado, SQLite respondió con el error «no query solution»: no existe plan posible, porque el índice no contiene esas filas. Esa es la regla que formula PostgreSQL: un índice parcial solo se usa si el planificador puede reconocer que la condición <code>WHERE</code> de la consulta implica matemáticamente el predicado del índice. La documentación aclara que PostgreSQL no tiene un demostrador de teoremas sofisticado: reconoce implicaciones simples entre desigualdades (por ejemplo, «x &lt; 1» implica «x &lt; 2») y, en otro caso, exige que el predicado coincida con parte de la condición <code>WHERE</code>. Como la comprobación se hace al planificar, las condiciones con parámetros del tipo <code>x &lt; ?</code> no coinciden con un índice parcial (la página lo recoge para PostgreSQL; no hemos comprobado si SQLite se comporta igual en consultas parametrizadas, aunque nuestras consultas de prueba lo fueron para el valor del cliente y el estado iba literal).</p>
+
+<p>El mismo mecanismo permite un tipo de restricción que no se puede expresar con un índice único normal. El ejemplo de PostgreSQL es una tabla de resultados de pruebas donde solo se permite un resultado exitoso por sujeto y objetivo: <code>CREATE UNIQUE INDEX tests_success_constraint ON tests (subject, target) WHERE success;</code> impone la unicidad solo entre las filas que cumplen el predicado, sin limitar a las demás. La página señala que funciona bien cuando los éxitos son raros. El inconveniente que la documentación apunta es que los valores comunes deben conocerse de antemano, de modo que un índice parcial puede necesitar recrearse si la distribución de los datos cambia.</p>
+
+<h2>El coste de tener índices</h2>
+
+<p>Cada índice es una estructura que hay que mantener al día. La documentación de PostgreSQL lo dice sin rodeos: una vez creado un índice, el sistema debe mantenerlo sincronizado con la tabla, y eso añade sobrecoste a las operaciones de manipulación de datos; por eso los índices que raramente o nunca se usan en consultas deberían eliminarse. Añade que los índices pueden impedir la creación de tuplas «solo de montón» (<em>heap-only tuples</em>), un mecanismo de actualización eficiente cuyo detalle la página no desarrolla. El coste, además de en espacio (las tablas de arriba), está en tiempo de escritura. Lo medimos insertando 50.000 filas nuevas con distinto número de índices:</p>
+
+<pre data-lang="text"><code>0 índices               : 0.07 s
+1 índice (cliente_id)   : 0.49 s
+4 índices               : 3.41 s</code></pre>
+
+<p>La progresión es contundente: el mismo lote de inserciones tardó 0,07 s sin índices, 0,49 s con uno (siete veces más) y 3,41 s con cuatro (casi cincuenta veces más). Los cuatro índices del experimento incluían uno sobre un texto aleatorio de 12 caracteres, que es el peor caso para un árbol ordenado porque cada inserción cae en un lugar distinto; con índices sobre columnas que crecen de forma ordenada, el coste podría ser menor (una hipótesis nuestra, que no hemos medido). Es otro motivo para la regla de oro de los índices: <strong>cada uno debe justificarse con una consulta concreta</strong> que lo necesite. Y es un recordatorio de que el coste crece en las cargas con muchas escrituras (importaciones masivas, registros, telemetría), donde a veces se eliminan los índices durante la carga y se crean al final (una práctica habitual, dato general que no procede de las páginas consultadas).</p>
+
+<h2>Más allá del B-tree: otros tipos de índice</h2>
+
+<p>El B-tree resuelve la mayoría de los casos, pero PostgreSQL ofrece otros tipos para consultas que el orden lineal no puede servir. La página de tipos de índice los resume así:</p>
+
+<table>
+  <thead>
+    <tr><th>Tipo</th><th>Para qué sirve según la documentación</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>B-tree</td><td>Comparaciones, rangos, ordenación, <code>LIKE</code> con prefijo; es el tipo por defecto</td></tr>
+    <tr><td>Hash</td><td>Guarda un código hash de 32 bits y solo sirve para comparaciones de igualdad simples</td></tr>
+    <tr><td>GiST</td><td>Infraestructura para muchas estrategias de indexación; operadores para tipos geométricos de dos dimensiones; puede acelerar búsquedas del vecino más cercano</td></tr>
+    <tr><td>SP-GiST</td><td>Infraestructura para estructuras no equilibradas como cuadriárboles, árboles k-d y tries de prefijos</td></tr>
+    <tr><td>GIN</td><td>Índice invertido para valores con varios componentes (como arrays); prueba eficientemente la presencia de componentes</td></tr>
+    <tr><td>BRIN</td><td>Guarda resúmenes (mínimo y máximo) de rangos de bloques consecutivos; funciona mejor cuando los valores de la columna se correlacionan con el orden físico de las filas</td></tr>
+  </tbody>
+</table>
+
+<p>La misma página menciona también la extensión <code>bloom</code> como tipo de índice. Para el uso diario, la recomendación es empezar por el B-tree y buscar otro tipo solo cuando el tipo de dato o el operador lo exijan (datos geométricos, texto completo, arrays). Las páginas de SQLite que consultamos no describen otros tipos de índice, de modo que no decimos nada sobre ellos.</p>
+
+<h2>Un método para decidir qué indexar</h2>
+
+<ol>
+  <li><strong>Parte de las consultas, no de las columnas.</strong> Lista las consultas que realmente importan (las más frecuentes, las más lentas, las que bloquean a un usuario) y las condiciones de cada una: igualdades, rangos, ordenación.</li>
+  <li><strong>Mide antes.</strong> Registra el tiempo y el plan actuales. Sin una línea base no sabrás si el índice sirvió. Si ya recoges latencias con histogramas, como describimos en el artículo sobre <a href="/articulos/observabilidad-metricas-logs-trazas-opentelemetry.html">observabilidad</a>, tienes la línea base y la prueba posterior.</li>
+  <li><strong>Diseña el índice con la regla del orden.</strong> Primero las columnas con igualdad, después la de rango o de ordenación. Si la consulta solo necesita unas pocas columnas más y es crítica, valora la cobertura, sabiendo que cuesta espacio (en nuestros datos, de un 21 % a un 53 % de la tabla).</li>
+  <li><strong>Comprueba el plan.</strong> Busca <code>SEARCH</code> frente a <code>SCAN</code>, <code>COVERING INDEX</code> donde esperas cobertura y la ausencia de <code>USE TEMP B-TREE</code> si buscabas evitar la ordenación.</li>
+  <li><strong>Prueba con los valores peores, no con los típicos.</strong> Si una columna tiene un valor dominante (95 % de los «pagados»), pruébalo: es donde un índice puede perjudicar.</li>
+  <li><strong>Mide el coste de escritura</strong> si la tabla recibe muchas inserciones o actualizaciones (en nuestro experimento, 0,07 s sin índices y 3,41 s con cuatro).</li>
+  <li><strong>Revisa lo que no se usa y elimínalo.</strong> PostgreSQL lo recomienda expresamente para los índices que raramente o nunca se usan, y SQLite recomienda eliminar los redundantes por prefijo.</li>
+  <li><strong>Repite cuando cambien los datos.</strong> La distribución de los valores y el tamaño de la tabla cambian la respuesta; los índices parciales, en particular, pueden necesitar revisión.</li>
+</ol>
+
+<h2>Errores y malentendidos frecuentes</h2>
+
+<h3>«Indexar todas las columnas por si acaso»</h3>
+
+<p>Cada índice cuesta espacio y escrituras. Con cuatro índices, las inserciones tardaron casi cincuenta veces más que sin ninguno; y un índice sin consulta que lo use es puro coste, como indica la documentación de PostgreSQL.</p>
+
+<h3>«El índice sobre una columna de pocos valores acelera los filtros»</h3>
+
+<p>Depende de la selectividad. Para el 1 % de las filas ayudó algo; para el 95 % multiplicó el tiempo por 43. Mira la distribución de los datos antes de decidir.</p>
+
+<h3>«Un índice compuesto sirve para cualquier combinación de sus columnas»</h3>
+
+<p>Solo para las condiciones que usan las columnas de la izquierda sin huecos. <code>(estado, cliente_id)</code> no sirvió para buscar solo por cliente.</p>
+
+<h3>«El planificador sabrá qué hacer»</h3>
+
+<p>Casi siempre, pero no siempre: el de SQLite eligió un índice malo para el 95 % de las filas incluso tras <code>ANALYZE</code>. Comprueba el plan con tus valores reales.</p>
+
+<h3>«Envolver la columna en una función no afecta al índice»</h3>
+
+<p>La consulta con <code>substr()</code> fue 25 veces más lenta que el rango directo. Reescribe la condición o crea un índice sobre la expresión.</p>
+
+<h3>«El mismo índice funciona igual en todas las bases de datos»</h3>
+
+<p>Un índice normal sobre texto no sirvió para <code>LIKE 'abc%'</code> en SQLite, pero sí uno <code>COLLATE NOCASE</code>; PostgreSQL tiene sus propias condiciones (configuración regional y clases de operadores). Consulta la documentación de tu motor.</p>
+
+<h3>«Un plan de ejecución tiene el mismo formato siempre»</h3>
+
+<p>La documentación de SQLite avisa de que su formato cambió en las versiones 3.24.0 y 3.36.0 y de que no debe usarse desde programas.</p>
+
+<h2>Preguntas frecuentes</h2>
+
+<h3>¿Cuántos índices debe tener una tabla?</h3>
+
+<p>Los que justifiquen consultas concretas, y ni uno más. No hay un número correcto: una tabla de consulta con pocas escrituras tolera más índices que una de inserción masiva. Mide el coste de escritura en tu caso.</p>
+
+<h3>¿Por qué mi consulta no usa el índice?</h3>
+
+<p>Las causas que hemos visto: una función sobre la columna, un <code>LIKE</code> con el comodín al principio o con una intercalación que no encaja, un índice compuesto cuya primera columna no aparece en la condición, o una condición poco selectiva donde el motor decide (con acierto o sin él) recorrer la tabla. El plan te dice cuál.</p>
+
+<h3>¿Cuál es la diferencia entre un índice de cobertura y un índice compuesto?</h3>
+
+<p>Un índice compuesto es el que tiene varias columnas; uno de cobertura es el que contiene todas las columnas que una consulta necesita, de modo que no hace falta ir a la tabla. Un índice compuesto puede ser de cobertura para unas consultas y no para otras. PostgreSQL permite añadir columnas de «carga» con <code>INCLUDE</code> sin que formen parte de la clave de búsqueda.</p>
+
+<h3>¿Cuándo uso un índice parcial?</h3>
+
+<p>Cuando consultas con frecuencia un subconjunto pequeño y bien definido de la tabla (los pendientes, los activos, los no procesados) y el resto de las filas no te interesa indexar. Es especialmente útil si ese subconjunto es el 1-5 % de las filas.</p>
+
+<h3>¿Hace falta ejecutar ANALYZE?</h3>
+
+<p>PostgreSQL recomienda ejecutarlo con regularidad para que el planificador tenga estadísticas. SQLite lo documenta como un modo de que conozca la selectividad de cada índice, y de habilitar el <em>skip-scan</em>. Nuestro experimento mostró que no es un remedio universal: el plan para el valor dominante no cambió tras ejecutarlo.</p>
+
+<h3>¿Se pueden crear índices sin bloquear la tabla?</h3>
+
+<p>La página de introducción de PostgreSQL menciona que la creación de índices puede bloquear operaciones, pero no describe cómo evitarlo, de modo que no damos una receta. Consulta la documentación de <code>CREATE INDEX</code> de tu versión.</p>
+
+<h3>¿Cómo sé qué índices no se usan?</h3>
+
+<p>Nuestras fuentes no describen las vistas de estadísticas de uso de índices de ningún motor, así que no damos instrucciones concretas. El principio es el que recoge PostgreSQL: los índices que raramente o nunca se usan deberían eliminarse, y para saberlo hay que observar el uso real durante un periodo representativo.</p>
+
+<h2>Conclusión</h2>
+
+<p>Un índice es una promesa de orden: guarda una copia ordenada de unas columnas para que la búsqueda deje de ser un recorrido y pase a ser, esencialmente, una búsqueda binaria. De esa promesa se deduce casi todo lo que hemos medido. Sirve para igualdades y rangos sobre la columna tal cual (264 veces más rápido en la búsqueda por cliente) y no sirve cuando se le pregunta algo que no respeta ese orden (una función, un sufijo). Su orden de columnas decide para qué consultas funciona. Puede evitar una ordenación o evitar volver a la tabla, y puede reducirse a un 1 % si se limita a los datos que importan. Y tiene un precio: espacio en disco, tiempo de escritura (de 0,07 a 3,41 s en nuestras inserciones) y la posibilidad de empeorar una consulta cuando la condición no es selectiva (de 44 ms a 1.896 ms).</p>
+
+<p>El método, más que las cifras, es lo transferible. Parte de las consultas reales, mide antes, diseña el índice, mira el plan, prueba con los valores incómodos y vigila el coste de escritura; después repite cuando los datos cambien. Los números de este artículo son de SQLite 3.50.4 con 300.000 filas sintéticas y no se trasladan a tu base de datos, y menos aún a PostgreSQL, cuya documentación hemos citado sin poder ejecutarla. Por eso la mejor conclusión es una invitación: reproduce los experimentos en tu motor (el script está en el repositorio del sitio), compara los planes y las medidas, y deja que sean ellos, y no una regla de memoria, quienes decidan qué índices merecen existir.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>PostgreSQL Global Development Group. «Indexes: Introduction», en <em>PostgreSQL Documentation</em> (versión «current»). <a href="https://www.postgresql.org/docs/current/indexes-intro.html" rel="noopener">https://www.postgresql.org/docs/current/indexes-intro.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «Index Types». <a href="https://www.postgresql.org/docs/current/indexes-types.html" rel="noopener">https://www.postgresql.org/docs/current/indexes-types.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «Multicolumn Indexes». <a href="https://www.postgresql.org/docs/current/indexes-multicolumn.html" rel="noopener">https://www.postgresql.org/docs/current/indexes-multicolumn.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «Index-Only Scans and Covering Indexes». <a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" rel="noopener">https://www.postgresql.org/docs/current/indexes-index-only-scans.html</a> (consultado el 27-10-2026).</li>
+  <li>PostgreSQL Global Development Group. «Partial Indexes». <a href="https://www.postgresql.org/docs/current/indexes-partial.html" rel="noopener">https://www.postgresql.org/docs/current/indexes-partial.html</a> (consultado el 27-10-2026).</li>
+  <li>SQLite. «Query Planning». <a href="https://www.sqlite.org/queryplanner.html" rel="noopener">https://www.sqlite.org/queryplanner.html</a> (consultado el 27-10-2026).</li>
+  <li>SQLite. «EXPLAIN QUERY PLAN». <a href="https://www.sqlite.org/eqp.html" rel="noopener">https://www.sqlite.org/eqp.html</a> (consultado el 27-10-2026).</li>
+  <li>SQLite. «The SQLite Query Optimizer Overview». <a href="https://www.sqlite.org/optoverview.html" rel="noopener">https://www.sqlite.org/optoverview.html</a> (consultado el 27-10-2026).</li>
+  <li>Equipo editorial. «Laboratorio de índices» (script, planes y salidas completas; SQLite 3.50.4, Python 3.14.2, Windows 11). Archivo <code>editorial/fuentes/lab_indices.md</code> del repositorio del sitio; ejecutado el 27-10-2026.</li>
+</ol>
+</section>

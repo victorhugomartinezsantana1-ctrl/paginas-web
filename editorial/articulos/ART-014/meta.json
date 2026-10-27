@@ -1,0 +1,12 @@
+{
+  "id": "ART-014",
+  "slug": "rust-propiedad-prestamos-lifetimes",
+  "titulo": "Rust: propiedad, préstamos y lifetimes explicados con sus errores",
+  "etiqueta": "rust",
+  "fecha": "2026-10-27",
+  "descripcion": "Cómo razona el borrow checker de Rust: propiedad y movimientos, referencias y préstamos, lifetimes y los errores del compilador más habituales, comparados con RAII en C++.",
+  "palabra_clave": "rust ownership borrowing",
+  "secundarias": ["lifetimes", "move", "Rc", "Arc", "Mutex"],
+  "relacionados": ["rust-vs-cpp-sistemas-embebidos", "cpp-moderno-raii-movimiento-punteros-inteligentes", "python-memoria-referencias-recolector-basura"],
+  "barra": "naranja"
+}
