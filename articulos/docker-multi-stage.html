@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investigación Profunda: Docker Multi-stage y Distroless — devlog</title>
+  <meta name="description" content="El arte de compilar contenedores inmutables, ultra seguros y de bajo peso eliminando binarios innecesarios.">
+  <link rel="canonical" href="https://TU-DOMINIO.com/articulos/docker-multi-stage.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Investigación Profunda: Docker Multi-stage y Distroless">
+  <meta property="og:description" content="El arte de compilar contenedores inmutables, ultra seguros y de bajo peso eliminando binarios innecesarios.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/articulos/docker-multi-stage.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-09-24">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Investigación Profunda: Docker Multi-stage y Distroless",
+    "datePublished": "2026-09-24",
+    "dateModified": "2026-09-24",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://TU-DOMINIO.com/articulos/docker-multi-stage.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          colors: {
+            term: {
+              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
+              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="text-term-green font-bold tracking-tight">
+        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
+        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
+        <a href="/" class="hover:text-term-green">~</a> /
+        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
+        <span class="text-term-text">docker-multi-stage</span>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-term-amber mb-3">[docker]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+          Investigación Profunda: Docker Multi-stage y Distroless
+        </h1>
+        <p class="mt-4 text-term-muted">El arte de compilar contenedores inmutables, ultra seguros y de bajo peso eliminando binarios innecesarios.</p>
+        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-term-text">Victor Martinez</span></span>
+          <time datetime="2026-09-24">2026-09-24</time>
+          <span>⏱ 12 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+            
+        <h2 id="1-entendiendo-las-capas-layers-y-el-bloat">1. Entendiendo las Capas (Layers) y el Bloat</h2>
+        <p>Cada instrucción <code>RUN</code>, <code>COPY</code>, y <code>ADD</code> en un Dockerfile crea una capa inmutable de solo lectura. Si en una capa descargas 500MB de librerías para compilar, y en la siguiente capa las eliminas (<code>RUN rm -rf /lib</code>), <strong>la imagen final seguirá pesando 500MB más</strong> porque la capa original sigue existiendo en el historial del contenedor. El Multi-stage resuelve esto cortando la herencia de capas.</p>
+
+                <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-patron-builder-run-aplicacion-node-js-re">2. Patrón Builder-Run: Aplicación Node.js (React/Vue/Angular)</h2>
+        <p>Un escenario clásico del desarrollo Frontend es compilar un código TypeScript/React a JavaScript puro. No necesitas Node.js en producción, solo un servidor web que devuelva estáticos.</p>
+        
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>dockerfile</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># ETAPA 1: Construcción (Pesa ~1 GB por dependencias en node_modules)
+FROM node:24-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci          # Instalación limpia
+COPY . .
+RUN npm run build   # Compila a la carpeta /app/dist
+
+# ETAPA 2: Servidor de Producción (Pesa ~50 MB en total)
+FROM nginx:alpine
+# Config personalizada (opcional): reemplaza el server por defecto, útil para el fallback de una SPA
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copiamos EXCLUSIVAMENTE los estáticos generados por el builder
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]</code></pre>
+        </div>
+
+        <h2 id="3-imagenes-scratch-y-distroless-para-maxim">3. Imágenes 'Scratch' y 'Distroless' para máxima Seguridad</h2>
+        <p>Para lenguajes que compilan a binarios estáticos (Go, Rust, C++), no necesitas NINGÚN sistema operativo debajo de tu aplicación. Ni Alpine, ni Ubuntu. Nada. Solo el Kernel de Linux del Host.</p>
+        
+        <div class="alert alert-success">
+            <strong>FROM scratch:</strong> Es una imagen especial vacía (0 bytes). Si compilas tu binario Go de manera estática (deshabilitando CGO), puedes montarlo aquí. Elimina una vía clásica de ataque (la inyección de comandos en una shell) simplemente porque <strong>no tiene shell (bash, sh, ash) ni utilidades (ls, curl, wget)</strong> instalados. Un atacante dispone de muchas menos herramientas para moverse dentro del contenedor.
+        </div>
+
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>dockerfile</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Compilación para Go asegurando binario estático independiente
+FROM golang:1.27 AS builder
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o mi_app
+
+# Producción: Imagen Cero Bytes
+FROM scratch
+# Los certificados SSL base se deben copiar si la app hace peticiones HTTPS
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /src/mi_app /mi_app
+ENTRYPOINT ["/mi_app"]</code></pre>
+        </div>
+
+        <p>Si tu aplicación necesita certificados de CA, datos de zona horaria y un usuario sin privilegios, pero no una shell, <strong>distroless</strong> es el punto intermedio: imágenes mínimas mantenidas por Google, sin gestor de paquetes ni shell.</p>
+
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>dockerfile</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Producción: Distroless estática, ejecutándose como usuario no-root
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /src/mi_app /mi_app
+ENTRYPOINT ["/mi_app"]</code></pre>
+        </div>
+
+                <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="4-ventajas-colaterales">4. Ventajas Colaterales</h2>
+        <ul>
+            <li><strong>Tiempos de despliegue (Pull):</strong> Descargar una imagen de 10MB toma milisegundos en el cluster de Kubernetes, permitiendo un escalado automático casi instantáneo (HPA).</li>
+            <li><strong>Reducción de Superficie de Ataque:</strong> Sin gestores de paquetes (apt, apk), ni shell, ni dependencias de desarrollo, las herramientas de escaneo de vulnerabilidades (como Trivy o Grype) reportarán muchas menos vulnerabilidades.</li>
+        </ul>
+        
+        
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/git-rebase-interactivo.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[git]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Git Rebase Interactivo y Rewriting History</span>
+          </a></li>
+          <li><a href="/articulos/azure-static-web-apps.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[azure]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Azure Static Web Apps</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="text-term-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-term-border pl-4">
+            <li><a href="#1-entendiendo-las-capas-layers-y-el-bloat" class="text-term-muted hover:text-term-green">1. Entendiendo las Capas (Layers) y el Bloat</a></li>
+            <li><a href="#2-patron-builder-run-aplicacion-node-js-re" class="text-term-muted hover:text-term-green">2. Patrón Builder-Run: Aplicación Node.js (React/Vue/Angular)</a></li>
+            <li><a href="#3-imagenes-scratch-y-distroless-para-maxim" class="text-term-muted hover:text-term-green">3. Imágenes 'Scratch' y 'Distroless' para máxima Seguridad</a></li>
+            <li><a href="#4-ventajas-colaterales" class="text-term-muted hover:text-term-green">4. Ventajas Colaterales</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-term-border mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>

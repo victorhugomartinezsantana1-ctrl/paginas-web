@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investigación Profunda: grep, sed y awk — devlog</title>
+  <meta name="description" content="El poder de las tuberías UNIX: Regex avanzado, captura condicional y programación funcional en terminal.">
+  <link rel="canonical" href="https://TU-DOMINIO.com/articulos/linux-grep-sed-awk.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Investigación Profunda: grep, sed y awk">
+  <meta property="og:description" content="El poder de las tuberías UNIX: Regex avanzado, captura condicional y programación funcional en terminal.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/articulos/linux-grep-sed-awk.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-10-01">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Investigación Profunda: grep, sed y awk",
+    "datePublished": "2026-10-01",
+    "dateModified": "2026-10-01",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://TU-DOMINIO.com/articulos/linux-grep-sed-awk.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          colors: {
+            term: {
+              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
+              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="text-term-green font-bold tracking-tight">
+        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
+        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
+        <a href="/" class="hover:text-term-green">~</a> /
+        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
+        <span class="text-term-text">linux-grep-sed-awk</span>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-term-amber mb-3">[linux]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+          Investigación Profunda: grep, sed y awk
+        </h1>
+        <p class="mt-4 text-term-muted">El poder de las tuberías UNIX: Regex avanzado, captura condicional y programación funcional en terminal.</p>
+        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-term-text">Victor Martinez</span></span>
+          <time datetime="2026-10-01">2026-10-01</time>
+          <span>⏱ 18 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+            
+        <h2 id="1-la-filosofia-unix-y-el-stream-de-texto">1. La Filosofía UNIX y el Stream de Texto</h2>
+        <p>En sistemas POSIX, todo es un archivo y la salida universal es texto plano. El "Tridente" de procesamiento de texto (Grep, Sed, Awk) se fundamenta en los <em>pipes</em> (<code>|</code>). La salida estándar (stdout) de un programa se convierte instantáneamente en la entrada estándar (stdin) del siguiente, procesando líneas en streaming sin colapsar la RAM, incluso con archivos de 50GB.</p>
+
+                <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-grep-global-regular-expression-print-dom">2. GREP (Global Regular Expression Print): Dominio del Contexto</h2>
+        <p>No te limites a buscar cadenas exactas. Usa expresiones regulares extendidas y banderas de contexto.</p>
+        <ul>
+            <li><strong>Expresiones Extendidas (<code>-E</code>):</strong> <code>grep -E 'ERROR|WARN' app.log</code> (Soporta operadores OR <code>|</code>, agrupaciones <code>()</code>, cuantificadores <code>+</code>, <code>?</code>).</li>
+            <li><strong>Contexto (<code>-A</code>, <code>-B</code>, <code>-C</code>):</strong> <code>grep -C 2 "Exception" server.log</code> muestra la línea que tiene el error, <strong>2</strong> líneas antes (<em>Before</em>) y <strong>2</strong> líneas después (<em>After</em>). Fundamental para ver la traza del error (Stacktrace).</li>
+            <li><strong>Búsqueda Inversa y Conteo (<code>-v</code>, <code>-c</code>):</strong> <code>grep -v "DEBUG" app.log | grep -c "USER_LOGIN"</code> cuenta (<code>-c</code>) todos los logins, pero excluye (<code>-v</code>) las líneas de debug de la salida previa.</li>
+        </ul>
+
+        <h2 id="3-sed-stream-editor-manipulacion-in-place">3. SED (Stream Editor): Manipulación In-Place</h2>
+        <p>Sed lee línea por línea en el "pattern space", aplica transformaciones y envía el resultado a stdout. Su poder oculto está en las direcciones y los grupos de captura.</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Cambiar directamente el archivo (-i in-place) creando un backup (.bak)
+sed -i.bak 's/password="[^"]*"/password="***"/g' database.conf</code></pre>
+        </div>
+        <h3>Grupos de Captura y Backreferences</h3>
+        <p>Puedes capturar partes de una línea con <code>\( \)</code> y usarlas en el reemplazo con <code>\1</code>, <code>\2</code>.</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Transforma "Nombre: Victor, Edad: 20" a "Victor tiene 20 años"
+echo "Nombre: Victor, Edad: 20" | sed 's/Nombre: \(.*\), Edad: \([0-9]*\)/\1 tiene \2 años/'</code></pre>
+        </div>
+        <h3>Borrado Condicional</h3>
+        <p><code>sed '10,20d' file.txt</code> borra desde la línea 10 a la 20. <code>sed '/^$/d'</code> elimina todas las líneas vacías.</p>
+
+                <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="4-awk-lenguaje-de-procesamiento-de-datos">4. AWK: Lenguaje de Procesamiento de Datos</h2>
+        <p>Es un lenguaje Turing completo operado por patrones y acciones: <code>pattern { action }</code>. Awk separa automáticamente cada línea por espacios/tabs en variables posicionales: <code>$1</code> (columna 1), <code>$2</code> (columna 2), y <code>$0</code> (la línea completa).</p>
+        
+        <h3>Variables Especiales</h3>
+        <ul>
+            <li><code>NR</code> (Number of Record): Línea actual.</li>
+            <li><code>NF</code> (Number of Fields): Total de columnas en la línea actual.</li>
+            <li><code>FS</code> (Field Separator): Delimitador de entrada (por defecto espacio). Se ajusta con <code>-F</code>.</li>
+        </ul>
+
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Imprime el nombre y el directorio personal de los usuarios con shell /bin/bash (leyendo /etc/passwd)
+awk -F':' '$7 == "/bin/bash" { print "Usuario: " $1 " - Home: " $6 }' /etc/passwd</code></pre>
+        </div>
+
+        <h3>El Mega-Pipe: Análisis Forense Web</h3>
+        <p>Combina todo para obtener las 5 IPs con más solicitudes HTTP 404 en un Nginx access.log:</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>awk '$9 == 404 {print $1}' access.log | sort | uniq -c | sort -nr | head -n 5</code></pre>
+        </div>
+        <p><em>Explicación:</em> Awk filtra las líneas donde la columna 9 (código HTTP) es 404 y extrae la IP (columna 1). Sort ordena las IPs juntas, Uniq -c las cuenta y agrupa, Sort -nr ordena el resultado numéricamente de mayor a menor, y Head toma el Top 5.</p>
+        
+        
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/docker-multi-stage.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[docker]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Docker Multi-stage y Distroless</span>
+          </a></li>
+          <li><a href="/articulos/git-rebase-interactivo.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[git]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Git Rebase Interactivo y Rewriting History</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="text-term-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-term-border pl-4">
+            <li><a href="#1-la-filosofia-unix-y-el-stream-de-texto" class="text-term-muted hover:text-term-green">1. La Filosofía UNIX y el Stream de Texto</a></li>
+            <li><a href="#2-grep-global-regular-expression-print-dom" class="text-term-muted hover:text-term-green">2. GREP (Global Regular Expression Print): Dominio del Contexto</a></li>
+            <li><a href="#3-sed-stream-editor-manipulacion-in-place" class="text-term-muted hover:text-term-green">3. SED (Stream Editor): Manipulación In-Place</a></li>
+            <li><a href="#4-awk-lenguaje-de-procesamiento-de-datos" class="text-term-muted hover:text-term-green">4. AWK: Lenguaje de Procesamiento de Datos</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-term-border mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investigación Profunda: Python pathlib vs os.path — devlog</title>
+  <meta name="description" content="Manipulación de sistemas de archivos orientada a objetos: globbing, permisos, lectura binaria y jerarquías.">
+  <link rel="canonical" href="https://TU-DOMINIO.com/articulos/python-pathlib.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Investigación Profunda: Python pathlib vs os.path">
+  <meta property="og:description" content="Manipulación de sistemas de archivos orientada a objetos: globbing, permisos, lectura binaria y jerarquías.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/articulos/python-pathlib.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-10-08">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Investigación Profunda: Python pathlib vs os.path",
+    "datePublished": "2026-10-08",
+    "dateModified": "2026-10-08",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://TU-DOMINIO.com/articulos/python-pathlib.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          colors: {
+            term: {
+              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
+              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="text-term-green font-bold tracking-tight">
+        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
+        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
+        <a href="/" class="hover:text-term-green">~</a> /
+        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
+        <span class="text-term-text">python-pathlib</span>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-term-amber mb-3">[python]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+          Investigación Profunda: Python pathlib vs os.path
+        </h1>
+        <p class="mt-4 text-term-muted">Manipulación de sistemas de archivos orientada a objetos: globbing, permisos, lectura binaria y jerarquías.</p>
+        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-term-text">Victor Martinez</span></span>
+          <time datetime="2026-10-08">2026-10-08</time>
+          <span>⏱ 14 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+            
+        <h2 id="1-el-paradigma-orientado-a-objetos-de-path">1. El Paradigma Orientado a Objetos de Pathlib</h2>
+        <p>Históricamente, Python usó <code>os.path</code>, tratando las rutas como meras cadenas de texto (Strings). Esto obligaba a anidar llamadas como <code>os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')</code>. El módulo <code>pathlib</code>, introducido en Python 3.4, representa las rutas como objetos, sobrecargando el operador <code>/</code> para concatenar directorios elegantemente.</p>
+
+                <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-path-vs-purepath">2. Path vs PurePath</h2>
+        <ul>
+            <li><strong>PurePath (y PurePosixPath / PureWindowsPath):</strong> Manipula la ruta sin interactuar con el sistema de archivos real. Útil para trabajar con rutas de Windows desde un entorno Linux, por ejemplo.</li>
+            <li><strong>Path (y PosixPath / WindowsPath):</strong> Hereda de PurePath pero añade llamadas al sistema (I/O) como crear, leer, escribir y verificar existencia (<code>.exists()</code>).</li>
+        </ul>
+
+        <h2 id="3-atributos-esenciales-de-un-objeto-path">3. Atributos Esenciales de un Objeto Path</h2>
+        <p>Dado <code>archivo = Path('/var/log/nginx/access.log')</code>:</p>
+        <ul>
+            <li><code>archivo.name</code> -> <code>'access.log'</code> (Nombre con extensión)</li>
+            <li><code>archivo.stem</code> -> <code>'access'</code> (Nombre sin extensión)</li>
+            <li><code>archivo.suffix</code> -> <code>'.log'</code> (Última extensión)</li>
+            <li><code>archivo.suffixes</code> -> Útil para archivos como <code>.tar.gz</code> (Devuelve <code>['.tar', '.gz']</code>)</li>
+            <li><code>archivo.parent</code> -> <code>Path('/var/log/nginx')</code></li>
+            <li><code>archivo.parents[0]</code> -> (Igual que parent), <code>[1]</code> -> <code>/var/log</code>, etc.</li>
+        </ul>
+
+                <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="4-operaciones-i-o-aceleradas">4. Operaciones I/O Aceleradas</h2>
+        <p>Pathlib permite omitir el clásico patrón <code>with open(...)</code> en lecturas y escrituras sencillas. Ojo: <code>write_text()</code> no es atómico; si el proceso se interrumpe a mitad de la escritura, el archivo puede quedar incompleto.</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>from pathlib import Path
+
+ruta = Path('datos.json')
+
+# Escritura de texto (sobrescribe si existe)
+ruta.write_text('{"status": "ok"}', encoding='utf-8')
+
+# Lectura directa
+contenido = ruta.read_text(encoding='utf-8')
+
+# Manipulación Binaria
+imagen = Path('foto.png')
+datos_binarios = imagen.read_bytes()</code></pre>
+        </div>
+
+        <h2 id="5-caso-de-uso-completo-limpieza-de-logs-an">5. Caso de Uso Completo: Limpieza de Logs Antiguos</h2>
+        <p>Este script busca recursivamente todos los archivos <code>.log</code>, verifica la fecha de modificación (usando <code>stat().st_mtime</code>) y elimina aquellos más antiguos de 30 días, manejando permisos.</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>python</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>import time
+from pathlib import Path
+
+directorio_logs = Path('/var/log/mi_app')
+tiempo_limite = time.time() - (30 * 24 * 60 * 60) # Hace 30 días en segundos
+
+# rglob hace búsqueda recursiva
+for log_file in directorio_logs.rglob('*.log'):
+    if log_file.is_file():
+        try:
+            # Obtener metadata del archivo
+            fecha_modificacion = log_file.stat().st_mtime
+            if fecha_modificacion < tiempo_limite:
+                log_file.unlink() # Equivalente a os.remove()
+                print(f"Eliminado: {log_file.name}")
+        except PermissionError:
+            print(f"Acceso denegado para borrar: {log_file}")</code></pre>
+        </div>
+        
+        
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/linux-grep-sed-awk.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[linux]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: grep, sed y awk</span>
+          </a></li>
+          <li><a href="/articulos/docker-multi-stage.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[docker]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Docker Multi-stage y Distroless</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="text-term-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-term-border pl-4">
+            <li><a href="#1-el-paradigma-orientado-a-objetos-de-path" class="text-term-muted hover:text-term-green">1. El Paradigma Orientado a Objetos de Pathlib</a></li>
+            <li><a href="#2-path-vs-purepath" class="text-term-muted hover:text-term-green">2. Path vs PurePath</a></li>
+            <li><a href="#3-atributos-esenciales-de-un-objeto-path" class="text-term-muted hover:text-term-green">3. Atributos Esenciales de un Objeto Path</a></li>
+            <li><a href="#4-operaciones-i-o-aceleradas" class="text-term-muted hover:text-term-green">4. Operaciones I/O Aceleradas</a></li>
+            <li><a href="#5-caso-de-uso-completo-limpieza-de-logs-an" class="text-term-muted hover:text-term-green">5. Caso de Uso Completo: Limpieza de Logs Antiguos</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-term-border mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>

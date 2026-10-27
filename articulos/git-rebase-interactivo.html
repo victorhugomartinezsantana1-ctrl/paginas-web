@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investigación Profunda: Git Rebase Interactivo y Rewriting History — devlog</title>
+  <meta name="description" content="Manipulación del DAG de commits, split, squash, fixup y control absoluto sobre el historial.">
+  <link rel="canonical" href="https://TU-DOMINIO.com/articulos/git-rebase-interactivo.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Investigación Profunda: Git Rebase Interactivo y Rewriting History">
+  <meta property="og:description" content="Manipulación del DAG de commits, split, squash, fixup y control absoluto sobre el historial.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/articulos/git-rebase-interactivo.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-09-17">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Investigación Profunda: Git Rebase Interactivo y Rewriting History",
+    "datePublished": "2026-09-17",
+    "dateModified": "2026-09-17",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://TU-DOMINIO.com/articulos/git-rebase-interactivo.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          colors: {
+            term: {
+              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
+              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="text-term-green font-bold tracking-tight">
+        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
+        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
+        <a href="/" class="hover:text-term-green">~</a> /
+        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
+        <span class="text-term-text">git-rebase-interactivo</span>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-term-amber mb-3">[git]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+          Investigación Profunda: Git Rebase Interactivo y Rewriting History
+        </h1>
+        <p class="mt-4 text-term-muted">Manipulación del DAG de commits, split, squash, fixup y control absoluto sobre el historial.</p>
+        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-term-text">Victor Martinez</span></span>
+          <time datetime="2026-09-17">2026-09-17</time>
+          <span>⏱ 16 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+            
+        <h2 id="1-rebase-vs-merge-el-grafo-aciclico-dag">1. Rebase vs Merge: El Grafo Acíclico (DAG)</h2>
+        <p>Git guarda los commits como un grafo. Cuando usas <code>git merge</code>, creas un "Commit de Fusión" que une dos ramas, preservando la línea de tiempo original de manera no lineal. <code>git rebase</code> <strong>reescribe el historial</strong>. Toma los commits de tu rama actual, los extrae temporalmente, mueve la base de tu rama al final de la rama objetivo (ej. main) y "reproduce" (reaplica) tus commits uno por uno encima, creando nuevos hashes (SHAs). El resultado es un historial 100% lineal y limpio.</p>
+
+                <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-entrando-al-modo-interactivo-i">2. Entrando al Modo Interactivo (-i)</h2>
+        <p><code>git rebase -i HEAD~N</code> (donde N es el número de commits hacia atrás desde la punta) te abre un mundo de reestructuración. Al ejecutarlo, Git detiene el tiempo y presenta un script (todo-list) en el editor. Los commits aparecen en orden cronológico (el más antiguo arriba y el más nuevo abajo, en el orden en que se van a aplicar), al revés que en <code>git log</code>.</p>
+
+        <h3>Operaciones Quirúrgicas:</h3>
+        <ul>
+            <li><strong>pick (p):</strong> Aplica el commit normalmente. Puedes reordenar estas líneas en el editor para cambiar el orden de los commits en la historia final.</li>
+            <li><strong>edit (e): El poder de detener el tiempo.</strong> Git pausa el rebase justo después de aplicar este commit. Aquí puedes ejecutar comandos, o hacer <code>git reset HEAD~1</code> para "deshacer" el commit dejando los archivos en el working tree, de modo que puedas crear <strong>dos commits separados</strong> de lo que antes era uno (Split de commit), y luego ejecutar <code>git rebase --continue</code>.</li>
+            <li><strong>squash (s) vs fixup (f):</strong> Ambos unen el commit actual con el de la línea <em>anterior</em> (arriba). La diferencia es que <em>squash</em> te pide fusionar los mensajes de ambos commits, mientras que <em>fixup</em> descarta el mensaje del actual e integra su contenido de forma invisible al commit original. Ideal para cuando subiste un "wip" o corregiste un error tipográfico en el commit anterior.</li>
+            <li><strong>exec (x):</strong> Automáticamente ejecuta un comando shell en cada paso del rebase. Ej: <code>exec npm test</code> (Se pone después de un pick). Si los tests fallan en ese punto de la historia, el rebase se pausa para que arregles el error (evitando commits rotos en el historial).</li>
+        </ul>
+
+        <h2 id="3-la-red-de-seguridad-git-reflog">3. La Red de Seguridad: git reflog</h2>
+        <p>¿Qué pasa si arruinas un rebase, eliminas un commit importante y haces un squash desastroso? No entres en pánico. Git nunca borra commits inmediatamente. Todo commit huérfano (cuyo apuntador fue movido por un rebase) se conserva en el <em>reflog</em>: por defecto Git guarda las entradas 90 días (30 días si ya no son alcanzables).</p>
+        <div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code># Ver el historial de TODOS los movimientos del puntero HEAD
+git reflog
+# Localizar el SHA antes de iniciar el rebase (ej. HEAD@{4})
+git reset --hard HEAD@{4}
+
+# Atajo: justo después de un rebase, ORIG_HEAD apunta al estado anterior
+git reset --hard ORIG_HEAD</code></pre>
+        </div>
+        <p>Con un solo comando de <code>reset</code>, anulas el rebase completo y vuelves exactamente al estado inicial.</p>
+
+                <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="4-la-regla-de-oro">4. La Regla de Oro</h2>
+        <div class="alert">
+            <strong>Peligro:</strong> Nunca hagas rebase de una rama (branch) pública compartida que otros desarrolladores ya tengan en local. Si reescribes la historia de <code>main</code> y fuerzas la subida (<code>git push -f</code>), los Git locales de tus compañeros presentarán historias divergentes, y al hacer pull crearán merge commits duplicados que ensucian el historial y obligan a resolver conflictos innecesarios. <strong>Haz rebase SOLO en tus ramas de características (feature branches) locales antes de solicitar la fusión.</strong> Si tras un rebase de tu propia rama necesitas actualizarla en el remoto, usa <code>git push --force-with-lease</code>, que se niega a sobrescribir commits que no tengas en local.
+        </div>
+        
+        
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/azure-static-web-apps.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[azure]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Azure Static Web Apps</span>
+          </a></li>
+          <li><a href="/articulos/github-actions-cache.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[devops]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Caché en GitHub Actions</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="text-term-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-term-border pl-4">
+            <li><a href="#1-rebase-vs-merge-el-grafo-aciclico-dag" class="text-term-muted hover:text-term-green">1. Rebase vs Merge: El Grafo Acíclico (DAG)</a></li>
+            <li><a href="#2-entrando-al-modo-interactivo-i" class="text-term-muted hover:text-term-green">2. Entrando al Modo Interactivo (-i)</a></li>
+            <li><a href="#3-la-red-de-seguridad-git-reflog" class="text-term-muted hover:text-term-green">3. La Red de Seguridad: git reflog</a></li>
+            <li><a href="#4-la-regla-de-oro" class="text-term-muted hover:text-term-green">4. La Regla de Oro</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-term-border mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>

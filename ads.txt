@@ -1,0 +1,2 @@
+# Reemplaza pub-XXXXXXXXXXXXXXXX por tu ID de editor de AdSense (Cuenta > Configuración > Información de la cuenta).
+google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0

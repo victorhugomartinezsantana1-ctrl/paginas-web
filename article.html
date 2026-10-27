@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Título del artículo — devlog</title>
+  <meta name="description" content="Resumen de una o dos frases: aparece bajo el título y como meta description.">
+  <meta name="robots" content="noindex">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Título del artículo">
+  <meta property="og:description" content="Resumen de una o dos frases: aparece bajo el título y como meta description.">
+  <meta property="og:url" content="https://TU-DOMINIO.com/article.html">
+  <meta property="og:image" content="https://TU-DOMINIO.com/assets/img/og-default.png">
+  <meta property="article:published_time" content="2026-01-01">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'] },
+          colors: {
+            term: {
+              bg: '#0b0f0c', surface: '#111814', border: '#1f2a22',
+              green: '#4ade80', amber: '#fbbf24', text: '#c9d1c8', muted: '#7d8a80'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-mono bg-term-bg text-term-text min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-term-green text-term-bg px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-term-border sticky top-0 z-20 bg-term-bg/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="text-term-green font-bold tracking-tight">
+        <span class="text-term-muted">~/</span>devlog<span class="text-term-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="text-term-muted hover:text-term-green">inicio</a>
+        <a href="/#articulos" class="text-term-green" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="text-term-muted hover:text-term-green">contacto</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-xs text-term-muted mb-6">
+        <a href="/" class="hover:text-term-green">~</a> /
+        <a href="/#articulos" class="hover:text-term-green">articulos</a> /
+        <span class="text-term-text">plantilla</span>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-term-amber mb-3">[categoria]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-white leading-tight">
+          Título del artículo
+        </h1>
+        <p class="mt-4 text-term-muted">Resumen de una o dos frases: aparece bajo el título y como meta description.</p>
+        <p class="mt-4 text-term-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-term-text">Victor Martinez</span></span>
+          <time datetime="2026-01-01">2026-01-01</time>
+          <span>⏱ 5 min de lectura</span>
+        </p>
+      </header>
+
+      <div class="prose prose-term prose-invert prose-lg max-w-none prose-headings:font-mono prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<h2 id="1-introduccion">1. Introducción</h2>
+<p>Presenta el problema y qué aprenderá el lector.</p>
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-primer-paso">2. Primer paso</h2>
+<p>Explica el paso e incluye un bloque de código:</p>
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>bash</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>echo "hola mundo"</code></pre>
+        </div>
+<h2 id="3-segundo-paso">3. Segundo paso</h2>
+<p>Continúa el desarrollo. Usa <code>código en línea</code> para comandos y nombres de archivo.</p>
+<div class="alert"><strong>Importante:</strong> usa este bloque para advertencias.</div>
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="4-conclusion">4. Conclusión</h2>
+<p>Resume y sugiere el siguiente paso.</p>
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-term-border" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-sm text-term-muted mb-4">user@devlog:~$ ls ./relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/azure-static-web-apps.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[azure]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Azure Static Web Apps</span>
+          </a></li>
+          <li><a href="/articulos/github-actions-cache.html" class="block border border-term-border bg-term-surface rounded-lg p-4 hover:border-term-green">
+            <span class="text-xs text-term-amber">[devops]</span>
+            <span class="block mt-1 text-white font-bold leading-snug">Investigación Profunda: Caché en GitHub Actions</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="text-term-muted mb-3">$ cat indice.md</p>
+          <ul class="space-y-2 border-l border-term-border pl-4">
+            <li><a href="#1-introduccion" class="text-term-muted hover:text-term-green">1. Introducción</a></li>
+            <li><a href="#2-primer-paso" class="text-term-muted hover:text-term-green">2. Primer paso</a></li>
+            <li><a href="#3-segundo-paso" class="text-term-muted hover:text-term-green">3. Segundo paso</a></li>
+            <li><a href="#4-conclusion" class="text-term-muted hover:text-term-green">4. Conclusión</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-term-border mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-term-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-term-green">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-term-green">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js" defer></script>
+</body>
+</html>
