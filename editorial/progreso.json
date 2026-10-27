@@ -2,8 +2,8 @@
   "actualizado": "2026-10-27",
   "objetivo_total": 30,
   "minimo_aceptable": 20,
-  "ultimo_lote_procesado": 2,
-  "ultimo_articulo_completado": "ART-010",
+  "ultimo_lote_procesado": 3,
+  "ultimo_articulo_completado": "ART-015",
   "investigados": [
     "ART-001",
     "ART-002",
@@ -19,7 +19,8 @@
     "ART-012",
     "ART-013",
     "ART-014",
-    "ART-015"
+    "ART-015",
+    "ART-016"
   ],
   "redactados": [
     "ART-001",
@@ -36,7 +37,8 @@
     "ART-012",
     "ART-013",
     "ART-014",
-    "ART-015"
+    "ART-015",
+    "ART-016"
   ],
   "html_creados": [
     "ART-001",
@@ -53,7 +55,8 @@
     "ART-012",
     "ART-013",
     "ART-014",
-    "ART-015"
+    "ART-015",
+    "ART-016"
   ],
   "auditoria_superada": [
     "ART-001",
@@ -72,7 +75,12 @@
     "ART-007",
     "ART-008",
     "ART-009",
-    "ART-010"
+    "ART-010",
+    "ART-011",
+    "ART-012",
+    "ART-013",
+    "ART-014",
+    "ART-015"
   ],
   "url_verificadas": [
     "ART-001",
@@ -84,14 +92,14 @@
     "ART-007",
     "ART-008",
     "ART-009",
-    "ART-010"
-  ],
-  "pendientes": [
+    "ART-010",
     "ART-011",
     "ART-012",
     "ART-013",
     "ART-014",
-    "ART-015",
+    "ART-015"
+  ],
+  "pendientes": [
     "ART-016",
     "ART-017",
     "ART-018",
@@ -109,8 +117,8 @@
     "ART-030"
   ],
   "errores_activos": [],
-  "proxima_accion": "Commit, push y verificacion publica",
-  "estado_ultimo_despliegue": "commit 6dd2ca5; GitHub Actions run 40452228267 completed/success",
+  "proxima_accion": "Verificacion publica",
+  "estado_ultimo_despliegue": "commit 68609bf; GitHub Actions run 40455360990 completed/success",
   "fase_completada": [
     "A reconocimiento",
     "B arquitectura de despliegue",

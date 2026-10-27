@@ -1,0 +1,12 @@
+{
+  "id": "ART-016",
+  "slug": "sqlite-wal-limites-casos-de-uso",
+  "titulo": "SQLite: WAL, límites y cuándo es la mejor base de datos",
+  "etiqueta": "bases de datos",
+  "fecha": "2026-10-27",
+  "descripcion": "Qué hace el modo WAL de SQLite, cómo cambia la concurrencia y el coste de confirmar, qué límites tiene y cuándo conviene, con medidas reales en SQLite 3.50.",
+  "palabra_clave": "sqlite cuándo usar",
+  "secundarias": ["WAL", "journal_mode", "checkpoint", "límites", "concurrencia"],
+  "relacionados": ["postgresql-mvcc-vacuum-planificador", "indices-bases-datos-btree-planes-ejecucion", "python-asyncio-bucle-eventos-corrutinas"],
+  "barra": "cielo"
+}

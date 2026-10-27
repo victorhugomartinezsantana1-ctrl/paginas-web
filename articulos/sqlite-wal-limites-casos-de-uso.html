@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQLite: WAL, límites y cuándo es la mejor base de datos — devlog</title>
+  <meta name="description" content="Qué hace el modo WAL de SQLite, cómo cambia la concurrencia y el coste de confirmar, qué límites tiene y cuándo conviene, con medidas reales en SQLite 3.50.">
+  <link rel="canonical" href="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/sqlite-wal-limites-casos-de-uso.html">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="SQLite: WAL, límites y cuándo es la mejor base de datos">
+  <meta property="og:description" content="Qué hace el modo WAL de SQLite, cómo cambia la concurrencia y el coste de confirmar, qué límites tiene y cuándo conviene, con medidas reales en SQLite 3.50.">
+  <meta property="og:url" content="https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/sqlite-wal-limites-casos-de-uso.html">
+  <meta property="article:published_time" content="2026-10-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "SQLite: WAL, límites y cuándo es la mejor base de datos",
+    "description": "Qué hace el modo WAL de SQLite, cómo cambia la concurrencia y el coste de confirmar, qué límites tiene y cuándo conviene, con medidas reales en SQLite 3.50.",
+    "inLanguage": "es",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "wordCount": 5693,
+    "keywords": "sqlite cuándo usar, WAL, journal_mode, checkpoint, límites, concurrencia",
+    "author": {
+      "@type": "Person",
+      "name": "Victor Martinez"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "devlog"
+    },
+    "mainEntityOfPage": "https://kind-mud-077d38b10.1.azurestaticapps.net/articulos/sqlite-wal-limites-casos-de-uso.html"
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+          },
+          colors: {
+            page: '#f8fafc', surface: '#ffffff', line: '#e2e8f0',
+            ink: '#334155', head: '#0f172a', muted: '#64748b',
+            accent: '#4f46e5', warm: '#b45309'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/css/style.css?v=3">
+
+  <!-- Google AdSense: descomenta cuando tu cuenta esté aprobada y reemplaza el ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script> -->
+</head>
+<body class="font-sans bg-page text-ink min-h-screen flex flex-col">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 bg-accent text-page px-3 py-1 rounded">Saltar al contenido</a>
+
+  <!-- ===== Header ===== -->
+  <header class="border-b border-line sticky top-0 z-20 bg-page/95 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+      <a href="/" class="font-mono text-accent font-bold tracking-tight">
+        <span class="text-muted">~/</span>devlog<span class="text-muted">$</span>
+      </a>
+      <nav aria-label="Principal" class="flex items-center gap-4 sm:gap-6 text-sm">
+        <a href="/" class="hidden sm:inline text-muted hover:text-accent">inicio</a>
+        <a href="/#articulos" class="text-accent font-medium" aria-current="page">artículos</a>
+        <a href="/contacto.html" class="hidden sm:inline text-muted hover:text-accent">contacto</a>
+        <span class="hidden sm:block h-5 w-px bg-line" aria-hidden="true"></span>
+        <div data-auth class="flex items-center gap-3">
+          <span data-auth-user hidden class="hidden md:inline max-w-[12rem] truncate text-muted"></span>
+          <a data-auth-out hidden href="/.auth/logout" class="text-muted hover:text-accent">Salir</a>
+          <a data-auth-in href="/login.html" class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition-colors hover:bg-indigo-700">Iniciar sesión</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1 max-w-6xl w-full mx-auto px-4 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
+
+    <!-- ===== Artículo ===== -->
+    <article class="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+
+      <nav aria-label="Ruta" class="text-sm text-muted mb-6">
+        <a href="/" class="hover:text-accent">Inicio</a> /
+        <a href="/#articulos" class="hover:text-accent">Artículos</a>
+      </nav>
+
+      <header class="mb-8">
+        <p class="text-xs text-warm mb-3">[bases de datos]</p>
+        <h1 class="text-3xl sm:text-4xl font-bold text-head leading-tight">
+          SQLite: WAL, límites y cuándo es la mejor base de datos
+        </h1>
+        <p class="mt-4 text-muted">Qué hace el modo WAL de SQLite, cómo cambia la concurrencia y el coste de confirmar, qué límites tiene y cuándo conviene, con medidas reales en SQLite 3.50.</p>
+        <p class="mt-4 text-muted text-sm flex flex-wrap gap-x-4 gap-y-1">
+          <span>por <span class="text-ink">Victor Martinez</span></span>
+          <time datetime="2026-10-27">2026-10-27</time>
+          <span>⏱ 29 min de lectura</span>
+        </p>
+      </header>
+
+      <details class="mb-8 rounded-lg border border-line bg-surface p-4 lg:hidden">
+        <summary class="cursor-pointer font-semibold text-head">Contenido del artículo</summary>
+        <ol class="mt-3 list-decimal space-y-1.5 pl-5 text-sm">
+          <li><a href="#1-que-es-sqlite-y-que-promete" class="text-accent hover:underline">Qué es SQLite y qué promete</a></li>
+          <li><a href="#2-el-modo-wal-como-funciona" class="text-accent hover:underline">El modo WAL: cómo funciona</a></li>
+          <li><a href="#3-concurrencia-lo-que-cambia-y-lo-que-no" class="text-accent hover:underline">Concurrencia: lo que cambia y lo que no</a></li>
+          <li><a href="#4-el-coste-de-confirmar-sincronizaciones-a" class="text-accent hover:underline">El coste de confirmar: sincronizaciones al disco</a></li>
+          <li><a href="#5-puntos-de-control-y-el-tamano-del-wal" class="text-accent hover:underline">Puntos de control y el tamaño del WAL</a></li>
+          <li><a href="#6-lectores-y-escritor-a-la-vez-medido" class="text-accent hover:underline">Lectores y escritor a la vez, medido</a></li>
+          <li><a href="#7-lo-que-wal-no-puede-hacer" class="text-accent hover:underline">Lo que WAL no puede hacer</a></li>
+          <li><a href="#8-los-limites-de-sqlite" class="text-accent hover:underline">Los límites de SQLite</a></li>
+          <li><a href="#9-cuando-sqlite-es-la-mejor-opcion" class="text-accent hover:underline">Cuándo SQLite es la mejor opción</a></li>
+          <li><a href="#10-detalles-practicos-que-muerden" class="text-accent hover:underline">Detalles prácticos que muerden</a></li>
+          <li><a href="#11-errores-y-malentendidos-frecuentes" class="text-accent hover:underline">Errores y malentendidos frecuentes</a></li>
+          <li><a href="#12-preguntas-frecuentes" class="text-accent hover:underline">Preguntas frecuentes</a></li>
+          <li><a href="#13-conclusion" class="text-accent hover:underline">Conclusión</a></li>
+          <li><a href="#referencias-lista" class="text-accent hover:underline">Referencias</a></li>
+        </ol>
+      </details>
+
+      <div class="prose prose-site prose-lg max-w-none prose-headings:scroll-mt-20 prose-a:no-underline hover:prose-a:underline">
+<p>SQLite es, según suele afirmarse, una de las bases de datos más desplegadas (un dato que las páginas consultadas no cubren), y desde luego una de las peor entendidas. Se la descarta con frases hechas («no soporta concurrencia», «solo sirve para pruebas») y se la usa mal por la razón contraria («es solo un archivo, ¿qué puede fallar?»). La realidad es más interesante: es una biblioteca de un tamaño muy pequeño que guarda una base de datos completa en un único archivo, con transacciones, índices y SQL, y cuyo comportamiento ante la concurrencia, la durabilidad y el tamaño está documentado con una precisión poco habitual. Entender tres cosas (el modo de diario, en particular el modo WAL; los límites reales; y los criterios de la propia documentación sobre cuándo conviene) permite decidir con datos si SQLite es la herramienta adecuada.</p>
+
+<p>Este artículo recorre esas tres cosas con la documentación oficial y con un laboratorio real. Una advertencia de método: <strong>todas las medidas se ejecutaron</strong> con SQLite 3.50.4 a través del módulo <code>sqlite3</code> de Python 3.14.2, sobre Windows 11 y un disco local; el script y las salidas completas están en el repositorio del sitio (<code>editorial/fuentes/lab_wal.md</code>). Los tiempos son de una ejecución concreta y variarán en tu equipo (sobre todo los que dependen de que el sistema operativo confirme las escrituras en disco). El experimento de concurrencia con hilos es, además, no determinista: los recuentos exactos cambian de una ejecución a otra, y solo el contraste entre los dos modos es estable. Lo que se atribuye a la documentación procede de las páginas oficiales de SQLite citadas al final, consultadas el 27 de octubre de 2026. Si trabajas con índices y planes de ejecución, este texto continúa el que dedicamos a los <a href="/articulos/indices-bases-datos-btree-planes-ejecucion.html">índices en bases de datos</a>, que usa el mismo motor.</p>
+
+<div class="alert alert-success">
+  <strong>Puntos clave</strong>
+  <ul>
+    <li>Por defecto SQLite usa un diario de reversión (<code>journal_mode=delete</code>); con <code>PRAGMA journal_mode=WAL</code> los cambios se añaden a un archivo aparte y un lector ya no bloquea al escritor.</li>
+    <li>Con un lector con una transacción abierta, el <code>COMMIT</code> de un escritor falló con «database is locked» en modo <em>delete</em> y tuvo éxito en modo WAL; el lector siguió viendo su instantánea (10 filas) hasta terminar su transacción.</li>
+    <li>Confirmar 1.000 inserciones, cada una en su transacción, tardó 3,06 ms por confirmación en modo <em>delete</em>, 0,32 ms en WAL con <code>synchronous=FULL</code> y 0,03 ms en WAL con <code>synchronous=NORMAL</code>.</li>
+    <li>Con 300 confirmaciones de un escritor y un lector en un bucle, el modo <em>delete</em> produjo 18 lecturas bloqueadas y 28 escrituras fallidas; el modo WAL, ninguna de las dos.</li>
+    <li>WAL sigue permitiendo <strong>un solo escritor</strong> a la vez: el segundo <code>BEGIN IMMEDIATE</code> falló en los dos modos.</li>
+    <li>El WAL crece hasta el punto de control (3,93 MiB con el valor por defecto de 1.000 páginas) y un lector con una transacción abierta impide reiniciarlo.</li>
+    <li>Los límites son holgados: unos 16 TiB de tamaño máximo con páginas de 4.096 bytes y 32.766 parámetros por consulta en esta compilación; las claves foráneas, en cambio, vienen desactivadas por defecto.</li>
+  </ul>
+</div>
+
+<h2 id="1-que-es-sqlite-y-que-promete">Qué es SQLite y qué promete</h2>
+
+<p>SQLite no es un servidor al que te conectas, sino una biblioteca que enlazas con tu programa: las consultas se ejecutan dentro de tu proceso y los datos viven en un archivo (o en la memoria). Esa descripción es conocimiento general sobre su diseño que las páginas consultadas dan por supuesto; su consecuencia práctica es la que recoge la página de usos adecuados: no necesita administración, de modo que encaja en dispositivos que funcionan sin supervisión experta y en aplicaciones que quieren un formato de archivo con transacciones. De ahí también sus límites naturales: al no haber un proceso servidor que arbitre, la coordinación entre varios procesos que abren el mismo archivo se hace mediante bloqueos del propio archivo, y ahí es donde el modo de diario importa.</p>
+
+<h3>Atomicidad y durabilidad: dos promesas distintas</h3>
+
+<p>Toda base de datos transaccional promete que una confirmación (<em>commit</em>) es atómica (o se aplica entera o no se aplica) y, normalmente, durable (sobrevive a un fallo de corriente). SQLite consigue la primera con un <em>diario</em> (<em>journal</em>): antes de modificar la base de datos, guarda información que permite deshacer o rehacer el cambio si el proceso muere a medias. El valor por defecto es el diario de reversión: la documentación de <code>PRAGMA journal_mode</code> lo llama <code>DELETE</code> y explica que el archivo del diario se elimina al terminar cada transacción. Hay variantes: <code>TRUNCATE</code> lo trunca a longitud cero en lugar de borrarlo, <code>PERSIST</code> sobrescribe su cabecera con ceros, <code>MEMORY</code> lo guarda en memoria (con riesgo de corrupción tras un fallo) y <code>OFF</code> desactiva el diario por completo, de modo que <code>ROLLBACK</code> deja de funcionar. Y el modo que nos ocupa, <code>WAL</code>.</p>
+
+<p>La durabilidad la controla otro ajuste, <code>PRAGMA synchronous</code>, que decide cuántas veces se fuerza al sistema operativo a escribir realmente en el disco (no solo en su caché) durante una confirmación. Sus niveles son <code>OFF</code>, <code>NORMAL</code>, <code>FULL</code> y <code>EXTRA</code>; en modo de diario de reversión, el valor por defecto es <code>FULL</code>, y así lo comprobamos: en una base de datos recién creada, <code>PRAGMA synchronous</code> devolvió 2, que es <code>FULL</code>. La matización más importante está en el modo WAL, y la volveremos a ver: según la documentación, con <code>NORMAL</code> el sistema es consistente y evita la corrupción, pero algunas transacciones pueden deshacerse tras un fallo de corriente; se pierde durabilidad, no atomicidad.</p>
+
+        <!-- AdSense Slot: article-top -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000002"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="2-el-modo-wal-como-funciona">El modo WAL: cómo funciona</h2>
+
+<p>WAL son las siglas, en inglés, de <em>write-ahead log</em>, «registro de escritura anticipada». La documentación oficial resume la diferencia con el modo tradicional. En el diario de reversión, el original se copia aparte y el cambio se escribe directamente en el archivo de la base de datos. En WAL ocurre lo contrario: la base de datos no se toca, y los cambios se <strong>añaden al final de un archivo aparte</strong>, el WAL. Una confirmación se registra añadiendo al WAL un registro especial de confirmación, y varias transacciones pueden ir añadiéndose en el mismo archivo. Las consecuencias, según la página, son las que explican todo lo demás: los lectores siguen trabajando sobre la base de datos sin cambios mientras un escritor confirma en el WAL, de modo que lectores y escritor pueden funcionar a la vez; pero solo puede haber un escritor a la vez.</p>
+
+<p>Para que un lector sepa, sin leer el WAL entero, qué páginas están en él y en qué versión, SQLite mantiene un <em>índice del WAL</em> (<em>wal-index</em>) en memoria compartida; es también la razón por la que todos los procesos deben estar en la misma máquina, como veremos entre las limitaciones. Periódicamente, el contenido del WAL se copia de vuelta al archivo de la base de datos: es el <em>punto de control</em> (<em>checkpoint</em>), al que dedicamos una sección.</p>
+
+<h3>Activarlo y qué archivos aparecen</h3>
+
+<p>Se activa con una sola sentencia, <code>PRAGMA journal_mode=WAL;</code>, que devuelve «wal» si el cambio tuvo éxito y, si falla, el modo anterior. Es una de las pocas configuraciones que persisten en el archivo: la documentación indica que el modo WAL es persistente, mientras que los demás (como <code>TRUNCATE</code>) vuelven a <code>DELETE</code> al reabrir la base de datos. Lo comprobamos siguiendo los archivos del directorio:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>journal_mode por defecto : delete
+synchronous por defecto  : 2 (2 = FULL)
+busy_timeout (módulo sqlite3 de Python, timeout=5 s por defecto): 5000 ms
+foreign_keys por defecto : 0
+wal_autocheckpoint       : 1000 páginas
+archivos antes de WAL    : ['lab.db']
+PRAGMA journal_mode=WAL  -&gt; wal
+archivos tras escribir   : ['lab.db', 'lab.db-shm', 'lab.db-wal']
+archivos tras cerrar la última conexión: ['lab.db']
+al reabrir, journal_mode : wal (persistente)
+synchronous al reabrir   : 2 (no persistente)</code></pre>
+        </div>
+
+<p>La salida contiene varios hechos útiles. El diario por defecto es <code>delete</code>. Al activar WAL y escribir, aparecen dos archivos nuevos junto a la base de datos: <code>lab.db-wal</code> (el WAL) y <code>lab.db-shm</code> (la memoria compartida con el índice del WAL). Cuando se cierra la última conexión, ambos desaparecen: el contenido del WAL se ha trasladado a la base de datos. Al reabrir, el modo sigue siendo WAL (persistente), pero <code>synchronous</code> ha vuelto a su valor por defecto de 2: es un ajuste de la conexión, no de la base de datos, y hay que repetirlo en cada conexión. También vemos que el módulo <code>sqlite3</code> de Python aplica por defecto una espera de 5 segundos ante bloqueos (5.000 ms), un detalle del módulo y no de SQLite, que a veces explica por qué una aplicación parece «colgarse» en lugar de fallar de inmediato.</p>
+
+<p>Una consecuencia práctica de que aparezcan los archivos <code>-wal</code> y <code>-shm</code> (una inferencia nuestra, no medida): copiar la base de datos mientras está abierta en modo WAL sin copiar también esos archivos (o sin hacer antes un punto de control) puede dejar fuera cambios confirmados. La documentación consultada lo menciona como una desventaja de WAL: los archivos adicionales hacen que sea menos adecuado como formato de archivo de una aplicación, y recomienda volver a <code>journal_mode=DELETE</code> antes de grabar una base de datos en un medio de solo lectura.</p>
+
+<h2 id="3-concurrencia-lo-que-cambia-y-lo-que-no">Concurrencia: lo que cambia y lo que no</h2>
+
+<p>La concurrencia es el motivo por el que casi todo el mundo descubre el modo WAL, así que conviene distinguir con precisión qué mejora y qué sigue igual. La página de usos adecuados de SQLite lo resume con una frase: admite un número ilimitado de lectores simultáneos, pero solo permite un escritor en cada instante. Los escritores suelen ponerse en cola, y los bloqueos suelen durar apenas unas decenas de milisegundos. Eso es cierto en los dos modos. Lo que cambia con WAL es la <em>interacción</em> entre lectores y escritor.</p>
+
+<h3>Un lector con una transacción abierta y un escritor que confirma</h3>
+
+<p>Montamos el caso difícil para el diario de reversión: un lector abre una transacción (<code>BEGIN</code>) y lee la tabla; mientras tanto, otra conexión abre una transacción de escritura, inserta una fila e intenta confirmar. Hacemos lo mismo en los dos modos, con espera cero para que un bloqueo se vea al instante:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  modo delete: COMMIT falla: database is locked
+    el lector veía 10 filas; sigue viendo 10 dentro de su transacción; al terminarla ve 10
+  modo wal   : COMMIT correcto
+    el lector veía 10 filas; sigue viendo 10 dentro de su transacción; al terminarla ve 11</code></pre>
+        </div>
+
+<p>En modo <em>delete</em>, el escritor no pudo confirmar mientras el lector mantenía su transacción abierta: «database is locked» (el código de error subyacente, <code>SQLITE_BUSY</code>). Según la página de transacciones, un <code>COMMIT</code> puede devolver <code>SQLITE_BUSY</code> si otro hilo o proceso tiene una conexión de lectura abierta, y en ese caso la transacción sigue activa y se puede reintentar la confirmación más tarde; por eso, en el experimento, hacemos <code>ROLLBACK</code> al fallar (y el lector, al terminar, sigue viendo 10 filas). En modo WAL, el <code>COMMIT</code> tuvo éxito inmediatamente. Y observa lo que ve el lector: sigue viendo 10 filas dentro de su transacción aunque ya se haya confirmado la fila 11. La documentación de transacciones lo describe: una transacción de lectura abierta ve una instantánea histórica de la base de datos y no ve los cambios confirmados por otras conexiones hasta que termina. Al cerrar su transacción, el lector ve 11. Es un aislamiento de instantánea, y es lo que permite que lectores y escritor convivan.</p>
+
+<h3>Dos escritores a la vez</h3>
+
+<p>El segundo experimento comprueba que WAL no cambia la regla del escritor único. Una conexión abre <code>BEGIN IMMEDIATE</code> (una transacción de escritura que bloquea desde el primer momento) y una segunda intenta lo mismo:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  modo delete: el segundo BEGIN IMMEDIATE falla: database is locked
+  modo wal   : el segundo BEGIN IMMEDIATE falla: database is locked</code></pre>
+        </div>
+
+<p>En ambos modos, el segundo escritor es rechazado (con espera cero; con una espera configurada, esperaría su turno, como veremos). La documentación de transacciones aclara los tres tipos: <code>DEFERRED</code> (el valor por defecto) no empieza hasta que se accede a la base de datos por primera vez; <code>IMMEDIATE</code> inicia una transacción de escritura enseguida, sin esperar a una sentencia de escritura; y <code>EXCLUSIVE</code> también, y fuera del modo WAL además impide que otras conexiones lean. La propia página indica que en WAL <code>EXCLUSIVE</code> e <code>IMMEDIATE</code> son lo mismo.</p>
+
+<p>Hay una trampa que la documentación señala y que muerde en producción: una transacción que empieza leyendo (un <code>SELECT</code>) y después ejecuta una sentencia de escritura se «actualiza» a escritura si es posible; si no lo es (porque otra conexión ya modificó la base de datos), la escritura falla con <code>SQLITE_BUSY</code>, y esa instantánea que el lector estaba usando ya no sirve para escribir. Nuestra recomendación (opinión, no cita) es abrir con <code>BEGIN IMMEDIATE</code> las transacciones que sepas que van a escribir: el posible bloqueo ocurre al principio, cuando es fácil reintentar, y no a mitad del trabajo. Y combinarlo con un tiempo de espera: <code>PRAGMA busy_timeout</code> fija en milisegundos cuánto espera la conexión a que se libere un bloqueo antes de devolver el error (el valor máximo es 2.147.483.647 ms, unos 24,9 días; la página indica que el resultado de un valor mayor es indefinido).</p>
+
+<h2 id="4-el-coste-de-confirmar-sincronizaciones-a">El coste de confirmar: sincronizaciones al disco</h2>
+
+<p>El rendimiento de las escrituras pequeñas en SQLite lo domina un único factor: cuántas veces hay que forzar al sistema operativo a escribir de verdad en el disco. Cada confirmación en modo de diario de reversión implica varias sincronizaciones (el diario, la base de datos, el borrado del diario); en WAL, el contenido se escribe una sola vez y de forma secuencial, y la documentación enumera entre sus ventajas que hay muchas menos llamadas a <code>fsync()</code>, que además ayuda en sistemas donde esa llamada no es fiable. Lo medimos insertando 1.000 filas, <strong>cada una en su propia transacción</strong> (el peor caso para un motor transaccional), con tres configuraciones:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  journal_mode=delete synchronous=FULL  :   3.06 s en total =   3.06 ms por confirmación
+  journal_mode=wal    synchronous=FULL  :   0.32 s en total =   0.32 ms por confirmación
+  journal_mode=wal    synchronous=NORMAL:   0.03 s en total =   0.03 ms por confirmación</code></pre>
+        </div>
+
+<p>Las cifras son contundentes. Pasar del diario de reversión a WAL, manteniendo <code>synchronous=FULL</code> (la configuración más segura), redujo el coste de cada confirmación de 3,06 a 0,32 ms, unas diez veces menos. Y relajar a <code>synchronous=NORMAL</code> lo dejó en 0,03 ms, otras diez veces menos (en total, unas cien veces menos que el punto de partida). Hay que leer esa última cifra con la advertencia de la documentación en la mano: en WAL, <code>NORMAL</code> evita la corrupción, pero una transacción confirmada puede perderse tras un corte de corriente, porque el WAL no se sincroniza en cada confirmación; con <code>FULL</code>, se sincroniza el WAL tras cada confirmación y las transacciones son durables. La decisión entre ambas es de negocio, no técnica: ¿qué cuesta perder las últimas confirmaciones frente a esperar diez veces más en cada una? Una aplicación de apuntes personales puede tolerar lo primero; un sistema de pagos, no.</p>
+
+<p>Una precisión importante contra las conclusiones apresuradas: el modo WAL no hace «más rápido» todo. Cuando agrupamos 100.000 filas en <strong>una sola transacción</strong>, los dos modos tardaron lo mismo, 0,08 s. El beneficio de WAL en las escrituras está en el coste de confirmar, no en el coste de escribir filas. Por eso la primera optimización de cualquier carga con muchas inserciones es la misma en los dos modos: agruparlas en transacciones grandes. La documentación añade matices sobre el tamaño: el modo WAL funciona mejor con transacciones pequeñas, y el modo de diario de reversión puede ser más rápido por encima de unos 100 MB; en WAL, las transacciones muy grandes pueden fallar con errores de E/S o de disco lleno por encima de aproximadamente un gigabyte, aunque desde la versión 3.11.0 se manejan tan eficientemente como en el modo de reversión. También hay un precio en lectura: la documentación estima que las lecturas son entre un 1 % y un 2 % más lentas en aplicaciones de lectura casi exclusiva. Es un coste pequeño, que no medimos.</p>
+
+<h2 id="5-puntos-de-control-y-el-tamano-del-wal">Puntos de control y el tamaño del WAL</h2>
+
+<p>El WAL no puede crecer para siempre. Un <em>punto de control</em> copia las páginas del WAL de vuelta a la base de datos para que el WAL pueda reutilizarse. La documentación distingue varios tipos que se pueden pedir con <code>PRAGMA wal_checkpoint</code>: <code>PASSIVE</code> (el valor por defecto de los automáticos) lleva todos los marcos que puede sin esperar y no invoca el gestor de bloqueos; <code>FULL</code> espera a que terminen los escritores y los bloquea mientras corre; <code>RESTART</code> hace lo mismo y además espera a que los lectores terminen con el registro, de modo que el siguiente escritor lo empiece desde el principio; y <code>TRUNCATE</code> hace lo mismo que <code>RESTART</code> y después trunca el archivo WAL a cero bytes. Por defecto, SQLite ejecuta automáticamente un punto de control (de tipo pasivo) cuando el WAL alcanza 1.000 páginas, valor configurable con <code>PRAGMA wal_autocheckpoint</code> (cero o un valor negativo lo desactivan).</p>
+
+<p>Observamos el efecto insertando 20.000 filas de 100 caracteres en 200 transacciones de 100 filas, con el punto de control automático por defecto y con él desactivado:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>wal_autocheckpoint=1000 (por defecto): WAL máximo = 3.93 MiB, final = 3.93 MiB, base de datos = 1.87 MiB
+wal_autocheckpoint=0 (desactivado): WAL máximo = 4.48 MiB, final = 4.48 MiB, base de datos = 0.00 MiB
+  wal_checkpoint(PASSIVE) -&gt; (0, 1139, 1139)
+  wal_checkpoint(TRUNCATE) -&gt; (0, 0, 0)
+  WAL tras TRUNCATE = 0 bytes</code></pre>
+        </div>
+
+<p>Con el valor por defecto, el WAL se quedó en 3,93 MiB y la base de datos recibió su parte (1,87 MiB): el punto de control automático fue trasladando páginas. La cifra tiene una explicación aritmética: 1.000 páginas de 4.096 bytes son 3,91 MiB, y cada marco del WAL lleva además una cabecera (24 bytes, un dato general de formato que las páginas consultadas no detallan), lo que da los 3,93 MiB observados. Nótese, además, que el archivo no se trunca tras el punto de control: la documentación explica que el WAL normalmente se recicla en lugar de truncarse (salvo que se fije <code>journal_size_limit</code>), por eso el tamaño final coincide con el máximo. Con el punto de control desactivado, todo permaneció en el WAL: 4,48 MiB y una base de datos todavía vacía (0,00 MiB); <code>wal_checkpoint(PASSIVE)</code> devolvió <code>(0, 1139, 1139)</code>, es decir (ocupado = 0, 1.139 páginas en el WAL, 1.139 trasladadas), y <code>TRUNCATE</code> dejó el archivo en 0 bytes. La documentación describe esas tres cifras: un indicador de ocupado, el número de páginas del WAL y el número de páginas trasladadas a la base de datos.</p>
+
+<h3>Cuando un lector impide reiniciar el WAL</h3>
+
+<p>El problema más serio del WAL en producción se llama <em>inanición de puntos de control</em>. Un punto de control no puede reiniciar el WAL mientras algún lector lo está usando; si siempre hay algún lector, el WAL puede crecer sin límite. La documentación sugiere dejar «huecos de lectores» o usar <code>RESTART</code> o <code>TRUNCATE</code>, que pueden bloquear a los lectores mientras corren. Lo simulamos: un lector abre una transacción y hace una lectura; el escritor añade 50 transacciones; y después pedimos puntos de control:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>con el lector abierto: wal_checkpoint(PASSIVE)  -&gt; (0, 287, 3)
+con el lector abierto: wal_checkpoint(TRUNCATE) -&gt; (1, 287, 3)
+tamaño del WAL = 1.13 MiB
+al cerrar la transacción del lector: wal_checkpoint(TRUNCATE) -&gt; (0, 0, 0)
+tamaño del WAL = 0 bytes</code></pre>
+        </div>
+
+<p>Con el lector abierto, el WAL tenía 287 páginas, pero solo se pudieron trasladar 3 a la base de datos (el lector aún necesitaba ver las versiones anteriores del resto); el punto de control <code>TRUNCATE</code> devolvió <code>1</code> en el indicador de ocupado, y el archivo siguió ocupando 1,13 MiB. En cuanto el lector cerró su transacción, el mismo comando funcionó: todo se trasladó (<code>(0, 0, 0)</code>) y el WAL quedó en 0 bytes. Es la razón por la que, en modo WAL, las transacciones de lectura de larga duración no son inocuas: un informe que mantiene una transacción abierta durante una hora impide que el WAL se reinicie durante esa hora. La lección práctica es la de siempre en este tipo de motores: transacciones cortas, y cierre explícito de las de lectura.</p>
+
+<h2 id="6-lectores-y-escritor-a-la-vez-medido">Lectores y escritor a la vez, medido</h2>
+
+<p>La prueba definitiva es juntarlo todo: un escritor que hace 300 confirmaciones sueltas mientras un lector, en otro hilo con su propia conexión, ejecuta consultas en un bucle sin descanso, con espera cero para que cada bloqueo se manifieste como un error. Contamos las lecturas correctas, las lecturas que fallaron con «database is locked» y las escrituras fallidas:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>modo delete: lecturas correctas =     44, lecturas con 'database is locked' =    18, escrituras fallidas = 28
+modo wal   : lecturas correctas =  10144, lecturas con 'database is locked' =     0, escrituras fallidas = 0</code></pre>
+        </div>
+
+<p>En modo de diario de reversión, con las dos conexiones peleando por el mismo archivo, solo se completaron 44 lecturas, 18 se bloquearon y 28 de las 300 escrituras del escritor fallaron. En modo WAL, el lector completó 10.144 lecturas sin ningún bloqueo y el escritor, ninguna escritura fallida. La cifra exacta cambia cada vez (es un experimento con hilos y con un sistema operativo de por medio), pero el contraste es sistemático: en el diario de reversión, lector y escritor se estorban; en WAL, no. Dos advertencias de interpretación. La primera, que usamos espera cero a propósito: con la espera de 5 segundos que el módulo de Python aplica por defecto, esos bloqueos no se verían como errores sino como retrasos. La segunda, que el número de lecturas del modo WAL (10.144) no es una medida de rendimiento de lectura comparable: el lector corría sin pausa hasta que el escritor terminaba, y el escritor de WAL terminó antes que el de reversión, así que lo que se compara es el comportamiento ante el conflicto, no un caudal.</p>
+
+<h2 id="7-lo-que-wal-no-puede-hacer">Lo que WAL no puede hacer</h2>
+
+<p>El modo WAL tiene limitaciones que la documentación enumera sin dramatismo y que conviene conocer antes de activarlo por rutina:</p>
+
+<ul>
+  <li><strong>Todos los procesos deben estar en la misma máquina.</strong> WAL no funciona sobre un sistema de archivos de red, porque el índice del WAL vive en memoria compartida. (La página de usos adecuados advierte, además, de que los sistemas de archivos de red tienen latencia y un bloqueo de archivos defectuoso en la práctica, lo que puede llevar a la corrupción: es una razón general para no compartir un archivo SQLite por la red.)</li>
+  <li><strong>Atomicidad con varias bases de datos adjuntas.</strong> Si una conexión usa <code>ATTACH</code> con varias bases de datos en modo WAL, los cambios de cada una son atómicos por separado, pero no como conjunto.</li>
+  <li><strong>El tamaño de página no puede cambiarse</strong> una vez que la base de datos entra en modo WAL.</li>
+  <li><strong>Archivos adicionales.</strong> Los archivos <code>-wal</code> y <code>-shm</code> hacen que WAL sea menos adecuado como formato de archivo de una aplicación que se copia o envía como un solo archivo.</li>
+  <li><strong>Bases de datos de solo lectura.</strong> Antes de la versión 3.22.0 no podían abrirse en modo WAL; desde entonces se puede si los archivos <code>-shm</code> y <code>-wal</code> ya existen, si el directorio admite escritura para crearlos o si se abre con el parámetro <code>immutable</code>.</li>
+  <li><strong>Los puntos de control son una tarea más</strong> que hay que tener en cuenta, como acabamos de ver.</li>
+  <li><strong>Compatibilidad.</strong> WAL se introdujo en la versión 3.7.0 (julio de 2010); una base de datos en WAL no puede abrirse con versiones anteriores, salvo que se vuelva a <code>journal_mode=DELETE</code>.</li>
+</ul>
+
+<p>La página incluye también una variante para casos particulares: desde la versión 3.7.4 se puede usar WAL sin memoria compartida si se fija <code>locking_mode=EXCLUSIVE</code> antes del primer acceso, pensado para cuando el proceso es el único que accede a la base de datos y el sistema de archivos virtual de SQLite carece de los métodos de memoria compartida. Es un modo con una sola conexión, no una forma de saltarse la limitación de la máquina única.</p>
+
+        <!-- AdSense Slot: article-middle -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000003"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="8-los-limites-de-sqlite">Los límites de SQLite</h2>
+
+<p>El segundo mito habitual es que SQLite «no escala» en tamaño. La página de límites en tiempo de ejecución lo desmiente con números. Reunimos los más relevantes, con lo que dice la documentación y, en la última columna, lo que informó nuestra compilación (SQLite 3.50.4 en Python 3.14.2) cuando se lo preguntamos:</p>
+
+<div class="tabla-scroll"><table>
+  <thead>
+    <tr><th>Límite</th><th>Valor por defecto según la documentación</th><th>Lo que medimos</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Longitud de una cadena o BLOB</td><td>1.000.000.000 bytes (máximo 2.147.483.645)</td><td>1.000.000.000</td></tr>
+    <tr><td>Columnas de una tabla o de un resultado</td><td>2.000 (hasta 32.767 al compilar)</td><td>2.000; un <code>SELECT</code> de 3.000 columnas falló con «too many columns in result set»</td></tr>
+    <tr><td>Longitud de una sentencia SQL</td><td>1.000.000.000 bytes</td><td>1.000.000.000</td></tr>
+    <tr><td>Profundidad de una expresión</td><td>1.000</td><td>1.000</td></tr>
+    <tr><td>Términos de un <code>SELECT</code> compuesto</td><td>500</td><td>500</td></tr>
+    <tr><td>Parámetros de una consulta</td><td>999 antes de 3.32.0 y 32.766 después</td><td>32.766; con 40.000 parámetros falló con «too many SQL variables» y con 30.000 funcionó</td></tr>
+    <tr><td>Bases de datos adjuntas</td><td>10 (hasta 125)</td><td>10</td></tr>
+    <tr><td>Argumentos de una función</td><td>1.000 desde 3.48.0</td><td>1.000</td></tr>
+    <tr><td>Longitud de un patrón <code>LIKE</code>/<code>GLOB</code></td><td>50.000 bytes</td><td>50.000</td></tr>
+    <tr><td>Profundidad de disparadores recursivos</td><td>1.000</td><td>1.000</td></tr>
+    <tr><td>Tablas en un <code>JOIN</code></td><td>64 (fijo)</td><td>No medido</td></tr>
+    <tr><td>Páginas por base de datos</td><td>4.294.967.294 (desde 3.45.0)</td><td>4.294.967.294</td></tr>
+  </tbody>
+</table></div>
+
+<p>La cifra más importante es la última, de la que sale el tamaño máximo: según la documentación, unos 17,5 TB con las páginas por defecto de 4.096 bytes, y unos 281 TB con páginas de 65.536 bytes (el tamaño de página admite potencias de dos entre 512 y 65.536). La aritmética se comprueba con el valor que informó <code>PRAGMA max_page_count</code>: 4.294.967.294 páginas × 4.096 bytes = 17.592.186.036.224 bytes, es decir, 16 TiB o 17,59 TB en unidades decimales; con páginas de 65.536 bytes, 281,5 TB. Dicho de otro modo, el límite práctico de tamaño no lo impone SQLite sino el sistema de archivos o el disco. Para el número de filas, la página dice que el máximo teórico es 2<sup>64</sup>, pero que el límite de tamaño de la base de datos se alcanza antes, con unas 2×10<sup>13</sup> filas como mucho.</p>
+
+<p>La documentación aclara además qué se puede modificar en tiempo de ejecución: casi todos estos límites pueden reducirse con <code>sqlite3_limit()</code>, con excepciones: el de tablas en un <code>JOIN</code> está fijo en 64, el de páginas se cambia con <code>PRAGMA max_page_count</code>, y el de bases de datos adjuntas puede bajarse pero no subirse por encima de 125. En nuestra valoración, que no hemos contrastado con datos de uso, el límite que se alcanza en la práctica en la mayoría de aplicaciones es el de parámetros (por ejemplo, al construir un <code>IN (?, ?, ...)</code> con una lista muy larga) y el de columnas de resultado, no el del tamaño.</p>
+
+<h2 id="9-cuando-sqlite-es-la-mejor-opcion">Cuándo SQLite es la mejor opción</h2>
+
+<p>La documentación de SQLite incluye una página entera sobre cuándo usarlo y cuándo no, y su tono es poco habitual: no vende, delimita. Sus usos recomendados son: dispositivos embebidos e internet de las cosas (como no necesita administración, encaja en dispositivos que funcionan sin soporte experto); formato de archivo de aplicación (sustituyendo el «Guardar como» por actualizaciones automáticas); sitios web de tráfico bajo o medio (la guía de la página es «menos de 100.000 visitas al día», que ella misma califica de estimación conservadora y no de tope duro; dice que SQLite ha manejado unas diez veces esa cifra); análisis de datos (importar CSV y consultarlos desde la línea de órdenes, Python o R, con un único archivo fácil de compartir); caché de datos empresariales; base de datos del lado del servidor dentro de un servidor específico de una aplicación (con un archivo por usuario, que reduce los problemas de concurrencia); y sustituto de una base de datos empresarial para demostraciones y pruebas.</p>
+
+<p>Y la página enumera con la misma claridad cuándo es mejor una base de datos cliente/servidor: aplicaciones cliente/servidor con muchos programas enviando SQL a una base de datos a través de la red (por la latencia y el bloqueo defectuoso de los sistemas de archivos de red, que puede acabar en corrupción); sitios web muy activos, con escrituras intensivas o que necesiten varios servidores; conjuntos de datos muy grandes (la página da la cifra de 281 TB, y apunta además a que muchos sistemas de archivos limitan el tamaño de archivo por debajo de eso); y alta concurrencia de escritores. Cierra con una lista de comprobación de cuatro preguntas:</p>
+
+<ol>
+  <li><strong>¿Los datos están separados de la aplicación por una red?</strong> Si es así, elige cliente/servidor. Un servidor de aplicaciones que está en la misma máquina que sus datos sigue encajando con SQLite.</li>
+  <li><strong>¿Hay muchos escritores concurrentes?</strong> Si los escritores no pueden ponerse en cola y turnarse, elige cliente/servidor.</li>
+  <li><strong>¿Son datos grandes?</strong> Si pueden acercarse a un solo archivo demasiado grande para manejarlo, elige otra solución; la página sitúa esa consideración al acercarse al rango de los terabytes.</li>
+  <li><strong>Si no, elige SQLite.</strong> Para almacenamiento local en el dispositivo, con baja concurrencia de escritores y menos de un terabyte de contenido, la página afirma que SQLite «casi siempre es una solución mejor».</li>
+</ol>
+
+<p>Nuestra lectura (una interpretación, no una cita): lo que decide la elección casi nunca es el tamaño sino la <em>forma del acceso</em>. Si muchos procesos en máquinas distintas necesitan escribir a la vez en la misma base de datos, hace falta un servidor que arbitre; si los datos viven con una aplicación (en su máquina, en su contenedor, en el dispositivo), un archivo transaccional bien configurado resuelve el problema con menos piezas que mantener. Si estás dudando entre SQLite y PostgreSQL, el artículo sobre <a href="/articulos/postgresql-mvcc-vacuum-planificador.html">PostgreSQL: MVCC, VACUUM y el planificador</a> explica qué te da un servidor a cambio de esa pieza adicional.</p>
+
+<h2 id="10-detalles-practicos-que-muerden">Detalles prácticos que muerden</h2>
+
+<h3>Las claves foráneas vienen desactivadas</h3>
+
+<p>La documentación de <code>PRAGMA foreign_keys</code> lo dice: por defecto, el cumplimiento de las claves foráneas está desactivado (la página advierte de que podría cambiar en una versión futura), y recomienda que las aplicaciones fijen ese ajuste de forma explícita en lugar de confiar en el valor por defecto. Lo comprobamos, y encontramos además una trampa con el módulo de Python:</p>
+
+<div class="code-block not-prose">
+          <div class="code-block__bar">
+            <span>text</span>
+            <button type="button" class="code-block__copy">copiar</button>
+          </div>
+          <pre><code>  foreign_keys = 0
+  insertar un hijo con padre inexistente -&gt; aceptado (no hay padre 999)
+  ¿hay una transacción abierta en el módulo sqlite3? in_transaction = True
+  PRAGMA foreign_keys = ON dentro de la transacción -&gt; foreign_keys = 0 (sin efecto)
+  tras con.commit() y repetir el PRAGMA -&gt; foreign_keys = 1
+  con foreign_keys=ON -&gt; IntegrityError - FOREIGN KEY constraint failed</code></pre>
+        </div>
+
+<p>Con el valor por defecto, SQLite aceptó insertar un registro hijo que apunta a un padre que no existe. Cuando intentamos activar las claves foráneas con <code>PRAGMA foreign_keys = ON</code>, el ajuste <em>no tuvo efecto</em>, y la causa estaba en la propia documentación: el pragma no hace nada dentro de una transacción, y el módulo <code>sqlite3</code> de Python había abierto una transacción implícita al ejecutar el <code>INSERT</code> anterior (<code>in_transaction</code> valía <code>True</code>; es un comportamiento del módulo, que no describen las páginas de SQLite). Tras confirmar la transacción y repetir el pragma, el valor pasó a 1 y el siguiente <code>INSERT</code> erróneo fue rechazado con <code>FOREIGN KEY constraint failed</code>. La moraleja práctica: activa <code>foreign_keys</code> justo después de abrir cada conexión, antes de ejecutar ninguna otra sentencia (es un ajuste por conexión, como <code>synchronous</code>), y no lo des por hecho sin comprobarlo.</p>
+
+<h3>SQLite y código asíncrono</h3>
+
+<p>Las llamadas del módulo <code>sqlite3</code> son bloqueantes: cada consulta mantiene ocupado el hilo que la ejecuta hasta que termina. Si las haces directamente desde una corrutina de <code>asyncio</code>, bloquean el bucle de eventos; en el <a href="/articulos/python-asyncio-bucle-eventos-corrutinas.html">artículo sobre asyncio</a> medimos que una llamada bloqueante de 0,5 s abría un hueco de 516 ms en todo el bucle, y que <code>asyncio.to_thread()</code> lo evitaba. La combinación natural con SQLite es la misma: una conexión por hilo (un dato general: el módulo, por defecto, comprueba que se use desde el hilo que la creó), el modo WAL para que las lecturas no bloqueen a las escrituras, y las consultas lanzadas con <code>to_thread()</code> si se llaman desde corrutinas. No hemos medido esa combinación concreta, así que no damos cifras.</p>
+
+        <!-- AdSense Slot: article-late -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000006"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+
+        <h2 id="11-errores-y-malentendidos-frecuentes">Errores y malentendidos frecuentes</h2>
+
+<h3>«SQLite no soporta concurrencia»</h3>
+
+<p>Soporta un número ilimitado de lectores simultáneos y un escritor a la vez. En modo WAL, los lectores no bloquean al escritor: en nuestro experimento, 10.144 lecturas y 300 escrituras sin un solo bloqueo. Lo que no soporta es la escritura concurrente de varios escritores.</p>
+
+<h3>«Activar WAL es gratis»</h3>
+
+<p>Tiene un precio documentado: archivos adicionales, una pequeña penalización de lectura, el mantenimiento de los puntos de control y la limitación a una sola máquina.</p>
+
+<h3>«<code>synchronous=NORMAL</code> es seguro en WAL»</h3>
+
+<p>Es consistente (no corrompe), pero no durable: tras un corte de corriente, las últimas confirmaciones pueden perderse. Es una decisión sobre qué estás dispuesto a perder.</p>
+
+<h3>«WAL acelera todas las escrituras»</h3>
+
+<p>Acelera las confirmaciones, no la escritura de filas: 100.000 filas en una sola transacción tardaron lo mismo en los dos modos.</p>
+
+<h3>«Una lectura larga no hace daño»</h3>
+
+<p>En WAL impide que el archivo se reinicie mientras dure: con un lector abierto, el punto de control <code>TRUNCATE</code> devolvió «ocupado» y el WAL siguió ocupando espacio.</p>
+
+<h3>«SQLite no sirve para bases de datos grandes»</h3>
+
+<p>Admite unos 17,5 TB con páginas por defecto. El problema de las bases de datos muy grandes con muchos escritores es la concurrencia, no el tamaño.</p>
+
+<h3>«Las claves foráneas funcionan siempre»</h3>
+
+<p>Vienen desactivadas, y en Python un <code>PRAGMA</code> dentro de una transacción implícita no tiene efecto.</p>
+
+<h2 id="12-preguntas-frecuentes">Preguntas frecuentes</h2>
+
+<h3>¿Debo activar WAL siempre?</h3>
+
+<p>Para aplicaciones con lecturas y escrituras concurrentes en la misma máquina, es casi siempre una mejora. Para una base de datos que se envía como archivo único o se aloja en un sistema de archivos de red, no. Y si solo hay un proceso con una conexión, la ganancia se limita al coste de confirmar.</p>
+
+<h3>¿Cuántos escritores admite SQLite?</h3>
+
+<p>Uno a la vez. Los demás esperan (con <code>busy_timeout</code>) o fallan con <code>SQLITE_BUSY</code>. Si tu carga necesita escrituras paralelas desde varios procesos o máquinas, la propia documentación recomienda un motor cliente/servidor.</p>
+
+<h3>¿Qué diferencia hay entre BEGIN, BEGIN IMMEDIATE y BEGIN EXCLUSIVE?</h3>
+
+<p>Cuándo se adquiere el bloqueo de escritura: <code>DEFERRED</code> (el valor por defecto) espera al primer acceso, <code>IMMEDIATE</code> lo toma desde el principio, y <code>EXCLUSIVE</code> igual y, fuera de WAL, además impide leer a otros. En WAL, las dos últimas son equivalentes.</p>
+
+<h3>¿Cómo hago una copia de seguridad de una base de datos en WAL?</h3>
+
+<p>Las páginas consultadas no describen los mecanismos de copia, de modo que no damos una receta. Lo que sí se deduce de lo anterior es que un simple copiado del archivo principal puede dejar fuera cambios que aún están en el WAL; consulta la documentación de copias de seguridad de SQLite antes de automatizarlo.</p>
+
+<h3>¿Puedo usar SQLite desde varios hilos?</h3>
+
+<p>Con una conexión por hilo, sí; el experimento de lectores y escritor usó dos conexiones en dos hilos. Compartir una sola conexión entre hilos tiene reglas propias que las páginas consultadas no tratan.</p>
+
+<h3>¿Hay un límite en el número de filas?</h3>
+
+<p>El máximo teórico es 2<sup>64</sup>, pero el límite de tamaño de la base de datos se alcanza antes, con unas 2×10<sup>13</sup> filas como mucho, según la documentación.</p>
+
+<h3>¿Es SQLite adecuado para producción?</h3>
+
+<p>La página de usos adecuados lo recomienda explícitamente para sitios de tráfico bajo o medio y para servidores de aplicación con un archivo por usuario. Lo adecuado depende de la forma del acceso, como discutimos: si encaja con la lista de comprobación, es una opción de producción legítima.</p>
+
+<h2 id="13-conclusion">Conclusión</h2>
+
+<p>SQLite combina una promesa sencilla (una base de datos transaccional en un archivo) con un conjunto de ajustes que cambian mucho su comportamiento. El más importante es el modo de diario. En el diario de reversión por defecto, un lector con una transacción abierta puede impedir que el escritor confirme; en WAL, no. Esa diferencia, medida en nuestro laboratorio, fue de 18 lecturas bloqueadas y 28 escrituras fallidas frente a cero, y de 3,06 ms a 0,32 ms por confirmación (o 0,03 ms si se acepta perder durabilidad). El coste es operativo: archivos adicionales, puntos de control y la restricción de una sola máquina; y, sobre todo, la vigilancia de las transacciones de lectura largas, que impiden reiniciar el WAL.</p>
+
+<p>Los límites, por su parte, son mucho más holgados de lo que se cree: unos 17,5 TB, 2.000 columnas, 32.766 parámetros por consulta. Lo que fija la frontera de SQLite no es el tamaño sino la concurrencia de escritura y la red: cuando varios escritores en máquinas distintas necesitan compartir los datos, hace falta un servidor. Mientras la lista de comprobación de la documentación dé «SQLite», es una elección sólida que simplifica la arquitectura. Y, como siempre, conviene medir en tu caso: el script del laboratorio está en el repositorio del sitio, y reproducirlo en tu equipo lleva menos de un minuto.</p>
+
+<section id="referencias">
+<h2 id="referencias-lista">Referencias</h2>
+<ol>
+  <li>SQLite. «Write-Ahead Logging». <a href="https://www.sqlite.org/wal.html" rel="noopener">https://www.sqlite.org/wal.html</a> (consultado el 27-10-2026).</li>
+  <li>SQLite. «Limits In SQLite». <a href="https://www.sqlite.org/limits.html" rel="noopener">https://www.sqlite.org/limits.html</a> (consultado el 27-10-2026).</li>
+  <li>SQLite. «Appropriate Uses For SQLite». <a href="https://www.sqlite.org/whentouse.html" rel="noopener">https://www.sqlite.org/whentouse.html</a> (consultado el 27-10-2026).</li>
+  <li>SQLite. «PRAGMA Statements». <a href="https://www.sqlite.org/pragma.html" rel="noopener">https://www.sqlite.org/pragma.html</a> (consultado el 27-10-2026; se leyeron los primeros 100.000 de 100.251 caracteres).</li>
+  <li>SQLite. «Transaction». <a href="https://www.sqlite.org/lang_transaction.html" rel="noopener">https://www.sqlite.org/lang_transaction.html</a> (consultado el 27-10-2026).</li>
+  <li>Equipo editorial. «Laboratorio de SQLite: WAL, límites y claves foráneas» (script y salidas completas; SQLite 3.50.4, Python 3.14.2, Windows 11). Archivo <code>editorial/fuentes/lab_wal.md</code> del repositorio del sitio; ejecutado el 27-10-2026.</li>
+</ol>
+</section>
+
+
+        <!-- AdSense Slot: article-bottom -->
+        <aside class="ad-slot not-prose" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- <ins class="adsbygoogle"
+               style="display:block; text-align:center;"
+               data-ad-layout="in-article"
+               data-ad-format="fluid"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000004"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script> -->
+        </aside>
+      </div>
+
+      <!-- Relacionados -->
+      <section class="mt-12 pt-8 border-t border-line" aria-labelledby="relacionados">
+        <h2 id="relacionados" class="text-xl font-bold text-head mb-4">Artículos relacionados</h2>
+        <ul class="grid gap-3 sm:grid-cols-2">
+          <li><a href="/articulos/postgresql-mvcc-vacuum-planificador.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[postgresql]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">PostgreSQL por dentro: MVCC, VACUUM y el planificador de consultas</span>
+          </a></li>
+          <li><a href="/articulos/indices-bases-datos-btree-planes-ejecucion.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[bases de datos]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Índices en bases de datos: B-tree, planes de ejecución y errores comunes</span>
+          </a></li>
+          <li><a href="/articulos/python-asyncio-bucle-eventos-corrutinas.html" class="block border border-line bg-surface rounded-lg p-4 hover:border-accent">
+            <span class="text-xs text-warm">[python]</span>
+            <span class="block mt-1 text-head font-bold leading-snug">Python asyncio: bucle de eventos, corrutinas y concurrencia</span>
+          </a></li>
+        </ul>
+      </section>
+    </article>
+
+    <!-- ===== Sidebar (solo escritorio) ===== -->
+    <aside class="hidden lg:block" aria-label="Barra lateral">
+      <div class="sticky top-20 space-y-8">
+
+        <nav aria-label="Contenido del artículo" class="text-sm">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">En este artículo</p>
+          <ul class="space-y-2 border-l border-line pl-4">
+            <li><a href="#1-que-es-sqlite-y-que-promete" class="text-muted hover:text-accent">Qué es SQLite y qué promete</a></li>
+            <li><a href="#2-el-modo-wal-como-funciona" class="text-muted hover:text-accent">El modo WAL: cómo funciona</a></li>
+            <li><a href="#3-concurrencia-lo-que-cambia-y-lo-que-no" class="text-muted hover:text-accent">Concurrencia: lo que cambia y lo que no</a></li>
+            <li><a href="#4-el-coste-de-confirmar-sincronizaciones-a" class="text-muted hover:text-accent">El coste de confirmar: sincronizaciones al disco</a></li>
+            <li><a href="#5-puntos-de-control-y-el-tamano-del-wal" class="text-muted hover:text-accent">Puntos de control y el tamaño del WAL</a></li>
+            <li><a href="#6-lectores-y-escritor-a-la-vez-medido" class="text-muted hover:text-accent">Lectores y escritor a la vez, medido</a></li>
+            <li><a href="#7-lo-que-wal-no-puede-hacer" class="text-muted hover:text-accent">Lo que WAL no puede hacer</a></li>
+            <li><a href="#8-los-limites-de-sqlite" class="text-muted hover:text-accent">Los límites de SQLite</a></li>
+            <li><a href="#9-cuando-sqlite-es-la-mejor-opcion" class="text-muted hover:text-accent">Cuándo SQLite es la mejor opción</a></li>
+            <li><a href="#10-detalles-practicos-que-muerden" class="text-muted hover:text-accent">Detalles prácticos que muerden</a></li>
+            <li><a href="#11-errores-y-malentendidos-frecuentes" class="text-muted hover:text-accent">Errores y malentendidos frecuentes</a></li>
+            <li><a href="#12-preguntas-frecuentes" class="text-muted hover:text-accent">Preguntas frecuentes</a></li>
+            <li><a href="#13-conclusion" class="text-muted hover:text-accent">Conclusión</a></li>
+            <li><a href="#referencias-lista" class="text-muted hover:text-accent">Referencias</a></li>
+          </ul>
+        </nav>
+
+        <!-- AdSense Slot: sidebar sticky (300x600). Acompaña la lectura sin interrumpirla. -->
+        <aside class="ad-slot ad-slot--tall" aria-label="Publicidad">
+          <span class="ad-label">publicidad</span>
+          <!-- AdSense Slot: article-sidebar
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:300px;height:600px"
+               data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+               data-ad-slot="0000000005"></ins>
+          <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+          -->
+        </aside>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="border-t border-line mt-auto">
+    <div class="max-w-6xl mx-auto px-4 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 text-sm text-muted">
+      <p>© <span data-year>2026</span> devlog. Todos los derechos reservados.</p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-6 gap-y-2">
+        <a href="/privacidad.html" class="hover:text-accent">Política de Privacidad</a>
+        <a href="/contacto.html" class="hover:text-accent">Contacto</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js?v=3" defer></script>
+</body>
+</html>
