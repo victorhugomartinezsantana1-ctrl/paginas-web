@@ -1,0 +1,12 @@
+{
+  "id": "ART-018",
+  "slug": "control-pid-teoria-ajuste-implementacion",
+  "titulo": "Control PID: teoría, ajuste e implementación práctica",
+  "etiqueta": "embebidos",
+  "fecha": "2026-10-27",
+  "descripcion": "Qué hace cada término de un PID, cómo ajustarlo (Ziegler–Nichols) y cómo implementarlo (saturación, windup, derivada con ruido), con simulaciones reproducibles.",
+  "palabra_clave": "control pid ajuste",
+  "secundarias": ["Ziegler-Nichols", "windup", "derivada", "sobreimpulso", "error estacionario"],
+  "relacionados": ["esp32-control-motores", "freertos-esp32-planificador-prioridades-isr", "rust-vs-cpp-sistemas-embebidos"],
+  "barra": "rosa"
+}
