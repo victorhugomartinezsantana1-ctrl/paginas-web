@@ -3,7 +3,7 @@
   "objetivo_total": 30,
   "minimo_aceptable": 20,
   "ultimo_lote_procesado": 4,
-  "ultimo_articulo_completado": "ART-016",
+  "ultimo_articulo_completado": "ART-018",
   "investigados": [
     "ART-001",
     "ART-002",
@@ -84,7 +84,8 @@
     "ART-013",
     "ART-014",
     "ART-015",
-    "ART-016"
+    "ART-016",
+    "ART-018"
   ],
   "url_verificadas": [
     "ART-001",
@@ -102,11 +103,11 @@
     "ART-013",
     "ART-014",
     "ART-015",
-    "ART-016"
+    "ART-016",
+    "ART-018"
   ],
   "pendientes": [
     "ART-017",
-    "ART-018",
     "ART-019",
     "ART-020",
     "ART-021",
@@ -121,8 +122,8 @@
     "ART-030"
   ],
   "errores_activos": [],
-  "proxima_accion": "Lote 4: ART-017..020 (I2C/SPI/UART, PID, MQTT, Wayland vs X11)",
-  "estado_ultimo_despliegue": "commit 381426d; GitHub Actions run 40456046030 completed/success",
+  "proxima_accion": "ART-017, 019, 020 (lote 4) y lotes 5-6",
+  "estado_ultimo_despliegue": "commit a49d301; run 40518076209 completed/success",
   "fase_completada": [
     "A reconocimiento",
     "B arquitectura de despliegue",
